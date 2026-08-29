@@ -19,7 +19,9 @@ import type {
   McpServer,
   ModpackManifest,
   NewInstanceInput,
+  RepoSkillInfo,
   SkillInfo,
+  SkillUpdateInfo,
   PluginChannel,
   PluginVersionPage,
   RemoteVersion,
@@ -579,6 +581,25 @@ async function mockCall<T>(cmd: string, args?: Record<string, unknown>): Promise
       ] as T
     case 'install_skill_repo':
       return ['conventional-commits'] as T
+    case 'list_repo_skills':
+      return [
+        {
+          name: 'conventional-commits',
+          description: 'Conventional Commits 提交规范',
+          subpath: 'conventional-commits',
+        },
+        {
+          name: 'minecraft-modder-neoforge',
+          description: '提供 Minecraft 模组开发辅助。默认使用 NeoForge 26.1.2 和 Minecraft 26.1.2。',
+          subpath: 'minecraft-modder-neoforge',
+        },
+      ] as T
+    case 'check_skill_updates':
+      return [
+        { name: 'conventional-commits', current: '0123456', latest: '89abcde' },
+      ] as T
+    case 'import_skill_zip':
+      return ['my-skill'] as T
     case 'update_skill':
       return 'v1.0.0' as T
     case 'delete_skill':
@@ -871,6 +892,13 @@ export const api = {
   /** Installs skill(s) from a source repo URL; resolves to installed skill names. */
   installSkillRepo: (homeId: string, url: string) =>
     call<string[]>('install_skill_repo', { homeId, url }),
+  /** Lists the skills a source repo offers (for the install picker). */
+  listRepoSkills: (url: string) => call<RepoSkillInfo[]>('list_repo_skills', { url }),
+  /** Compares recorded commits with remote HEADs; resolves to outdated skills. */
+  checkSkillUpdates: (homeId: string) => call<SkillUpdateInfo[]>('check_skill_updates', { homeId }),
+  /** Imports skills from a ZIP (root SKILL.md or top-level dirs with SKILL.md). */
+  importSkillZip: (homeId: string, path: string) =>
+    call<string[]>('import_skill_zip', { homeId, path }),
   /** Reinstalls a repo-sourced skill from its origin; resolves to the new version. */
   updateSkill: (homeId: string, name: string) => call<string>('update_skill', { homeId, name }),
   deleteSkill: (homeId: string, name: string) => call<void>('delete_skill', { homeId, name }),

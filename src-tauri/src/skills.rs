@@ -57,27 +57,25 @@ fn parse_frontmatter(content: &str) -> Option<(String, String)> {
     if lines.next()?.trim() != "---" {
         return None;
     }
-    let mut name = None;
-    let mut description = None;
+    let mut block = String::new();
     for line in lines {
-        let line = line.trim_end();
-        if line.trim() == "---" {
+        if line.trim_end().trim() == "---" {
             break;
         }
-        if let Some((key, value)) = line.split_once(':') {
-            let value = value
-                .trim()
-                .trim_matches('"')
-                .trim_matches('\'')
-                .to_string();
-            match key.trim() {
-                "name" if !value.is_empty() => name = Some(value),
-                "description" if !value.is_empty() => description = Some(value),
-                _ => {}
-            }
-        }
+        block.push_str(line);
+        block.push('\n');
     }
-    Some((name?, description.unwrap_or_default()))
+    // Full YAML parse so folded/literal multi-line descriptions
+    // (`description: >-` + indented lines) load correctly.
+    let value: serde_yaml::Value = serde_yaml::from_str(&block).ok()?;
+    let map = value.as_mapping()?;
+    let get = |key: &str| {
+        map.get(serde_yaml::Value::String(key.to_string()))
+            .and_then(|v| v.as_str())
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+    };
+    Some((get("name")?, get("description").unwrap_or_default()))
 }
 
 /// Validates a skill name (used for the on-disk directory).
@@ -216,6 +214,62 @@ fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<(), String> {
     Ok(())
 }
 
+/// Finds skill bundles under a root directory: the `#/sub` path, the root
+/// itself when it carries SKILL.md, or every top-level directory that does.
+fn collect_bundles(root: &Path, subpath: Option<&str>) -> Result<Vec<PathBuf>, String> {
+    let mut bundles: Vec<PathBuf> = Vec::new();
+    if let Some(sub) = subpath {
+        let dir = root.join(sub);
+        if !dir.join("SKILL.md").exists() {
+            return Err(format!("子目录 {sub} 中没有 SKILL.md"));
+        }
+        bundles.push(dir);
+    } else if root.join("SKILL.md").exists() {
+        bundles.push(root.to_path_buf());
+    } else {
+        for entry in std::fs::read_dir(root)
+            .map_err(|e| e.to_string())?
+            .flatten()
+        {
+            let p = entry.path();
+            if p.is_dir() && p.join("SKILL.md").exists() {
+                bundles.push(p);
+            }
+        }
+        if bundles.is_empty() {
+            return Err("没有找到 SKILL.md".to_string());
+        }
+    }
+    Ok(bundles)
+}
+
+/// Copies one bundle into `<home>/skills/<name>`; returns the skill name.
+fn install_bundle(
+    bundle: &Path,
+    dest_root: &Path,
+    origin: Option<&SkillOrigin>,
+) -> Result<String, String> {
+    let content = std::fs::read_to_string(bundle.join("SKILL.md"))
+        .map_err(|e| format!("读取 SKILL.md 失败: {e}"))?;
+    let (name, _) = parse_frontmatter(&content)
+        .ok_or_else(|| format!("{} 的 SKILL.md 缺少有效 frontmatter", bundle.display()))?;
+    let dir_name = sanitize_skill_name(&name)?;
+    std::fs::create_dir_all(dest_root).map_err(|e| format!("创建 SKILL 目录失败: {e}"))?;
+    let dest = dest_root.join(&dir_name);
+    if dest.exists() {
+        std::fs::remove_dir_all(&dest).map_err(|e| format!("清理旧 SKILL 失败: {e}"))?;
+    }
+    copy_dir_recursive(bundle, &dest)?;
+    if let Some(origin) = origin {
+        std::fs::write(
+            dest.join(SKILL_META),
+            serde_json::to_vec_pretty(origin).map_err(|e| e.to_string())?,
+        )
+        .map_err(|e| format!("写入 SKILL 来源信息失败: {e}"))?;
+    }
+    Ok(name)
+}
+
 /// Installs (or reinstalls) skill(s) from a repo clone into the HOME.
 /// Returns the installed skill names.
 async fn install_from_clone(
@@ -234,53 +288,12 @@ async fn install_from_clone(
         commit,
         tag,
     };
-
-    // Candidate skill bundles: the #/sub path, the repo root itself, or every
-    // top-level directory carrying a SKILL.md.
-    let mut bundles: Vec<PathBuf> = Vec::new();
-    if let Some(sub) = subpath {
-        let dir = clone_dir.join(sub);
-        if !dir.join("SKILL.md").exists() {
-            return Err(format!("仓库子目录 {sub} 中没有 SKILL.md"));
-        }
-        bundles.push(dir);
-    } else if clone_dir.join("SKILL.md").exists() {
-        bundles.push(clone_dir.to_path_buf());
-    } else {
-        for entry in std::fs::read_dir(clone_dir)
-            .map_err(|e| e.to_string())?
-            .flatten()
-        {
-            let p = entry.path();
-            if p.is_dir() && p.join("SKILL.md").exists() {
-                bundles.push(p);
-            }
-        }
-        if bundles.is_empty() {
-            return Err("仓库中没有找到 SKILL.md".to_string());
-        }
-    }
-
+    let bundles = collect_bundles(clone_dir, subpath)
+        .map_err(|e| format!("仓库中没有找到 SKILL.md（{e}）"))?;
     let dest_root = skills_dir(home);
-    std::fs::create_dir_all(&dest_root).map_err(|e| format!("创建 SKILL 目录失败: {e}"))?;
     let mut installed = Vec::new();
     for bundle in bundles {
-        let content = std::fs::read_to_string(bundle.join("SKILL.md"))
-            .map_err(|e| format!("读取 SKILL.md 失败: {e}"))?;
-        let (name, _) = parse_frontmatter(&content)
-            .ok_or_else(|| format!("{} 的 SKILL.md 缺少有效 frontmatter", bundle.display()))?;
-        let dir_name = sanitize_skill_name(&name)?;
-        let dest = dest_root.join(&dir_name);
-        if dest.exists() {
-            std::fs::remove_dir_all(&dest).map_err(|e| format!("清理旧 SKILL 失败: {e}"))?;
-        }
-        copy_dir_recursive(&bundle, &dest)?;
-        std::fs::write(
-            dest.join(SKILL_META),
-            serde_json::to_vec_pretty(&origin).map_err(|e| e.to_string())?,
-        )
-        .map_err(|e| format!("写入 SKILL 来源信息失败: {e}"))?;
-        installed.push(name);
+        installed.push(install_bundle(&bundle, &dest_root, Some(&origin))?);
     }
     Ok(installed)
 }
@@ -307,6 +320,184 @@ pub async fn install_skill_repo(
     let _ = std::fs::remove_dir_all(&tmp);
     let names = result?;
     crate::log_info!("已从 {url} 安装 SKILL: {}", names.join(", "));
+    Ok(names)
+}
+
+/// A skill discovered in a source repository (not yet installed).
+#[derive(Clone, Debug, Serialize)]
+pub struct RepoSkillInfo {
+    pub name: String,
+    pub description: String,
+    /// Top-level path inside the repo; None when the repo root is the skill.
+    pub subpath: Option<String>,
+}
+
+/// Lists the skills a source repository offers (for the install picker).
+/// Clones shallowly, reads frontmatter only, and cleans up.
+#[tauri::command]
+pub async fn list_repo_skills(url: String) -> Result<Vec<RepoSkillInfo>, String> {
+    let (clone_url, subpath) = parse_skill_repo_url(&url)?;
+    let tmp = std::env::temp_dir().join(format!("dsh-skill-{}", uuid::Uuid::new_v4()));
+    let result = async {
+        git(
+            &["clone", "--depth", "1", &clone_url, &tmp.to_string_lossy()],
+            None,
+        )
+        .await?;
+        let bundles = collect_bundles(&tmp, subpath.as_deref())?;
+        let mut out = Vec::new();
+        for bundle in &bundles {
+            let content = std::fs::read_to_string(bundle.join("SKILL.md"))
+                .map_err(|e| format!("读取 SKILL.md 失败: {e}"))?;
+            if let Some((name, description)) = parse_frontmatter(&content) {
+                let sub = if bundle == &tmp {
+                    None
+                } else {
+                    bundle
+                        .strip_prefix(&tmp)
+                        .ok()
+                        .map(|p| p.to_string_lossy().replace('\\', "/"))
+                };
+                out.push(RepoSkillInfo {
+                    name,
+                    description,
+                    subpath: sub,
+                });
+            }
+        }
+        Ok::<_, String>(out)
+    }
+    .await;
+    let _ = std::fs::remove_dir_all(&tmp);
+    result
+}
+
+/// A repo-sourced skill whose remote HEAD moved past the recorded commit.
+#[derive(Clone, Debug, Serialize)]
+pub struct SkillUpdateInfo {
+    pub name: String,
+    pub current: String,
+    pub latest: String,
+}
+
+/// Checks repo-sourced skills for updates: compares the recorded commit with
+/// the remote default-branch HEAD (`git ls-remote`, one call per repo).
+#[tauri::command]
+pub async fn check_skill_updates(
+    state: State<'_, AppState>,
+    home_id: String,
+) -> Result<Vec<SkillUpdateInfo>, String> {
+    let home = home_path_of(&state, &home_id)?;
+    let dir = skills_dir(&home);
+    let mut origins: Vec<(String, SkillOrigin)> = Vec::new();
+    if dir.exists() {
+        for entry in std::fs::read_dir(&dir)
+            .map_err(|e| e.to_string())?
+            .flatten()
+        {
+            let p = entry.path();
+            if p.is_dir() {
+                if let Some(origin) = read_origin(&p) {
+                    if let Some(info) = skill_info_from_dir(&p) {
+                        origins.push((info.name, origin));
+                    }
+                }
+            }
+        }
+    }
+    // One ls-remote per distinct repo (the #/sub path shares the clone URL).
+    let mut head_cache: std::collections::HashMap<String, Option<String>> =
+        std::collections::HashMap::new();
+    let mut updates = Vec::new();
+    for (name, origin) in origins {
+        let clone_url = match parse_skill_repo_url(&origin.repo) {
+            Ok((u, _)) => u,
+            Err(_) => continue,
+        };
+        let head = match head_cache.get(&clone_url) {
+            Some(h) => h.clone(),
+            None => {
+                let h = git(&["ls-remote", &clone_url, "HEAD"], None)
+                    .await
+                    .ok()
+                    .and_then(|out| out.split_whitespace().next().map(|s| s.to_string()));
+                head_cache.insert(clone_url.clone(), h.clone());
+                h
+            }
+        };
+        if let Some(latest) = head {
+            if !latest.is_empty() && latest != origin.commit {
+                updates.push(SkillUpdateInfo {
+                    name,
+                    current: origin.commit.chars().take(7).collect(),
+                    latest: latest.chars().take(7).collect(),
+                });
+            }
+        }
+    }
+    Ok(updates)
+}
+
+/// Imports skills from a ZIP file: either a root-level SKILL.md (single
+/// skill) or multiple top-level directories each carrying one. A single
+/// wrapping directory (GitHub download style) is stripped.
+#[tauri::command]
+pub fn import_skill_zip(
+    state: State<'_, AppState>,
+    home_id: String,
+    path: String,
+) -> Result<Vec<String>, String> {
+    let home = home_path_of(&state, &home_id)?;
+    let src = PathBuf::from(path.trim());
+    let file =
+        std::fs::File::open(&src).map_err(|e| format!("打开 ZIP 失败 {}: {e}", src.display()))?;
+    let mut archive = zip::ZipArchive::new(file).map_err(|e| format!("解析 ZIP 失败: {e}"))?;
+
+    let tmp = std::env::temp_dir().join(format!("dsh-skillzip-{}", uuid::Uuid::new_v4()));
+    let result = (|| -> Result<Vec<String>, String> {
+        for i in 0..archive.len() {
+            let mut entry = archive.by_index(i).map_err(|e| e.to_string())?;
+            let Some(rel) = entry.enclosed_name() else {
+                continue;
+            };
+            let dest = tmp.join(rel);
+            if entry.is_dir() {
+                std::fs::create_dir_all(&dest).map_err(|e| e.to_string())?;
+            } else {
+                if let Some(parent) = dest.parent() {
+                    std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+                }
+                let mut out = std::fs::File::create(&dest).map_err(|e| e.to_string())?;
+                std::io::copy(&mut entry, &mut out).map_err(|e| e.to_string())?;
+            }
+        }
+        // GitHub-style single wrapper directory (repo-main/…) is stripped.
+        let bundles = match collect_bundles(&tmp, None) {
+            Ok(b) => b,
+            Err(_) => {
+                let dirs: Vec<PathBuf> = std::fs::read_dir(&tmp)
+                    .map_err(|e| e.to_string())?
+                    .flatten()
+                    .map(|e| e.path())
+                    .filter(|p| p.is_dir())
+                    .collect();
+                if dirs.len() == 1 {
+                    collect_bundles(&dirs[0], None)?
+                } else {
+                    return Err("ZIP 中没有找到 SKILL.md（根目录或顶层子目录）".to_string());
+                }
+            }
+        };
+        let dest_root = skills_dir(&home);
+        let mut installed = Vec::new();
+        for bundle in bundles {
+            installed.push(install_bundle(&bundle, &dest_root, None)?);
+        }
+        Ok(installed)
+    })();
+    let _ = std::fs::remove_dir_all(&tmp);
+    let names = result?;
+    crate::log_info!("已从 ZIP 导入 SKILL: {}", names.join(", "));
     Ok(names)
 }
 
@@ -458,5 +649,13 @@ mod tests {
         );
         assert!(parse_frontmatter("no frontmatter").is_none());
         assert!(parse_frontmatter("---\ndescription: b\n---\n").is_none());
+    }
+
+    #[test]
+    fn frontmatter_parses_folded_multiline_description() {
+        let md = "---\nname: demo\ndescription: >-\n  第一段折行，\n  第二行。\nlicense: MIT\n---\n# Body\n";
+        let (name, desc) = parse_frontmatter(md).unwrap();
+        assert_eq!(name, "demo");
+        assert_eq!(desc, "第一段折行， 第二行。");
     }
 }

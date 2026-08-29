@@ -180,6 +180,21 @@ export interface SkillInfo {
   origin?: SkillOrigin | null
 }
 
+/** A skill discovered in a source repository (install picker). */
+export interface RepoSkillInfo {
+  name: string
+  description: string
+  /** Top-level path inside the repo; null when the repo root is the skill. */
+  subpath?: string | null
+}
+
+/** A repo-sourced skill whose remote HEAD moved past the recorded commit. */
+export interface SkillUpdateInfo {
+  name: string
+  current: string
+  latest: string
+}
+
 // ---------------------------------------------------------------------------
 // MCP servers (`@deepseek-ai/dsh-mcp-client` rows in cordis.patch.yml)
 // ---------------------------------------------------------------------------

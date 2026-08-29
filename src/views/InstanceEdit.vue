@@ -12,8 +12,10 @@ import type {
   McpServer,
   McpTransport,
   SkillInfo,
+  SkillUpdateInfo,
 } from '@/api/types'
 import TerminalEmbed from './TerminalEmbed.vue'
+import SkillRepoDialog from '@/components/SkillRepoDialog.vue'
 
 const route = useRoute()
 const router = useRouter()
@@ -394,12 +396,14 @@ async function confirmExportModpack() {
 
 const skills = ref<SkillInfo[]>([])
 const skillsLoading = ref(false)
-const skillRepoUrl = ref('')
-const skillRepoBusy = ref(false)
 const skillActionBusy = ref('')
+const skillRepoDialogVisible = ref(false)
 const skillCreateVisible = ref(false)
 const skillCreateForm = ref({ name: '', description: '', content: '' })
 const skillCreateBusy = ref(false)
+const skillUpdates = ref<SkillUpdateInfo[]>([])
+const skillCheckingUpdates = ref(false)
+const skillUpdatingAll = ref(false)
 
 const skillColumns = computed(() => [
   { title: t('instanceEdit.skillColName'), dataIndex: 'name', width: 180 },
@@ -420,18 +424,24 @@ async function loadSkills() {
   }
 }
 
-async function installSkillFromRepo() {
-  if (!homeId.value || !skillRepoUrl.value.trim()) return
-  skillRepoBusy.value = true
+function skillUpdateOf(name: string): SkillUpdateInfo | undefined {
+  return skillUpdates.value.find((u) => u.name === name)
+}
+
+async function onCheckSkillUpdates() {
+  if (!homeId.value) return
+  skillCheckingUpdates.value = true
   try {
-    const names = await api.installSkillRepo(homeId.value, skillRepoUrl.value.trim())
-    skillRepoUrl.value = ''
-    Message.success(t('instanceEdit.skillInstalled', { names: names.join(', ') }))
-    await loadSkills()
+    skillUpdates.value = await api.checkSkillUpdates(homeId.value)
+    Message.success(
+      skillUpdates.value.length > 0
+        ? t('instanceEdit.skillUpdatesFound', { count: skillUpdates.value.length })
+        : t('instanceEdit.skillNoUpdates'),
+    )
   } catch (e) {
     Message.error(String(e))
   } finally {
-    skillRepoBusy.value = false
+    skillCheckingUpdates.value = false
   }
 }
 
@@ -441,11 +451,24 @@ async function onUpdateSkill(name: string) {
   try {
     const version = await api.updateSkill(homeId.value, name)
     Message.success(t('instanceEdit.skillUpdated', { name, version }))
+    skillUpdates.value = skillUpdates.value.filter((u) => u.name !== name)
     await loadSkills()
   } catch (e) {
     Message.error(String(e))
   } finally {
     skillActionBusy.value = ''
+  }
+}
+
+async function onUpdateAllSkills() {
+  if (skillUpdates.value.length === 0) return
+  skillUpdatingAll.value = true
+  try {
+    for (const u of [...skillUpdates.value]) {
+      await onUpdateSkill(u.name)
+    }
+  } finally {
+    skillUpdatingAll.value = false
   }
 }
 
@@ -471,15 +494,29 @@ async function onImportSkillFile() {
     filters: [{ name: 'SKILL.md', extensions: ['md'] }],
   })
   if (typeof file !== 'string') return
-  skillRepoBusy.value = true
   try {
     const name = await api.importSkillFile(homeId.value, file)
     Message.success(t('instanceEdit.skillInstalled', { names: name }))
     await loadSkills()
   } catch (e) {
     Message.error(String(e))
-  } finally {
-    skillRepoBusy.value = false
+  }
+}
+
+async function onImportSkillZip() {
+  if (!homeId.value) return
+  const { open } = await import('@tauri-apps/plugin-dialog')
+  const file = await open({
+    multiple: false,
+    filters: [{ name: 'ZIP', extensions: ['zip'] }],
+  })
+  if (typeof file !== 'string') return
+  try {
+    const names = await api.importSkillZip(homeId.value, file)
+    Message.success(t('instanceEdit.skillInstalled', { names: names.join(', ') }))
+    await loadSkills()
+  } catch (e) {
+    Message.error(String(e))
   }
 }
 
@@ -1284,32 +1321,33 @@ const terminalRunning = ref(false)
 
             <template v-if="homeId && editingId">
               <div class="skill-toolbar">
-                <a-select
-                  v-model="skillRepoUrl"
-                  allow-create
-                  allow-clear
-                  filterable
-                  :placeholder="t('instanceEdit.skillRepoPlaceholder')"
-                  class="skill-repo-select"
-                >
-                  <a-option v-for="r in store.settings.skill_repos" :key="r" :value="r">
-                    {{ r }}
-                  </a-option>
-                </a-select>
-                <a-button
-                  size="small"
-                  type="primary"
-                  :loading="skillRepoBusy"
-                  :disabled="!skillRepoUrl.trim()"
-                  @click="installSkillFromRepo"
-                >
+                <a-button size="small" type="primary" @click="skillRepoDialogVisible = true">
                   {{ t('instanceEdit.skillInstall') }}
                 </a-button>
                 <a-button size="small" @click="onImportSkillFile">
                   {{ t('instanceEdit.skillImportFile') }}
                 </a-button>
+                <a-button size="small" @click="onImportSkillZip">
+                  {{ t('instanceEdit.skillImportZip') }}
+                </a-button>
                 <a-button size="small" @click="skillCreateVisible = true">
                   {{ t('instanceEdit.skillCreate') }}
+                </a-button>
+                <a-button
+                  size="small"
+                  :loading="skillCheckingUpdates"
+                  @click="onCheckSkillUpdates"
+                >
+                  {{ t('instanceEdit.skillCheckUpdates') }}
+                </a-button>
+                <a-button
+                  v-if="skillUpdates.length > 0"
+                  size="small"
+                  status="warning"
+                  :loading="skillUpdatingAll"
+                  @click="onUpdateAllSkills"
+                >
+                  {{ t('instanceEdit.skillUpdateAll', { count: skillUpdates.length }) }}
                 </a-button>
               </div>
 
@@ -1327,6 +1365,9 @@ const terminalRunning = ref(false)
                     <a-tooltip :content="record.origin.repo">
                       <span class="skill-repo-ref">{{ record.origin.repo }}</span>
                     </a-tooltip>
+                    <a-tag v-if="skillUpdateOf(record.name)" size="small" color="orange">
+                      {{ t('instanceEdit.skillHasUpdate', { version: skillUpdateOf(record.name)!.latest }) }}
+                    </a-tag>
                   </template>
                   <span v-else class="skill-repo-ref">—</span>
                 </template>
@@ -1335,7 +1376,8 @@ const terminalRunning = ref(false)
                     <a-button
                       v-if="record.origin"
                       size="small"
-                      :loading="skillActionBusy === record.name"
+                      :status="skillUpdateOf(record.name) ? 'warning' : 'normal'"
+                      :loading="skillActionBusy === record.name || skillUpdatingAll"
                       @click="onUpdateSkill(record.name)"
                     >
                       {{ t('instanceEdit.skillUpdate') }}
@@ -1497,6 +1539,14 @@ const terminalRunning = ref(false)
         </a-form-item>
       </a-form>
     </a-modal>
+
+    <!-- SKILL repo install picker -->
+    <SkillRepoDialog
+      v-if="editingId && homeId"
+      v-model:visible="skillRepoDialogVisible"
+      :home-id="homeId"
+      @installed="loadSkills"
+    />
 
     <!-- SKILL create -->
     <a-modal
