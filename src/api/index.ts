@@ -16,6 +16,7 @@ import type {
   LauncherSettings,
   LauncherUpdateInfo,
   MarketPlugin,
+  McpServer,
   ModpackManifest,
   NewInstanceInput,
   SkillInfo,
@@ -48,6 +49,8 @@ interface MockDb {
   instances: DshInstance[]
   settings: LauncherSettings
   running: Record<string, InstanceStatus>
+  /** MCP servers per scope key `<homeId>::<profile|__global__>`. */
+  mcp: Record<string, McpServer[]>
 }
 
 function seedDb(): MockDb {
@@ -91,6 +94,7 @@ function seedDb(): MockDb {
       skill_repos: ['https://github.com/Gu-ZT/skills'],
     },
     running: {},
+    mcp: {},
   }
 }
 
@@ -101,6 +105,7 @@ function loadDb(): MockDb {
       const db = JSON.parse(raw) as MockDb
       // Backfill fields added after the mock db was persisted.
       db.settings.log_level = db.settings.log_level ?? 'info'
+      db.mcp = db.mcp ?? {}
       return db
     }
   } catch {
@@ -117,6 +122,12 @@ function saveDb(db: MockDb) {
 
 function uuid(): string {
   return 'xxxxxxxx-xxxx-4xxx'.replace(/x/g, () => ((Math.random() * 16) | 0).toString(16))
+}
+
+/** Mock scope key for MCP servers: the HOME plus the profile (or global). */
+function mcpScopeKey(args?: Record<string, unknown>): string {
+  const profile = (args?.profile as string | null | undefined) ?? '__global__'
+  return `${String(args?.homeId ?? '')}::${profile}`
 }
 
 // Simple event emitter used by the mock to mimic Tauri events.
@@ -575,6 +586,31 @@ async function mockCall<T>(cmd: string, args?: Record<string, unknown>): Promise
     case 'import_skill_file':
     case 'create_skill':
       return 'my-skill' as T
+    // ---- MCP servers (browser preview keeps them in the mock db) ----
+    case 'list_mcp_servers':
+      return (db.mcp[mcpScopeKey(args)] ?? []) as T
+    case 'save_mcp_server': {
+      const key = mcpScopeKey(args)
+      const list = [...(db.mcp[key] ?? [])]
+      const server = { ...(args?.server as McpServer) }
+      const originalId = String(args?.originalId ?? '')
+      const index = originalId ? list.findIndex((s) => s.id === originalId) : -1
+      const taken = list.filter((_, i) => i !== index).map((s) => s.id)
+      server.id = taken.includes(`mcp-${server.serverName}`)
+        ? `mcp-${server.serverName}-2`
+        : `mcp-${server.serverName}`
+      if (index >= 0) list[index] = server
+      else list.push(server)
+      db.mcp[key] = list
+      saveDb(db)
+      return list as T
+    }
+    case 'delete_mcp_server': {
+      const key = mcpScopeKey(args)
+      db.mcp[key] = (db.mcp[key] ?? []).filter((s) => s.id !== String(args?.id))
+      saveDb(db)
+      return db.mcp[key] as T
+    }
     case 'read_modpack_manifest':
       return {
         manifestVersion: 3,
@@ -844,6 +880,22 @@ export const api = {
   /** Creates a skill from pasted content (frontmatter auto-added when missing). */
   createSkill: (homeId: string, name: string, description: string, content: string) =>
     call<string>('create_skill', { homeId, name, description, content }),
+  /**
+   * MCP servers of one scope: `profile: null` reads `<HOME>/cordis.patch.yml`,
+   * a profile name reads `<HOME>/profiles/<profile>/cordis.patch.yml`.
+   */
+  listMcpServers: (homeId: string, profile: string | null) =>
+    call<McpServer[]>('list_mcp_servers', { homeId, profile }),
+  /**
+   * Creates or updates one MCP server; `originalId` names the row being edited
+   * (null when adding). Rejects before writing when validation fails, and
+   * resolves to the scope's servers as re-read from disk.
+   */
+  saveMcpServer: (homeId: string, profile: string | null, server: McpServer, originalId: string | null) =>
+    call<McpServer[]>('save_mcp_server', { homeId, profile, server, originalId }),
+  /** Deletes one MCP server row; resolves to the scope's remaining servers. */
+  deleteMcpServer: (homeId: string, profile: string | null, id: string) =>
+    call<McpServer[]>('delete_mcp_server', { homeId, profile, id }),
   exportModpack: (input: ExportModpackInput) => call<string>('export_modpack', { input }),
   /** Pre-reads a modpack's manifest before installing (for the confirm dialog). */
   readModpackManifest: (source: string) => call<ModpackManifest>('read_modpack_manifest', { source }),

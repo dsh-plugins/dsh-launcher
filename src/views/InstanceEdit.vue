@@ -5,7 +5,14 @@ import { useI18n } from 'vue-i18n'
 import { Message } from '@arco-design/web-vue'
 import { api } from '@/api'
 import { useLauncherStore } from '@/stores/launcher'
-import type { DshInstance, InstalledPlugin, SkillInfo } from '@/api/types'
+import type {
+  DshInstance,
+  InstalledPlugin,
+  McpKv,
+  McpServer,
+  McpTransport,
+  SkillInfo,
+} from '@/api/types'
 import TerminalEmbed from './TerminalEmbed.vue'
 
 const route = useRoute()
@@ -18,7 +25,7 @@ const isNew = computed(() => !editingId.value)
 
 // --- Sidebar tabs ---------------------------------------------------------------
 
-type TabKey = 'basic' | 'env' | 'profiles' | 'plugins' | 'skills' | 'terminal'
+type TabKey = 'basic' | 'env' | 'profiles' | 'plugins' | 'skills' | 'mcp' | 'terminal'
 const activeTab = ref<TabKey>('basic')
 
 // --- Form state ---------------------------------------------------------------
@@ -134,6 +141,9 @@ async function clearIcon() {
 
 watch(homeId, async (v) => {
   profiles.value = []
+  // A different HOME means a different patch layer: reset the MCP scope.
+  mcpScope.value = MCP_GLOBAL
+  mcpServers.value = []
   if (v === DEDICATED) {
     dedicatedPath.value = await api.defaultDedicatedHomePath(name.value.trim() || 'instance')
     return
@@ -494,6 +504,285 @@ async function onCreateSkill() {
   }
 }
 
+// --- MCP tab (`dsh-mcp-client` rows in a cordis.patch.yml patch layer) ----------
+
+/** Scope selector value for the DSH_HOME itself. */
+const MCP_GLOBAL = '__global__'
+
+const mcpScope = ref<string>(MCP_GLOBAL)
+const mcpServers = ref<McpServer[]>([])
+const mcpLoading = ref(false)
+const mcpBusy = ref('')
+const mcpEditVisible = ref(false)
+const mcpSaving = ref(false)
+/** Loader row id being edited; '' while adding a new server. */
+const mcpOriginalId = ref('')
+
+/** Editable projection of one MCP server (key/value rows like the env editor). */
+interface McpFormState {
+  serverName: string
+  transport: McpTransport
+  url: string
+  headers: EnvRow[]
+  command: string
+  args: string[]
+  env: EnvRow[]
+  cwd: string
+  enabled: boolean
+  /** Config keys the form does not surface; sent back untouched. */
+  extra: Record<string, unknown>
+}
+
+function emptyMcpForm(): McpFormState {
+  return {
+    serverName: '',
+    transport: 'stdio',
+    url: '',
+    headers: [],
+    command: '',
+    args: [],
+    env: [],
+    cwd: '',
+    enabled: true,
+    extra: {},
+  }
+}
+
+const mcpForm = ref<McpFormState>(emptyMcpForm())
+
+/** null = global scope (the HOME itself), otherwise the selected profile. */
+const mcpScopeProfile = computed(() => (mcpScope.value === MCP_GLOBAL ? null : mcpScope.value))
+
+/** The patch file a save writes to, shown under the scope selector. */
+const mcpScopePath = computed(() => {
+  const home = store.homes.find((h) => h.id === homeId.value)
+  if (!home) return ''
+  const sep = home.path.includes('\\') ? '\\' : '/'
+  const parts = mcpScopeProfile.value
+    ? [home.path, 'profiles', mcpScopeProfile.value, 'cordis.patch.yml']
+    : [home.path, 'cordis.patch.yml']
+  return parts.join(sep)
+})
+
+const mcpColumns = computed(() => [
+  { title: t('instanceEdit.mcpColName'), dataIndex: 'serverName', width: 160 },
+  { title: t('instanceEdit.mcpColTransport'), slotName: 'mcpTransport', width: 150 },
+  { title: t('instanceEdit.mcpColTarget'), slotName: 'mcpTarget', ellipsis: true, tooltip: true },
+  { title: t('instanceEdit.mcpColStatus'), slotName: 'mcpStatus', width: 110 },
+  { title: t('instances.table.actions'), slotName: 'mcpActions', width: 150, align: 'center' as const },
+])
+
+async function loadMcpServers() {
+  mcpServers.value = []
+  if (!homeId.value || homeId.value === DEDICATED) return
+  mcpLoading.value = true
+  try {
+    mcpServers.value = await api.listMcpServers(homeId.value, mcpScopeProfile.value)
+  } catch (e) {
+    Message.error(String(e))
+  } finally {
+    mcpLoading.value = false
+  }
+}
+
+watch(mcpScope, async () => {
+  if (activeTab.value === 'mcp') await loadMcpServers()
+})
+
+// --- MCP validation (mirrors src-tauri/src/mcp.rs; a failure never saves) -------
+
+/** dsh-mcp-client's `serverName` budget: it derives `mcp__<serverName>__*`. */
+const MCP_NAME_RE = /^[A-Za-z0-9_-]{1,32}$/
+/** RFC 7230 header field-name token. */
+const HEADER_KEY_RE = /^[A-Za-z0-9!#$%&'*+.^_`|~-]+$/
+
+function isHttpUrl(value: string): boolean {
+  try {
+    const url = new URL(value)
+    return (url.protocol === 'http:' || url.protocol === 'https:') && !!url.hostname
+  } catch {
+    return false
+  }
+}
+
+/** Per-row key error: pattern first, then a duplicate of an earlier row. */
+function kvKeyError(rows: EnvRow[], idx: number, re: RegExp, invalid: string, duplicated: string): string {
+  const key = rows[idx].key.trim()
+  // Blank rows are dropped on save, so they are not an error yet.
+  if (!key) return ''
+  if (!re.test(key)) return invalid
+  return rows.findIndex((r) => r.key.trim() === key) < idx ? duplicated : ''
+}
+
+function mcpHeaderKeyError(idx: number): string {
+  return kvKeyError(
+    mcpForm.value.headers,
+    idx,
+    HEADER_KEY_RE,
+    t('instanceEdit.mcpErrHeaderKey'),
+    t('instanceEdit.mcpErrHeaderDuplicated'),
+  )
+}
+
+function mcpEnvKeyError(idx: number): string {
+  return kvKeyError(
+    mcpForm.value.env,
+    idx,
+    ENV_KEY_RE,
+    t('instanceEdit.mcpErrEnvKey'),
+    t('instanceEdit.mcpErrEnvDuplicated'),
+  )
+}
+
+const mcpNameError = computed(() => {
+  const name = mcpForm.value.serverName.trim()
+  if (!name) return t('instanceEdit.mcpErrNameRequired')
+  if (!MCP_NAME_RE.test(name)) return t('instanceEdit.mcpErrNamePattern')
+  const clash = mcpServers.value.some(
+    (s) => s.id !== mcpOriginalId.value && s.serverName === name,
+  )
+  return clash ? t('instanceEdit.mcpErrNameDuplicated') : ''
+})
+
+const mcpUrlError = computed(() => {
+  if (mcpForm.value.transport !== 'streamable-http') return ''
+  const url = mcpForm.value.url.trim()
+  if (!url) return t('instanceEdit.mcpErrUrlRequired')
+  return isHttpUrl(url) ? '' : t('instanceEdit.mcpErrUrlInvalid')
+})
+
+const mcpCommandError = computed(() => {
+  if (mcpForm.value.transport !== 'stdio') return ''
+  return mcpForm.value.command.trim() ? '' : t('instanceEdit.mcpErrCommandRequired')
+})
+
+const mcpFormValid = computed(
+  () =>
+    !mcpNameError.value &&
+    !mcpUrlError.value &&
+    !mcpCommandError.value &&
+    mcpForm.value.headers.every((_, idx) => !mcpHeaderKeyError(idx)) &&
+    mcpForm.value.env.every((_, idx) => !mcpEnvKeyError(idx)),
+)
+
+/** Names listed in the dialog's preserved-config notice. */
+const mcpExtraKeys = computed(() => Object.keys(mcpForm.value.extra ?? {}))
+
+function openMcpCreate() {
+  mcpOriginalId.value = ''
+  mcpForm.value = emptyMcpForm()
+  mcpEditVisible.value = true
+}
+
+function openMcpEdit(server: McpServer) {
+  mcpOriginalId.value = server.id
+  mcpForm.value = {
+    serverName: server.serverName,
+    transport: server.transport,
+    url: server.url,
+    headers: server.headers.map((kv) => ({ key: kv.key, value: kv.value })),
+    command: server.command,
+    args: [...server.args],
+    env: server.env.map((kv) => ({ key: kv.key, value: kv.value })),
+    cwd: server.cwd,
+    enabled: server.enabled,
+    extra: { ...(server.extra ?? {}) },
+  }
+  mcpEditVisible.value = true
+}
+
+function addMcpHeaderRow() {
+  mcpForm.value.headers.push({ key: '', value: '' })
+}
+
+function addMcpEnvRow() {
+  mcpForm.value.env.push({ key: '', value: '' })
+}
+
+function addMcpArgRow() {
+  mcpForm.value.args.push('')
+}
+
+/** Drops blank rows and trims keys, like the env-override editor. */
+function kvPayload(rows: EnvRow[]): McpKv[] {
+  return rows.filter((r) => r.key.trim()).map((r) => ({ key: r.key.trim(), value: r.value }))
+}
+
+/** Transport decides which fields are written; the other side is cleared. */
+function mcpPayload(form: McpFormState, id: string): McpServer {
+  const http = form.transport === 'streamable-http'
+  return {
+    id,
+    serverName: form.serverName.trim(),
+    transport: form.transport,
+    url: http ? form.url.trim() : '',
+    headers: http ? kvPayload(form.headers) : [],
+    command: http ? '' : form.command.trim(),
+    args: http ? [] : form.args.map((a) => a.trim()).filter(Boolean),
+    env: http ? [] : kvPayload(form.env),
+    cwd: http ? '' : form.cwd.trim(),
+    enabled: form.enabled,
+    extra: form.extra,
+  }
+}
+
+async function onSaveMcpServer() {
+  if (!homeId.value) return
+  if (!mcpFormValid.value) {
+    // Errors are rendered per field and nothing is sent, so nothing is written.
+    Message.warning(t('instanceEdit.mcpErrForm'))
+    return
+  }
+  const server = mcpPayload(mcpForm.value, mcpOriginalId.value)
+  mcpSaving.value = true
+  try {
+    mcpServers.value = await api.saveMcpServer(
+      homeId.value,
+      mcpScopeProfile.value,
+      server,
+      mcpOriginalId.value || null,
+    )
+    mcpEditVisible.value = false
+    Message.success(t('instanceEdit.mcpSaved', { name: server.serverName }))
+  } catch (e) {
+    Message.error(String(e))
+  } finally {
+    mcpSaving.value = false
+  }
+}
+
+/** Enable / disable in place: the row keeps its config, only `disabled` moves. */
+async function onToggleMcpServer(server: McpServer, enabled: boolean) {
+  if (!homeId.value) return
+  mcpBusy.value = server.id
+  try {
+    mcpServers.value = await api.saveMcpServer(
+      homeId.value,
+      mcpScopeProfile.value,
+      { ...server, enabled },
+      server.id,
+    )
+  } catch (e) {
+    Message.error(String(e))
+    await loadMcpServers()
+  } finally {
+    mcpBusy.value = ''
+  }
+}
+
+async function onDeleteMcpServer(server: McpServer) {
+  if (!homeId.value) return
+  mcpBusy.value = server.id
+  try {
+    mcpServers.value = await api.deleteMcpServer(homeId.value, mcpScopeProfile.value, server.id)
+    Message.success(t('instanceEdit.mcpDeleted', { name: server.serverName }))
+  } catch (e) {
+    Message.error(String(e))
+  } finally {
+    mcpBusy.value = ''
+  }
+}
+
 // --- Launch shortcut (issue #9) -----------------------------------------------
 
 /** Writes a dsh-launcher://launch .url shortcut for this instance + profile. */
@@ -543,6 +832,21 @@ watch([pluginProfile, homeId], async () => {
 watch(activeTab, async (tab) => {
   if (tab === 'skills') {
     await loadSkills()
+    return
+  }
+  if (tab === 'mcp') {
+    // The scope defaults to the instance's default profile when it has one:
+    // that is where a per-instance MCP server usually belongs. Changing it
+    // loads through the mcpScope watcher, so do not load twice here.
+    if (
+      mcpScope.value === MCP_GLOBAL &&
+      defaultProfile.value &&
+      profiles.value.includes(defaultProfile.value)
+    ) {
+      mcpScope.value = defaultProfile.value
+      return
+    }
+    await loadMcpServers()
     return
   }
   if (tab !== 'plugins') return
@@ -668,6 +972,7 @@ const terminalRunning = ref(false)
         <a-menu-item key="profiles">{{ t('instanceEdit.tabs.profiles') }}</a-menu-item>
         <a-menu-item key="plugins">{{ t('instanceEdit.tabs.plugins') }}</a-menu-item>
         <a-menu-item key="skills">{{ t('instanceEdit.tabs.skills') }}</a-menu-item>
+        <a-menu-item key="mcp">{{ t('instanceEdit.tabs.mcp') }}</a-menu-item>
         <a-menu-item key="terminal">{{ t('instanceEdit.tabs.terminal') }}</a-menu-item>
       </a-menu>
     </aside>
@@ -1056,6 +1361,85 @@ const terminalRunning = ref(false)
             </a-alert>
           </div>
 
+          <!-- MCP -->
+          <div v-else-if="activeTab === 'mcp'" class="dl-card edit-card">
+            <h4 class="env-title">{{ t('instanceEdit.tabs.mcp') }}</h4>
+            <p class="env-desc">{{ t('instanceEdit.mcpDesc') }}</p>
+
+            <template v-if="homeId && homeId !== DEDICATED">
+              <div class="mcp-toolbar">
+                <a-select v-model="mcpScope" style="width: 300px">
+                  <a-option :value="MCP_GLOBAL">{{ t('instanceEdit.mcpScopeGlobal') }}</a-option>
+                  <a-option v-for="p in profiles" :key="p" :value="p">
+                    {{ t('instanceEdit.mcpScopeProfile') }} · {{ p }}
+                  </a-option>
+                </a-select>
+                <a-button size="small" type="primary" @click="openMcpCreate">
+                  {{ t('instanceEdit.mcpAdd') }}
+                </a-button>
+                <a-button size="small" type="text" :loading="mcpLoading" @click="loadMcpServers">
+                  ⟳
+                </a-button>
+              </div>
+              <p class="mcp-path">{{ t('instanceEdit.mcpScopePath', { path: mcpScopePath }) }}</p>
+
+              <a-table
+                :columns="mcpColumns"
+                :data="mcpServers"
+                :loading="mcpLoading"
+                :pagination="false"
+                row-key="id"
+                size="small"
+              >
+                <template #mcpTransport="{ record }">
+                  <a-tag size="small" :color="record.transport === 'stdio' ? 'arcoblue' : 'green'">
+                    {{
+                      record.transport === 'stdio'
+                        ? t('instanceEdit.mcpTransportStdio')
+                        : t('instanceEdit.mcpTransportHttp')
+                    }}
+                  </a-tag>
+                </template>
+                <template #mcpTarget="{ record }">
+                  <span class="mcp-target">
+                    {{ record.transport === 'stdio' ? record.command : record.url }}
+                  </span>
+                </template>
+                <template #mcpStatus="{ record }">
+                  <a-switch
+                    :model-value="record.enabled"
+                    :disabled="mcpBusy === record.id"
+                    :checked-text="t('instanceEdit.mcpEnabledTag')"
+                    :unchecked-text="t('instanceEdit.mcpDisabledTag')"
+                    @change="onToggleMcpServer(record, $event === true)"
+                  />
+                </template>
+                <template #mcpActions="{ record }">
+                  <a-space>
+                    <a-button size="small" :disabled="mcpBusy === record.id" @click="openMcpEdit(record)">
+                      {{ t('instanceEdit.mcpEdit') }}
+                    </a-button>
+                    <a-popconfirm
+                      :content="t('instanceEdit.mcpDeleteConfirm', { name: record.serverName })"
+                      @ok="onDeleteMcpServer(record)"
+                    >
+                      <a-button size="small" status="danger" :loading="mcpBusy === record.id">
+                        {{ t('instances.table.delete') }}
+                      </a-button>
+                    </a-popconfirm>
+                  </a-space>
+                </template>
+                <template #empty>
+                  <a-empty :description="t('instanceEdit.mcpEmpty')" />
+                </template>
+              </a-table>
+            </template>
+
+            <a-alert v-else type="info">
+              {{ t('instanceEdit.profilesNeedHome') }}
+            </a-alert>
+          </div>
+
           <!-- Terminal -->
           <div v-else class="dl-card edit-card">
             <h4 class="env-title">{{ t('instanceEdit.tabs.terminal') }}</h4>
@@ -1139,6 +1523,131 @@ const terminalRunning = ref(false)
       </a-form>
     </a-modal>
 
+    <!-- MCP server create / edit -->
+    <a-modal
+      v-model:visible="mcpEditVisible"
+      :title="
+        mcpOriginalId
+          ? t('instanceEdit.mcpEditTitle', { name: mcpForm.serverName })
+          : t('instanceEdit.mcpCreateTitle')
+      "
+      :width="680"
+      :ok-loading="mcpSaving"
+      :ok-button-props="{ disabled: !mcpFormValid }"
+      @ok="onSaveMcpServer"
+    >
+      <a-form :model="mcpForm" layout="vertical">
+        <a-form-item
+          :label="t('instanceEdit.mcpServerName')"
+          required
+          :validate-status="mcpNameError ? 'error' : undefined"
+          :help="mcpNameError || t('instanceEdit.mcpServerNameHint')"
+        >
+          <a-input v-model="mcpForm.serverName" placeholder="codegraph" />
+        </a-form-item>
+
+        <a-form-item :label="t('instanceEdit.mcpTransport')">
+          <a-radio-group v-model="mcpForm.transport" type="button">
+            <a-radio value="stdio">{{ t('instanceEdit.mcpTransportStdio') }}</a-radio>
+            <a-radio value="streamable-http">{{ t('instanceEdit.mcpTransportHttp') }}</a-radio>
+          </a-radio-group>
+        </a-form-item>
+
+        <!-- Streamable HTTP: endpoint + request headers -->
+        <template v-if="mcpForm.transport === 'streamable-http'">
+          <a-form-item
+            :label="t('instanceEdit.mcpUrl')"
+            required
+            :validate-status="mcpUrlError ? 'error' : undefined"
+            :help="mcpUrlError || undefined"
+          >
+            <a-input v-model="mcpForm.url" placeholder="http://127.0.0.1:64342/stream" />
+          </a-form-item>
+          <a-form-item :label="t('instanceEdit.mcpHeaders')">
+            <div class="mcp-rows">
+              <div v-for="(row, idx) in mcpForm.headers" :key="idx" class="env-row">
+                <a-input
+                  v-model="row.key"
+                  :placeholder="t('instanceEdit.mcpHeaderKey')"
+                  :status="mcpHeaderKeyError(idx) ? 'error' : undefined"
+                  class="env-key"
+                />
+                <a-input
+                  v-model="row.value"
+                  :placeholder="t('instanceEdit.mcpHeaderValue')"
+                  class="env-value"
+                />
+                <a-button status="danger" type="text" @click="mcpForm.headers.splice(idx, 1)">
+                  {{ t('instances.table.delete') }}
+                </a-button>
+                <div v-if="mcpHeaderKeyError(idx)" class="env-error">{{ mcpHeaderKeyError(idx) }}</div>
+              </div>
+              <a-button size="small" class="env-add-btn" @click="addMcpHeaderRow">
+                {{ t('instanceEdit.mcpHeaderAdd') }}
+              </a-button>
+            </div>
+          </a-form-item>
+        </template>
+
+        <!-- stdio: command + args + env + cwd -->
+        <template v-else>
+          <a-form-item
+            :label="t('instanceEdit.mcpCommand')"
+            required
+            :validate-status="mcpCommandError ? 'error' : undefined"
+            :help="mcpCommandError || undefined"
+          >
+            <a-input v-model="mcpForm.command" :placeholder="t('instanceEdit.mcpCommandPlaceholder')" />
+          </a-form-item>
+          <a-form-item :label="t('instanceEdit.mcpArgs')" :extra="t('instanceEdit.mcpArgPlaceholder')">
+            <div class="mcp-rows">
+              <div v-for="(_arg, idx) in mcpForm.args" :key="idx" class="env-row">
+                <a-input v-model="mcpForm.args[idx]" class="env-value" />
+                <a-button status="danger" type="text" @click="mcpForm.args.splice(idx, 1)">
+                  {{ t('instances.table.delete') }}
+                </a-button>
+              </div>
+              <a-button size="small" class="env-add-btn" @click="addMcpArgRow">
+                {{ t('instanceEdit.mcpArgAdd') }}
+              </a-button>
+            </div>
+          </a-form-item>
+          <a-form-item :label="t('instanceEdit.mcpEnv')">
+            <div class="mcp-rows">
+              <div v-for="(row, idx) in mcpForm.env" :key="idx" class="env-row">
+                <a-input
+                  v-model="row.key"
+                  :placeholder="t('instanceEdit.envKey')"
+                  :status="mcpEnvKeyError(idx) ? 'error' : undefined"
+                  class="env-key"
+                />
+                <a-input v-model="row.value" :placeholder="t('instanceEdit.envValue')" class="env-value" />
+                <a-button status="danger" type="text" @click="mcpForm.env.splice(idx, 1)">
+                  {{ t('instances.table.delete') }}
+                </a-button>
+                <div v-if="mcpEnvKeyError(idx)" class="env-error">{{ mcpEnvKeyError(idx) }}</div>
+              </div>
+              <a-button size="small" class="env-add-btn" @click="addMcpEnvRow">
+                {{ t('instanceEdit.mcpEnvAdd') }}
+              </a-button>
+            </div>
+          </a-form-item>
+          <a-form-item :label="t('instanceEdit.mcpCwd')">
+            <a-input v-model="mcpForm.cwd" :placeholder="t('instanceEdit.mcpCwdPlaceholder')" />
+          </a-form-item>
+        </template>
+
+        <a-form-item>
+          <a-switch v-model="mcpForm.enabled" />
+          <span class="switch-label">{{ t('instanceEdit.mcpEnabledLabel') }}</span>
+        </a-form-item>
+
+        <a-alert v-if="mcpExtraKeys.length" type="info">
+          {{ t('instanceEdit.mcpExtraKept', { keys: mcpExtraKeys.join(', ') }) }}
+        </a-alert>
+      </a-form>
+    </a-modal>
+
   </div>
 </template>
 <style lang="scss" scoped>
@@ -1159,6 +1668,35 @@ const terminalRunning = ref(false)
   color: var(--color-text-3);
   margin-left: 6px;
 }
+
+.mcp-toolbar {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  margin-bottom: 8px;
+}
+
+.mcp-path {
+  margin: 0 0 12px;
+  font-size: 12px;
+  color: var(--color-text-3);
+  word-break: break-all;
+}
+
+.mcp-target {
+  font-family: monospace;
+  font-size: 13px;
+}
+
+.mcp-rows {
+  width: 100%;
+}
+
+.switch-label {
+  margin-left: 10px;
+  color: var(--color-text-2);
+}
+
 .icon-editor {
   display: flex;
   gap: 16px;

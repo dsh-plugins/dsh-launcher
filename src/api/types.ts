@@ -180,6 +180,44 @@ export interface SkillInfo {
   origin?: SkillOrigin | null
 }
 
+// ---------------------------------------------------------------------------
+// MCP servers (`@deepseek-ai/dsh-mcp-client` rows in cordis.patch.yml)
+// ---------------------------------------------------------------------------
+
+/** Transport selector, serialised exactly as dsh-mcp-client's `transport`. */
+export type McpTransport = 'stdio' | 'streamable-http'
+
+/** One ordered key/value row (request headers / env), like the env editor. */
+export interface McpKv {
+  key: string
+  value: string
+}
+
+/** One editable MCP server: the loader row id plus its mcp-client config. */
+export interface McpServer {
+  /** Loader entry id (`mcp-<serverName>`), assigned by the backend; '' = new. */
+  id: string
+  /** Tool namespace `mcp__<serverName>__<rawName>`; [A-Za-z0-9_-]{1,32}. */
+  serverName: string
+  transport: McpTransport
+  /** Streamable HTTP endpoint. */
+  url: string
+  /** Streamable HTTP request headers. */
+  headers: McpKv[]
+  /** stdio executable. */
+  command: string
+  /** stdio arguments, passed without shell interpolation. */
+  args: string[]
+  /** stdio extra environment variables. */
+  env: McpKv[]
+  /** stdio working directory ('' = inherit). */
+  cwd: string
+  /** false writes `disabled: true` on the loader row. */
+  enabled: boolean
+  /** Config keys the form does not surface (timeouts, reconnect), preserved. */
+  extra: Record<string, unknown>
+}
+
 export interface NewInstanceInput {
   name: string
   version_id: string

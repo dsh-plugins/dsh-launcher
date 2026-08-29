@@ -3,6 +3,7 @@ mod commands;
 mod config;
 mod doctor;
 mod icons;
+mod mcp;
 mod modpack;
 mod plugins;
 mod process;
@@ -205,6 +206,9 @@ pub fn run() {
             skills::delete_skill,
             skills::import_skill_file,
             skills::create_skill,
+            mcp::list_mcp_servers,
+            mcp::save_mcp_server,
+            mcp::delete_mcp_server,
             commands::get_settings,
             commands::update_settings,
             commands::fetch_news,
