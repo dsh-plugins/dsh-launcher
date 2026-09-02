@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { Message } from '@arco-design/web-vue'
@@ -11,6 +11,40 @@ const { t } = useI18n()
 const store = useLauncherStore()
 
 const checking = ref(false)
+
+// --- One-click Node.js install (issue #23) ------------------------------------
+
+const nodeTaskId = ref('')
+const nodeTask = computed(() => (nodeTaskId.value ? store.tasks[nodeTaskId.value] : null))
+const installing = computed(
+  () => nodeTask.value?.state === 'running' || nodeTask.value?.state === 'queued',
+)
+
+async function oneClickInstall() {
+  try {
+    nodeTaskId.value = await api.startInstallNodeTask()
+    await store.refreshTasks()
+  } catch (e) {
+    Message.error(String(e))
+  }
+}
+
+// Install finished: re-probe the runtime (pnpm is bootstrapped by the task)
+// and enter the launcher when everything is green.
+watch(
+  () => nodeTask.value?.state,
+  async (state) => {
+    if (state === 'done') {
+      await store.checkRuntime()
+      if (allOk.value) {
+        Message.success(t('setup.allReady'))
+        router.push({ name: 'home' })
+      }
+    } else if (state === 'error') {
+      Message.error(nodeTask.value?.message ?? t('setup.installFailed'))
+    }
+  },
+)
 
 const nodeOk = computed(() => store.runtime?.node?.installed ?? false)
 const pnpmOk = computed(() => store.runtime?.pnpm?.installed ?? false)
@@ -57,14 +91,31 @@ async function recheck() {
       <!-- Guidance -->
       <div v-if="!nodeOk" class="guide-block">
         <h4>{{ t('setup.installNode') }}</h4>
-        <ol>
-          <li>{{ t('setup.nodeStep1') }}</li>
-          <li>{{ t('setup.nodeStep2') }}</li>
-          <li>{{ t('setup.nodeStep3') }}</li>
-        </ol>
-        <a-button type="primary" @click="api.openExternal('https://nodejs.org/zh-cn/download')">
-          {{ t('setup.openNodeSite') }}
+        <p class="one-click-desc">{{ t('setup.oneClickNodeDesc') }}</p>
+        <a-button
+          type="primary"
+          size="large"
+          long
+          :loading="installing"
+          :disabled="installing"
+          @click="oneClickInstall"
+        >
+          {{ t('setup.oneClickNode') }}
         </a-button>
+        <a-progress
+          v-if="installing && nodeTask"
+          class="one-click-progress"
+          :percent="nodeTask.percent / 100"
+        />
+        <p v-if="installing && nodeTask?.message" class="one-click-message">
+          {{ nodeTask.message }}
+        </p>
+        <p class="manual-hint">
+          {{ t('setup.nodeManualHint') }}
+          <a-link @click="api.openExternal('https://nodejs.org/zh-cn/download')">
+            {{ t('setup.openNodeSite') }}
+          </a-link>
+        </p>
       </div>
 
       <div v-if="nodeOk && !pnpmOk" class="guide-block">
@@ -145,6 +196,27 @@ h2 {
     line-height: 1.8;
     color: var(--color-text-2);
   }
+}
+
+.one-click-desc {
+  margin: 0 0 12px;
+  color: var(--color-text-2);
+}
+
+.one-click-progress {
+  margin-top: 12px;
+}
+
+.one-click-message {
+  margin: 8px 0 0;
+  font-size: 12px;
+  color: var(--color-text-3);
+}
+
+.manual-hint {
+  margin: 12px 0 0;
+  font-size: 12px;
+  color: var(--color-text-3);
 }
 
 .code-block {

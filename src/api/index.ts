@@ -339,6 +339,8 @@ async function mockCall<T>(cmd: string, args?: Record<string, unknown>): Promise
       }
       return mockRuntime as T
     }
+    case 'start_install_node_task':
+      return 'task-mock-node' as T
     case 'list_tasks': {
       return [...mockTasks.values()].sort((a, b) => b.created_at - a.created_at) as T
     }
@@ -998,6 +1000,8 @@ export const api = {
   updateSettings: (settings: Partial<LauncherSettings>) => call<LauncherSettings>('update_settings', { settings }),
   fetchNews: (source: string) => call<string>('fetch_news', { source }),
 
+  /** Starts the one-click Node.js install background task (issue #23). */
+  startInstallNodeTask: () => call<string>('start_install_node_task'),
   /** Checks GitHub for a newer launcher release on the given channel. */
   checkLauncherUpdate: (channel: 'dev' | 'release' = 'dev') =>
     call<LauncherUpdateInfo>('check_launcher_update', { channel }),

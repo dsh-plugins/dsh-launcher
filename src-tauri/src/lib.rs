@@ -114,6 +114,9 @@ pub fn run() {
             }
             let data_dir = app.path().app_data_dir()?;
             std::fs::create_dir_all(&data_dir)?;
+            // A managed Node.js installed by a previous one-click install
+            // (issue #23) joins PATH for everything the launcher spawns.
+            runtime::ensure_local_node_on_path(&data_dir);
             let config_path = data_dir.join("config.json");
             let cfg = config::load_config(&config_path);
             proxy::sync_from_settings(&cfg.settings);
@@ -181,6 +184,7 @@ pub fn run() {
             tasks::remove_task,
             tasks::cancel_task,
             runtime::get_runtime_status,
+            runtime::start_install_node_task,
             commands::list_instances,
             commands::create_instance,
             commands::update_instance,
