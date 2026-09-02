@@ -372,56 +372,15 @@ async function confirmDeleteProfile(name: string) {
 
 // --- Modpack (整合包) export/import ----------------------------------------------
 
-const exportProfile = ref<string | null>(null)
-const exportBusy = ref(false)
-const exportForm = ref({
-  name: '',
-  version: '1.0.0',
-  displayName: '',
-  description: '',
-  author: '',
-  outDir: '',
-})
-
 function startExportModpack(profile: string) {
-  exportProfile.value = profile
-  exportForm.value = {
-    name: profile,
-    version: '1.0.0',
+  if (!homeId.value || !editingId.value) return
+  store.modpackExport = {
+    instanceId: editingId.value,
+    homeId: homeId.value,
+    profile,
     displayName: name.value.trim(),
-    description: '',
-    author: '',
-    outDir: '',
   }
-}
-
-async function pickExportDir() {
-  const { open } = await import('@tauri-apps/plugin-dialog')
-  const dir = await open({ directory: true, multiple: false })
-  if (typeof dir === 'string') exportForm.value.outDir = dir
-}
-
-async function confirmExportModpack() {
-  if (!homeId.value || !exportProfile.value || !exportForm.value.outDir) return
-  exportBusy.value = true
-  try {
-    const path = await api.exportModpack({
-      home_id: homeId.value,
-      profile: exportProfile.value,
-      out_dir: exportForm.value.outDir,
-      name: exportForm.value.name.trim() || undefined,
-      version: exportForm.value.version.trim() || undefined,
-      displayName: exportForm.value.displayName.trim() || undefined,
-      description: exportForm.value.description.trim() || undefined,
-      author: exportForm.value.author.trim() || undefined,
-    })
-    exportProfile.value = null
-    Message.success(t('instanceEdit.modpackExported', { path }))
-  } catch (e) {
-    Message.error(String(e))
-  } finally {
-    exportBusy.value = false
-  }
+  router.push({ name: 'modpack-export' })
 }
 
 // --- SKILL tab (issue #10) ------------------------------------------------------
@@ -1548,41 +1507,6 @@ const terminalRunning = ref(false)
         </div>
       </a-scrollbar>
     </section>
-
-    <!-- Modpack export -->
-    <a-modal
-      :visible="exportProfile !== null"
-      :title="t('instanceEdit.modpackExportTitle', { name: exportProfile ?? '' })"
-      :ok-loading="exportBusy"
-      :ok-button-props="{ disabled: !exportForm.outDir }"
-      @ok="confirmExportModpack"
-      @cancel="exportProfile = null"
-    >
-      <a-form :model="exportForm" layout="vertical">
-        <a-form-item :label="t('instanceEdit.modpackName')">
-          <a-input v-model="exportForm.name" />
-        </a-form-item>
-        <a-form-item :label="t('instanceEdit.modpackVersion')">
-          <a-input v-model="exportForm.version" placeholder="1.0.0" />
-        </a-form-item>
-        <a-form-item :label="t('instanceEdit.modpackDisplayName')">
-          <a-input v-model="exportForm.displayName" />
-        </a-form-item>
-        <a-form-item :label="t('instanceEdit.modpackDescription')">
-          <a-textarea v-model="exportForm.description" :auto-size="{ minRows: 2, maxRows: 4 }" />
-        </a-form-item>
-        <a-form-item :label="t('instanceEdit.modpackAuthor')">
-          <a-input v-model="exportForm.author" />
-        </a-form-item>
-        <a-form-item :label="t('instanceEdit.modpackOutDir')" required>
-          <a-input v-model="exportForm.outDir" readonly :placeholder="t('instanceEdit.modpackOutDirHint')">
-            <template #append>
-              <a-button @click="pickExportDir">{{ t('settings.pickDir') }}</a-button>
-            </template>
-          </a-input>
-        </a-form-item>
-      </a-form>
-    </a-modal>
 
     <!-- SKILL repo install picker -->
     <SkillRepoDialog

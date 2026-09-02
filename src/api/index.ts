@@ -570,8 +570,8 @@ async function mockCall<T>(cmd: string, args?: Record<string, unknown>): Promise
     case 'get_launcher_directory':
       return 'C:\\Users\\Administrator\\AppData\\Roaming\\in.dsh-plug.dsh-launcher' as T
     case 'export_modpack': {
-      const input = args?.input as { out_dir?: string; profile?: string } | undefined
-      return `${input?.out_dir ?? '.'}/${input?.profile ?? 'profile'}-1.0.0.dspack` as T
+      const input = args?.input as { out_file?: string } | undefined
+      return String(input?.out_file ?? './profile-1.0.0.dspack') as T
     }
     case 'start_import_modpack_task':
       return 'task-mock-modpack' as T

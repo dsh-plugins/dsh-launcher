@@ -74,14 +74,52 @@ pub struct ModpackManifest {
     pub files: Vec<ModpackFileEntry>,
 }
 
+/// Exportable content selection; `Default` exports the standard set (patch,
+/// lockfile, workspace settings, icon) and skips extra user files.
+#[derive(Clone, Copy, Debug, Deserialize)]
+pub struct ExportContents {
+    /// cordis.patch.yml patch layer, carried via `overrides/`.
+    #[serde(default = "default_include")]
+    pub patch: bool,
+    /// pnpm-lock.yaml (frozen install on import).
+    #[serde(default = "default_include")]
+    pub lockfile: bool,
+    /// pnpm-workspace.yaml.
+    #[serde(default = "default_include")]
+    pub workspace: bool,
+    /// Instance icon bundled as icon.png.
+    #[serde(default = "default_include")]
+    pub icon: bool,
+    /// Other user files in the profile, safety-filtered into `overrides/`.
+    #[serde(default)]
+    pub extra_files: bool,
+}
+
+fn default_include() -> bool {
+    true
+}
+
+impl Default for ExportContents {
+    fn default() -> Self {
+        Self {
+            patch: true,
+            lockfile: true,
+            workspace: true,
+            icon: true,
+            extra_files: false,
+        }
+    }
+}
+
 /// Export overrides: every field falls back to a sensible default derived
 /// from the profile.
 #[derive(Clone, Debug, Deserialize)]
 pub struct ExportModpackInput {
     pub home_id: String,
     pub profile: String,
-    /// Directory the `.dspack` is written into.
-    pub out_dir: String,
+    /// Full output file path chosen via a save dialog; a missing or wrong
+    /// extension gets `.dspack` appended.
+    pub out_file: String,
     #[serde(default)]
     pub name: Option<String>,
     #[serde(default)]
@@ -92,6 +130,9 @@ pub struct ExportModpackInput {
     pub description: Option<serde_json::Value>,
     #[serde(default)]
     pub author: Option<String>,
+    /// Content selection; absent exports the default set.
+    #[serde(default)]
+    pub contents: Option<ExportContents>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -214,16 +255,13 @@ fn installed_npm_version(profile: &Path, pkg: &str) -> Option<String> {
     doc.get("version")?.as_str().map(|s| s.to_string())
 }
 
-/// Writes the modpack `.dspack` (pack-structure v2: plain ZIP) and returns
-/// its path. `files` are `(archive path, bytes)` pairs.
-fn write_modpack_dspack(
-    out_dir: &Path,
-    file_name: &str,
-    files: &[(&str, Vec<u8>)],
-) -> Result<PathBuf, String> {
-    std::fs::create_dir_all(out_dir).map_err(|e| format!("创建输出目录失败: {e}"))?;
-    let out = out_dir.join(file_name);
-    let file = std::fs::File::create(&out).map_err(|e| format!("创建整合包文件失败: {e}"))?;
+/// Writes the modpack `.dspack` (pack-structure v2: plain ZIP) at `out` and
+/// returns the path. `files` are `(archive path, bytes)` pairs.
+fn write_modpack_dspack(out: &Path, files: &[(String, Vec<u8>)]) -> Result<PathBuf, String> {
+    if let Some(parent) = out.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| format!("创建输出目录失败: {e}"))?;
+    }
+    let file = std::fs::File::create(out).map_err(|e| format!("创建整合包文件失败: {e}"))?;
     let mut writer = zip::ZipWriter::new(file);
     let options = zip::write::SimpleFileOptions::default()
         .compression_method(zip::CompressionMethod::Deflated);
@@ -237,6 +275,64 @@ fn write_modpack_dspack(
     writer
         .finish()
         .map_err(|e| format!("写入整合包失败: {e}"))?;
+    Ok(out.to_path_buf())
+}
+
+/// Machine files that are rebuilt from the manifest (or handled separately)
+/// and therefore never copied into `overrides/`.
+const PROFILE_MACHINE_FILES: [&str; 4] = [
+    "package.json",
+    "cordis.patch.yml",
+    "pnpm-lock.yaml",
+    "pnpm-workspace.yaml",
+];
+
+/// Safety filter for exported overrides (pack-structure v1's rules): skips
+/// VCS / dependency dirs, env & credential files, and nested archives.
+fn overrides_excluded(lower_name: &str) -> bool {
+    lower_name == "node_modules"
+        || lower_name == ".git"
+        || lower_name.starts_with(".env")
+        || lower_name.ends_with(".pem")
+        || lower_name.ends_with(".key")
+        || lower_name.starts_with("id_rsa")
+        || lower_name.starts_with("id_ed25519")
+        || [".zip", ".tar", ".tgz", ".gz", ".7z", ".rar", ".dspack"]
+            .iter()
+            .any(|ext| lower_name.ends_with(ext))
+}
+
+/// Collects a profile's remaining user files as `overrides/` entries
+/// (relative ZIP paths), skipping machine files and unsafe content.
+fn collect_extra_files(profile: &Path) -> Result<Vec<(String, Vec<u8>)>, String> {
+    let mut out = Vec::new();
+    let mut stack = vec![profile.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        for entry in std::fs::read_dir(&dir).map_err(|e| format!("读取 profile 目录失败: {e}"))?
+        {
+            let entry = entry.map_err(|e| format!("读取 profile 条目失败: {e}"))?;
+            let path = entry.path();
+            let lower = entry.file_name().to_string_lossy().to_lowercase();
+            if overrides_excluded(&lower) {
+                continue;
+            }
+            if path.is_dir() {
+                stack.push(path);
+                continue;
+            }
+            let rel = path
+                .strip_prefix(profile)
+                .map_err(|e| format!("解析 profile 相对路径失败: {e}"))?
+                .to_string_lossy()
+                .replace('\\', "/");
+            if !rel.contains('/') && PROFILE_MACHINE_FILES.contains(&lower.as_str()) {
+                continue;
+            }
+            let bytes =
+                std::fs::read(&path).map_err(|e| format!("读取 profile 文件 {rel} 失败: {e}"))?;
+            out.push((format!("overrides/{rel}"), bytes));
+        }
+    }
     Ok(out)
 }
 
@@ -642,6 +738,7 @@ pub async fn export_modpack(
     state: State<'_, AppState>,
     input: ExportModpackInput,
 ) -> Result<String, String> {
+    let contents = input.contents.unwrap_or_default();
     let home = home_path_of(&state, &input.home_id)?;
     let profile_dir = crate::plugins::profile_dir_pub(&home, &input.profile);
     let pkg_path = profile_dir.join("package.json");
@@ -710,7 +807,11 @@ pub async fn export_modpack(
         .filter(|v| !v.trim().is_empty())
         .unwrap_or_else(|| "1.0.0".to_string());
 
-    let patch = std::fs::read_to_string(profile_dir.join("cordis.patch.yml")).ok();
+    let patch = if contents.patch {
+        std::fs::read_to_string(profile_dir.join("cordis.patch.yml")).ok()
+    } else {
+        None
+    };
 
     // Instance metadata (issue #8 icon; issue #12: displayName defaults to
     // the instance name, description to an empty string).
@@ -726,19 +827,21 @@ pub async fn export_modpack(
         .map(|(id, _, icon)| (id.clone(), icon.clone()));
     let mut icon_field: Option<String> = None;
     let mut icon_png: Option<Vec<u8>> = None;
-    if let Some((inst_id, Some(icon))) = instance_icon {
-        if icon == "local" {
-            if let Ok(bytes) = std::fs::read(crate::icons::local_icon_path(&home, &inst_id)) {
-                icon_png = Some(bytes);
-                icon_field = Some("icon.png".to_string());
-            }
-        } else if icon.starts_with("http") {
-            match fetch_remote_icon(&icon).await {
-                Some(png) => {
-                    icon_png = Some(png);
+    if contents.icon {
+        if let Some((inst_id, Some(icon))) = instance_icon {
+            if icon == "local" {
+                if let Ok(bytes) = std::fs::read(crate::icons::local_icon_path(&home, &inst_id)) {
+                    icon_png = Some(bytes);
                     icon_field = Some("icon.png".to_string());
                 }
-                None => icon_field = Some(icon),
+            } else if icon.starts_with("http") {
+                match fetch_remote_icon(&icon).await {
+                    Some(png) => {
+                        icon_png = Some(png);
+                        icon_field = Some("icon.png".to_string());
+                    }
+                    None => icon_field = Some(icon),
+                }
             }
         }
     }
@@ -781,15 +884,15 @@ pub async fn export_modpack(
         "dsh": { "profile": { "bundles": bundles } },
     });
 
-    let mut files: Vec<(&str, Vec<u8>)> = vec![
-        ("dspack.json", DSPACK_MARKER.as_bytes().to_vec()),
+    let mut files: Vec<(String, Vec<u8>)> = vec![
+        ("dspack.json".to_string(), DSPACK_MARKER.as_bytes().to_vec()),
         (
-            "manifest.json",
+            "manifest.json".to_string(),
             serde_json::to_vec_pretty(&manifest)
                 .map_err(|e| format!("序列化 manifest 失败: {e}"))?,
         ),
         (
-            "package.json",
+            "package.json".to_string(),
             serde_json::to_vec_pretty(&profile_pkg)
                 .map_err(|e| format!("序列化 package.json 失败: {e}"))?,
         ),
@@ -797,23 +900,37 @@ pub async fn export_modpack(
     // pack-structure v2: user files live under overrides/ (file takes
     // precedence over the manifest's inline patch on import).
     if let Some(p) = &manifest.patch {
-        files.push(("overrides/cordis.patch.yml", p.clone().into_bytes()));
+        files.push((
+            "overrides/cordis.patch.yml".to_string(),
+            p.clone().into_bytes(),
+        ));
     }
-    if let Ok(lock) = std::fs::read(profile_dir.join("pnpm-lock.yaml")) {
-        files.push(("pnpm-lock.yaml", lock));
+    if contents.lockfile {
+        if let Ok(lock) = std::fs::read(profile_dir.join("pnpm-lock.yaml")) {
+            files.push(("pnpm-lock.yaml".to_string(), lock));
+        }
     }
-    if let Ok(ws) = std::fs::read(profile_dir.join("pnpm-workspace.yaml")) {
-        files.push(("pnpm-workspace.yaml", ws));
+    if contents.workspace {
+        if let Ok(ws) = std::fs::read(profile_dir.join("pnpm-workspace.yaml")) {
+            files.push(("pnpm-workspace.yaml".to_string(), ws));
+        }
     }
     if let Some(png) = icon_png {
-        files.push(("icon.png", png));
+        files.push(("icon.png".to_string(), png));
+    }
+    if contents.extra_files {
+        files.extend(collect_extra_files(&profile_dir)?);
     }
 
-    let out = write_modpack_dspack(
-        Path::new(&input.out_dir),
-        &format!("{name}-{version}.dspack"),
-        &files,
-    )?;
+    // The save dialog may return a path without the extension (or with a
+    // different one); append `.dspack` instead of rejecting.
+    let raw_path = input.out_file.trim();
+    let out_path = if raw_path.to_lowercase().ends_with(".dspack") {
+        PathBuf::from(raw_path)
+    } else {
+        PathBuf::from(format!("{raw_path}.dspack"))
+    };
+    let out = write_modpack_dspack(&out_path, &files)?;
     crate::log_info!("已导出整合包 {}", out.display());
     Ok(out.to_string_lossy().to_string())
 }
@@ -1520,12 +1637,12 @@ importers:
     #[test]
     fn dspack_round_trip() {
         let dir = std::env::temp_dir().join(format!("dsh-modpack-test-{}", uuid::Uuid::new_v4()));
-        let files: Vec<(&str, Vec<u8>)> = vec![
-            ("dspack.json", DSPACK_MARKER.as_bytes().to_vec()),
-            ("manifest.json", b"{}".to_vec()),
-            ("overrides/cordis.patch.yml", b"[]".to_vec()),
+        let files: Vec<(String, Vec<u8>)> = vec![
+            ("dspack.json".to_string(), DSPACK_MARKER.as_bytes().to_vec()),
+            ("manifest.json".to_string(), b"{}".to_vec()),
+            ("overrides/cordis.patch.yml".to_string(), b"[]".to_vec()),
         ];
-        let dspack = write_modpack_dspack(&dir, "x-1.0.0.dspack", &files).unwrap();
+        let dspack = write_modpack_dspack(&dir.join("x-1.0.0.dspack"), &files).unwrap();
         assert_eq!(detect_container(&dspack).unwrap(), ModpackContainer::Dspack);
         let out = dir.join("out");
         extract_modpack_dspack(&dspack, &out).unwrap();
@@ -1544,8 +1661,8 @@ importers:
     fn dspack_marker_is_required() {
         let dir = std::env::temp_dir().join(format!("dsh-modpack-test-{}", uuid::Uuid::new_v4()));
         // A plain ZIP without dspack.json must be rejected as a dspack.
-        let files: Vec<(&str, Vec<u8>)> = vec![("manifest.json", b"{}".to_vec())];
-        let zip_path = write_modpack_dspack(&dir, "plain.zip", &files).unwrap();
+        let files: Vec<(String, Vec<u8>)> = vec![("manifest.json".to_string(), b"{}".to_vec())];
+        let zip_path = write_modpack_dspack(&dir.join("plain.zip"), &files).unwrap();
         assert_eq!(
             detect_container(&zip_path).unwrap(),
             ModpackContainer::Dspack

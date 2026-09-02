@@ -138,16 +138,33 @@ export interface RemoteVersion {
   source?: 'npm' | 'github' | null
 }
 
+/** Exportable content flags for modpack export (default: all but extra_files on). */
+export interface ExportContents {
+  /** cordis.patch.yml patch layer, carried via overrides/. */
+  patch?: boolean
+  /** pnpm-lock.yaml (frozen install on import). */
+  lockfile?: boolean
+  /** pnpm-workspace.yaml. */
+  workspace?: boolean
+  /** Instance icon bundled as icon.png. */
+  icon?: boolean
+  /** Other user files in the profile, safety-filtered into overrides/. */
+  extra_files?: boolean
+}
+
 /** Modpack export overrides; unset fields fall back to profile-derived defaults. */
 export interface ExportModpackInput {
   home_id: string
   profile: string
-  out_dir: string
+  /** Full output file path chosen via a save dialog; `.dspack` is appended when missing. */
+  out_file: string
   name?: string
   version?: string
   displayName?: string
   description?: string
   author?: string
+  /** Content selection; unset exports the default set. */
+  contents?: ExportContents
 }
 
 /** A manifest-v4 files[] entry: heavy content downloaded on demand. */

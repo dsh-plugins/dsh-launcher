@@ -7,6 +7,7 @@ const router = createRouter({
     { path: '/', name: 'home', component: () => import('@/views/Home.vue') },
     { path: '/instances', name: 'instances', component: () => import('@/views/Instances.vue') },
     { path: '/instances/:id', name: 'instance-edit', component: () => import('@/views/InstanceEdit.vue') },
+    { path: '/modpack/export', name: 'modpack-export', component: () => import('@/views/ExportModpack.vue') },
     {
       path: '/download',
       component: () => import('@/views/Download.vue'),

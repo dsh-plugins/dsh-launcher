@@ -22,6 +22,16 @@ export interface PluginWizardState {
   version: PluginVersionInfo | null
 }
 
+/** Context handed to the modpack export page. */
+export interface ModpackExportState {
+  /** Instance id (for navigating back to the editor). */
+  instanceId: string
+  homeId: string
+  profile: string
+  /** Instance display name used as the default displayName field. */
+  displayName: string
+}
+
 interface LauncherState {
   homes: DshHome[]
   versions: DshVersion[]
@@ -36,6 +46,7 @@ interface LauncherState {
   marketLoading: boolean
   marketLoadedAt: number | null
   pluginWizard: PluginWizardState | null
+  modpackExport: ModpackExportState | null
   loaded: boolean
 }
 
@@ -68,6 +79,7 @@ export const useLauncherStore = defineStore('launcher', {
     marketLoading: false,
     marketLoadedAt: null,
     pluginWizard: null,
+    modpackExport: null,
     loaded: false,
   }),
 
