@@ -391,6 +391,17 @@ async function mockCall<T>(cmd: string, args?: Record<string, unknown>): Promise
       saveDb(db)
       return input as T
     }
+    case 'set_instance_port': {
+      const id = String(args?.instance_id)
+      const raw = args?.port
+      const n = typeof raw === 'number' ? raw : NaN
+      const port = Number.isInteger(n) && n >= 1 && n <= 65535 ? n : null
+      const inst = db.instances.find((i) => i.id === id)
+      if (!inst) fail('实例不存在')
+      inst.port = port
+      saveDb(db)
+      return inst as T
+    }
     case 'delete_instance': {
       const id = String(args?.id)
       delete db.running[id]
@@ -903,6 +914,9 @@ export const api = {
   listInstances: () => call<DshInstance[]>('list_instances'),
   createInstance: (input: NewInstanceInput) => call<DshInstance>('create_instance', { input }),
   updateInstance: (input: DshInstance) => call<DshInstance>('update_instance', { input }),
+  /** Sets the instance's web port; null or out-of-range = random port. */
+  setInstancePort: (instanceId: string, port: number | null) =>
+    call<DshInstance>('set_instance_port', { instance_id: instanceId, port }),
   deleteInstance: (id: string) => call<void>('delete_instance', { id }),
   copyInstance: (input: CopyInstanceInput) => call<DshInstance>('copy_instance', { input }),
 

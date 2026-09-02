@@ -37,6 +37,10 @@ pub struct DshInstance {
     /// `<home>/icons/<id>.png`. `None` falls back to the launcher icon.
     #[serde(default)]
     pub icon: Option<String>,
+    /// Preferred web port (issue #21): `Some(1-65535)` pins it; `None` binds
+    /// a random free port (`--port 0`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub port: Option<u16>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

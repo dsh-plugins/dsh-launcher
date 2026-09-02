@@ -22,6 +22,8 @@ export interface DshInstance {
   last_profile: string | null
   /** http(s) URL, "local" (cropped PNG in the HOME), or null/undefined = launcher default. */
   icon?: string | null
+  /** Preferred web port (1-65535); null/undefined = random free port. */
+  port?: number | null
 }
 
 export interface LauncherSettings {

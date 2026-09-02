@@ -1407,6 +1407,8 @@ async fn do_import_modpack(
             default_profile: Some(profile_name.clone()),
             last_profile: None,
             icon: None,
+
+            port: None,
         };
         cfg.instances.push(inst.clone());
         crate::commands::save_state(state, &cfg)?;

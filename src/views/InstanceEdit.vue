@@ -45,6 +45,39 @@ const creatingProfile = ref(false)
 const addingProfile = ref(false)
 const saving = ref(false)
 
+// --- Web port (issue #21) ---------------------------------------------------
+
+const portInput = ref('')
+const portBusy = ref(false)
+
+/** Parses the port field: empty / non-integer / outside 1-65535 → random. */
+function parsePortInput(raw: string): number | null {
+  const text = raw.trim()
+  if (!text) return null
+  const n = Number(text)
+  return Number.isInteger(n) && n >= 1 && n <= 65535 ? n : null
+}
+
+async function applyPort() {
+  if (!editingId.value) return
+  portBusy.value = true
+  try {
+    const updated = await api.setInstancePort(editingId.value, parsePortInput(portInput.value))
+    const inst = store.instanceById(editingId.value)
+    if (inst) inst.port = updated.port ?? null
+    portInput.value = updated.port ? String(updated.port) : ''
+    Message.success(
+      updated.port
+        ? t('instanceEdit.portSaved', { port: updated.port })
+        : t('instanceEdit.portSavedRandom'),
+    )
+  } catch (e) {
+    Message.error(String(e))
+  } finally {
+    portBusy.value = false
+  }
+}
+
 interface EnvRow {
   key: string
   value: string
@@ -75,6 +108,7 @@ onMounted(async () => {
   versionId.value = inst.version_id
   homeId.value = inst.home_id
   defaultProfile.value = inst.default_profile ?? undefined
+  portInput.value = inst.port ? String(inst.port) : ''
   envRows.value = Object.entries(inst.env_overrides).map(([key, value]) => ({ key, value }))
   await loadIcon()
 })
@@ -1083,6 +1117,22 @@ const terminalRunning = ref(false)
                 <a-alert v-if="homeId === DEDICATED" type="info" class="dedicated-hint">
                   {{ t('instanceEdit.dedicatedHomeHint', { path: dedicatedPath }) }}
                 </a-alert>
+              </a-form-item>
+
+              <a-form-item v-if="editingId" :label="t('instanceEdit.port')">
+                <a-space>
+                  <a-input
+                    v-model="portInput"
+                    :placeholder="t('instanceEdit.portPlaceholder')"
+                    allow-clear
+                    style="width: 200px"
+                    @press-enter="applyPort"
+                  />
+                  <a-button size="small" :loading="portBusy" @click="applyPort">
+                    {{ t('instanceEdit.portApply') }}
+                  </a-button>
+                </a-space>
+                <p class="icon-hint">{{ t('instanceEdit.portHint') }}</p>
               </a-form-item>
 
               <a-form-item v-if="editingId" :label="t('instanceEdit.files')">

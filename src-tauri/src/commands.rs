@@ -258,6 +258,8 @@ pub fn create_instance(
         default_profile: input.default_profile,
         last_profile: None,
         icon: None,
+
+        port: None,
     };
     cfg.instances.push(inst.clone());
     save_state(&state, &cfg)?;
@@ -292,11 +294,35 @@ pub fn update_instance(
     let Some(pos) = cfg.instances.iter().position(|i| i.id == updated.id) else {
         return Err("实例不存在".to_string());
     };
-    // The icon is managed by set/clear_instance_icon, not by this form
-    // payload; preserve whatever is currently stored (the frontend spreads a
-    // possibly stale instance object).
+    // The icon is managed by set/clear_instance_icon and the port by
+    // set_instance_port, not by this form payload; preserve whatever is
+    // currently stored (the frontend spreads a possibly stale instance).
     updated.icon = cfg.instances[pos].icon.clone();
+    updated.port = cfg.instances[pos].port;
     cfg.instances[pos] = updated.clone();
+    save_state(&state, &cfg)?;
+    Ok(updated)
+}
+
+/// Sets an instance's preferred web port (issue #21). Empty / out-of-range
+/// input (0, negative, > 65535, non-integer) means "random" — stored as
+/// `None`, so launch passes `--port 0`.
+#[tauri::command(rename_all = "snake_case")]
+pub fn set_instance_port(
+    state: State<'_, AppState>,
+    instance_id: String,
+    port: Option<i64>,
+) -> Result<crate::config::DshInstance, String> {
+    let port = match port {
+        Some(p) if (1..=65535).contains(&p) => Some(p as u16),
+        _ => None,
+    };
+    let mut cfg = state.config.lock().unwrap();
+    let Some(inst) = cfg.instances.iter_mut().find(|i| i.id == instance_id) else {
+        return Err("实例不存在".to_string());
+    };
+    inst.port = port;
+    let updated = inst.clone();
     save_state(&state, &cfg)?;
     Ok(updated)
 }
@@ -398,6 +424,7 @@ pub fn copy_instance(
         default_profile: source.default_profile.clone(),
         last_profile: None,
         icon: source.icon.clone(),
+        port: source.port,
     };
     // A local icon is stored per instance id; copy the file for the clone,
     // falling back to the launcher default when it cannot be carried over.

@@ -250,7 +250,13 @@ pub async fn start_instance_process(
         .map(|hp| is_web_profile(hp, profile))
         .unwrap_or(profile == "web");
     if is_web {
-        cmd.arg("--host").arg("127.0.0.1").arg("--port").arg("0");
+        // Issue #21: a pinned port (1-65535) is used verbatim; otherwise 0
+        // binds a random free port so several instances don't collide.
+        let port = inst
+            .port
+            .map(|p| p.to_string())
+            .unwrap_or_else(|| "0".to_string());
+        cmd.arg("--host").arg("127.0.0.1").arg("--port").arg(port);
         // `--no-open` was added to dsh-web-app in 0.1.0-rc.8: the launcher
         // embeds the UI in its own webview, so the app must not open the
         // system browser. Feature-detect the flag in the installed bundle's
