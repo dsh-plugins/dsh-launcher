@@ -229,6 +229,7 @@ pub fn run() {
             plugins::set_plugins_enabled,
             plugins::uninstall_plugin,
             plugins::start_install_plugin_task,
+            plugins::start_install_plugin_file_task,
             modpack::export_modpack,
             modpack::read_modpack_manifest,
             modpack::start_import_modpack_task,

@@ -7,6 +7,7 @@ import type { ThemeMode } from '@/api/types'
 import { api } from '@/api'
 import { Message } from '@arco-design/web-vue'
 import ModpackImportDialog from '@/components/ModpackImportDialog.vue'
+import PluginFileImportDialog from '@/components/PluginFileImportDialog.vue'
 
 const route = useRoute()
 const router = useRouter()
@@ -50,6 +51,8 @@ onMounted(async () => {
 
 const modpackImportVisible = ref(false)
 const modpackImportSource = ref('')
+const pluginFileVisible = ref(false)
+const pluginFilePath = ref('')
 let unlistenDrag: (() => void) | undefined
 let unlistenDeepLink: (() => void) | undefined
 
@@ -57,6 +60,31 @@ function openModpackImport(source: string) {
   modpackImportSource.value = source
   modpackImportVisible.value = true
 }
+
+function openPluginFileImport(path: string) {
+  pluginFilePath.value = path
+  pluginFileVisible.value = true
+}
+
+/** A dropped .dspack is always a modpack; a .tgz may be a legacy modpack or
+ * a plugin tarball — probe the manifest and route accordingly. */
+async function handleDroppedPack(path: string) {
+  if (/\.dspack$/i.test(path)) {
+    openModpackImport(path)
+    return
+  }
+  try {
+    await api.readModpackManifest(path)
+    openModpackImport(path)
+  } catch {
+    openPluginFileImport(path)
+  }
+}
+
+/** Instance id when the drop happened on an instance editor page. */
+const dropInstanceId = computed(() =>
+  route.name === 'instance-edit' ? String(route.params.id ?? '') : undefined,
+)
 
 async function setupModpackEntryPoints() {
   if (!isTauri) return
@@ -68,7 +96,7 @@ async function setupModpackEntryPoints() {
   unlistenDrag = await getCurrentWebview().onDragDropEvent((event) => {
     if (event.payload.type !== 'drop') return
     const path = event.payload.paths.find((p) => /\.(dspack|tgz)$/i.test(p))
-    if (path) openModpackImport(path)
+    if (path) void handleDroppedPack(path)
   })
   const { listen } = await import('@tauri-apps/api/event')
   unlistenDeepLink = await listen<string>('deep-link', (event) => handleDeepLink(event.payload))
@@ -275,6 +303,11 @@ async function onHeaderMouseDown(e: MouseEvent) {
     </div>
 
     <ModpackImportDialog v-model:visible="modpackImportVisible" :initial-source="modpackImportSource" />
+    <PluginFileImportDialog
+      v-model:visible="pluginFileVisible"
+      :file-path="pluginFilePath"
+      :initial-instance-id="dropInstanceId"
+    />
   </a-layout>
 </template>
 

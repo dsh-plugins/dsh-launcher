@@ -372,7 +372,8 @@
     "cancel": "Cancel",
     "saved": "Instance saved",
     "notFound": "Instance not found",
-    "pluginsDesc": "Manage plugins in the selected profile of this instance: enable / disable, with multi-select batch actions. Core deepseek-ai official plugins are hidden. Plugins are mounted at instance startup, so restart the instance after adding, removing, enabling or disabling one; when uninstalling, remove plugins before engine-level dependencies.",
+    "pluginsDesc": "Manage plugins in the selected profile of this instance: enable / disable, with multi-select batch actions. Core deepseek-ai official plugins are hidden. Plugins are mounted at instance startup, so restart the instance after adding, removing, enabling or disabling one; when uninstalling, remove plugins before engine-level dependencies. You can also drop a .tgz plugin package anywhere in the window or use the button below.",
+    "pluginImportLocal": "Import local plugin",
     "pluginsPickProfile": "Select a profile above to view its plugins",
     "pluginsEmpty": "No plugins in this profile",
     "pluginVersion": "Version",
@@ -412,6 +413,13 @@
     "targetExisting": "Existing instance",
     "existingInstance": "Select instance",
     "existingInstanceHint": "Only instances on the same DSH version line are listed"
+  },
+  "pluginFile": {
+    "importTitle": "Import local plugin",
+    "file": "Plugin package",
+    "instance": "Install into instance",
+    "instanceHint": "Select an instance",
+    "profile": "Profile name"
   },
   "exportPack": {
     "title": "Export modpack",

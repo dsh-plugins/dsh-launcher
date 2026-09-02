@@ -142,18 +142,24 @@ struct AwesomeCatalog {
 }
 
 /// Parses the `install` command line of an awesome-dsh-plugin entry into the
-/// launcher's plugin id: an npm package spec (`@scope/pkg`) or a GitHub spec
+/// launcher's plugin id: an npm package spec (`@scope/pkg`), a GitHub spec
 /// (`github:owner/repo`, optionally with `#path:<subdir>` for a plugin living
-/// in a monorepo subdirectory). Returns None for anything we cannot drive.
+/// in a monorepo subdirectory), or a tarball URL (`tgz:https://…x.tgz`).
+/// Returns None for anything we cannot drive.
 ///
 /// The recognised shape is `dsh plugin --profile <name> add <target>` with
-/// arbitrary flags tolerated; `<target>` is taken verbatim, so a trailing
-/// `@version` on an npm target is kept (the version resolver splits it later).
+/// arbitrary flags tolerated; `<target>` is taken verbatim (surrounding
+/// quotes stripped), so a trailing `@version` on an npm target is kept (the
+/// version resolver splits it later).
 fn parse_awesome_install(install: &str) -> Option<String> {
     let tokens: Vec<&str> = install.split_whitespace().collect();
     // Find the `add` subcommand; the install target is the next token.
     let pos = tokens.iter().position(|t| *t == "add")?;
-    let target = tokens.get(pos + 1)?.trim();
+    let target = tokens
+        .get(pos + 1)?
+        .trim()
+        .trim_matches('"')
+        .trim_matches('\'');
     if target.is_empty() {
         return None;
     }
@@ -163,6 +169,13 @@ fn parse_awesome_install(install: &str) -> Option<String> {
             Some(p) => format!("github:{repo}#path:{p}"),
             None => format!("github:{repo}"),
         });
+    }
+    // URL tarball (e.g. a GitHub release asset): pnpm installs it verbatim,
+    // but it has no registry/channel metadata — the id is `tgz:<url>`.
+    if (target.starts_with("https://") || target.starts_with("http://"))
+        && (target.ends_with(".tgz") || target.ends_with(".tar.gz"))
+    {
+        return Some(format!("tgz:{target}"));
     }
     // npm target: a bare or scoped package name, optionally @version.
     // Reject anything with a scheme/host (not a plain registry spec).
@@ -499,6 +512,24 @@ pub async fn fetch_plugin_versions(
     channel: PluginChannel,
     page: Option<u32>,
 ) -> Result<PluginVersionPage, String> {
+    // URL tarballs have no registry/channels: a single pseudo-version on
+    // stable; other channels are empty.
+    if plugin_id.starts_with("tgz:") {
+        let versions = match channel {
+            PluginChannel::Stable => vec![PluginVersionInfo {
+                version: "latest".to_string(),
+                channel: channel.clone(),
+                label: Some(plugin_id.clone()),
+                published_at: None,
+                is_default: true,
+            }],
+            _ => Vec::new(),
+        };
+        return Ok(PluginVersionPage {
+            versions,
+            has_more: false,
+        });
+    }
     match channel {
         PluginChannel::Stable | PluginChannel::Beta => {
             // Git-hosted plugins have no npm registry entry; their release
@@ -1139,20 +1170,36 @@ pub async fn start_install_plugin_task(
         return Err(format!("Profile「{}」不存在", input.profile));
     }
 
+    let (label, display_name) = match input.plugin_id.strip_prefix("tgz:") {
+        Some(target) => {
+            let base = target.rsplit(['/', '\\']).next().unwrap_or(target);
+            (
+                format!(
+                    "安装插件包 {base} 到「{}」的 profile「{}」",
+                    input.instance_id, input.profile
+                ),
+                base.to_string(),
+            )
+        }
+        None => (
+            format!(
+                "安装插件 {}@{} 到「{}」的 profile「{}」",
+                input.plugin_id, input.version, input.instance_id, input.profile
+            ),
+            input.plugin_id.clone(),
+        ),
+    };
     let task = crate::tasks::TaskInfo {
         id: new_id("t"),
         kind: "install-plugin".to_string(),
-        label: format!(
-            "安装插件 {}@{} 到「{}」的 profile「{}」",
-            input.plugin_id, input.version, input.instance_id, input.profile
-        ),
+        label,
         version: input.version.clone(),
         state: crate::tasks::TaskState::Running,
         percent: 0,
         created_at: crate::tasks::now_millis_pub(),
         message: None,
         instance_id: Some(input.instance_id.clone()),
-        instance_name: Some(input.plugin_id.clone()),
+        instance_name: Some(display_name),
         reserved_home_path: None,
         logs: Vec::new(),
         child: None,
@@ -1177,6 +1224,37 @@ pub async fn start_install_plugin_task(
     });
 
     Ok(task_id)
+}
+
+/// Installs a plugin from a local `.tgz` tarball (file picker or drag-drop).
+/// The tarball is handed to the instance's CLI verbatim (`pnpm add` accepts
+/// local tarballs); the recorded dependency name is resolved back from the
+/// profile manifest afterwards, same as registry/git installs.
+#[tauri::command(rename_all = "snake_case")]
+pub async fn start_install_plugin_file_task(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    instance_id: String,
+    profile: String,
+    path: String,
+) -> Result<String, String> {
+    let lower = path.to_lowercase();
+    if !(lower.ends_with(".tgz") || lower.ends_with(".tar.gz")) {
+        return Err("仅支持 .tgz / .tar.gz 插件包".to_string());
+    }
+    if !std::path::Path::new(&path).is_file() {
+        return Err(format!("插件包不存在: {path}"));
+    }
+    // pnpm treats Windows paths more reliably with forward slashes.
+    let spec_path = path.replace('\\', "/");
+    let input = InstallPluginInput {
+        plugin_id: format!("tgz:{spec_path}"),
+        version: "local".to_string(),
+        channel: PluginChannel::Stable,
+        instance_id,
+        profile,
+    };
+    start_install_plugin_task(app, state, input).await
 }
 
 async fn run_install_plugin_task(
@@ -1232,23 +1310,27 @@ async fn do_install_plugin(
     let (home_path, version_dir) = resolve_instance(state, &input.instance_id)?;
     let dir = profile_dir(&home_path, &input.profile);
 
-    // Spec: npm packages use <pkg>@<version>; git-hosted (github:) plugins
-    // install the repo at a ref — a commit sha for alpha, a release tag for
-    // stable/beta — plus an optional `&path:<subdir>` for monorepo plugins.
-    let spec = match parse_github_id(&input.plugin_id) {
-        Some((repo, subpath)) => github_install_spec(&repo, &input.version, subpath.as_deref()),
-        None => match input.channel {
-            PluginChannel::Alpha => {
-                let catalog = fetch_plugin_market(None).await?;
-                let plugin = catalog
-                    .iter()
-                    .find(|p| p.id == input.plugin_id)
-                    .ok_or_else(|| format!("插件 {} 不在市场中", input.plugin_id))?;
-                let repo = github_repo_of(plugin)
-                    .ok_or_else(|| format!("插件 {} 没有 GitHub 仓库", input.plugin_id))?;
-                format!("github:{repo}#{}", input.version)
-            }
-            _ => format!("{}@{}", input.plugin_id, input.version),
+    // Spec: tarball ids (`tgz:`) install the URL/path verbatim; npm packages
+    // use <pkg>@<version>; git-hosted (github:) plugins install the repo at a
+    // ref — a commit sha for alpha, a release tag for stable/beta — plus an
+    // optional `&path:<subdir>` for monorepo plugins.
+    let spec = match input.plugin_id.strip_prefix("tgz:") {
+        Some(target) => target.to_string(),
+        None => match parse_github_id(&input.plugin_id) {
+            Some((repo, subpath)) => github_install_spec(&repo, &input.version, subpath.as_deref()),
+            None => match input.channel {
+                PluginChannel::Alpha => {
+                    let catalog = fetch_plugin_market(None).await?;
+                    let plugin = catalog
+                        .iter()
+                        .find(|p| p.id == input.plugin_id)
+                        .ok_or_else(|| format!("插件 {} 不在市场中", input.plugin_id))?;
+                    let repo = github_repo_of(plugin)
+                        .ok_or_else(|| format!("插件 {} 没有 GitHub 仓库", input.plugin_id))?;
+                    format!("github:{repo}#{}", input.version)
+                }
+                _ => format!("{}@{}", input.plugin_id, input.version),
+            },
         },
     };
 
@@ -1331,8 +1413,8 @@ async fn do_install_plugin(
             name
         }
         None => {
-            if input.plugin_id.starts_with("github:") {
-                // Boot safety: never mount an unresolved github: id.
+            if input.plugin_id.starts_with("github:") || input.plugin_id.starts_with("tgz:") {
+                // Boot safety: never mount an unresolved github:/tgz: id.
                 let msg = format!(
                     "无法在 package.json 中定位 {} 的已安装包名，跳过 cordis 挂载（请检查 profile）",
                     input.plugin_id
@@ -1398,6 +1480,17 @@ fn resolve_installed_name(dir: &std::path::Path, plugin_id: &str, spec: &str) ->
         if value.as_str() == Some(spec) {
             return Some(name.clone());
         }
+    }
+    // Tarball installs may be recorded with a normalized value (file:…,
+    // resolved mirrors); fall back to matching the tarball's basename.
+    if let Some(target) = plugin_id.strip_prefix("tgz:") {
+        let base = target.rsplit(['/', '\\']).next().unwrap_or(target);
+        for (name, value) in deps {
+            if value.as_str().map(|v| v.ends_with(base)).unwrap_or(false) {
+                return Some(name.clone());
+            }
+        }
+        return None;
     }
     // npm install: the key is the package name (the spec may carry @version).
     let base = match plugin_id.rfind('@') {
@@ -2162,9 +2255,9 @@ mod tests {
         assert_eq!(parse_awesome_install(""), None);
         assert_eq!(parse_awesome_install("dsh plugin"), None);
         assert_eq!(parse_awesome_install("dsh plugin add"), None);
-        // A URL tarball is not a registry/github spec we resolve.
+        // A non-tarball URL is not a registry/github spec we resolve.
         assert_eq!(
-            parse_awesome_install("dsh plugin --profile web add https://example.com/x.tgz"),
+            parse_awesome_install("dsh plugin --profile web add https://example.com/x"),
             None
         );
         // github: with a missing repo part.
@@ -2174,6 +2267,24 @@ mod tests {
         );
         // github: with too many path segments.
         assert_eq!(parse_awesome_install("dsh plugin add github:a/b/c"), None);
+    }
+
+    #[test]
+    fn parse_awesome_install_accepts_tgz_urls() {
+        // Quoted tarball URL (GitHub release asset).
+        assert_eq!(
+            parse_awesome_install(
+                "dsh plugin --profile web add \"https://github.com/Crosery/dsh-viewer/releases/latest/download/dsh-viewer.tgz\""
+            ),
+            Some(
+                "tgz:https://github.com/Crosery/dsh-viewer/releases/latest/download/dsh-viewer.tgz"
+                    .to_string()
+            )
+        );
+        assert_eq!(
+            parse_awesome_install("dsh plugin add https://example.com/pkg.tar.gz"),
+            Some("tgz:https://example.com/pkg.tar.gz".to_string())
+        );
     }
 
     #[test]

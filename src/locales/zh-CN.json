@@ -372,7 +372,8 @@
     "cancel": "取消",
     "saved": "实例已保存",
     "notFound": "实例不存在",
-    "pluginsDesc": "管理该实例所选 Profile 下的插件：启用 / 禁用，支持多选批量操作。核心 deepseek-ai 官方插件不在此显示。插件在实例启动时挂载，增删或启停后需重启该实例才会生效；卸载时先卸插件、再卸引擎类依赖。",
+    "pluginsDesc": "管理该实例所选 Profile 下的插件：启用 / 禁用，支持多选批量操作。核心 deepseek-ai 官方插件不在此显示。插件在实例启动时挂载，增删或启停后需重启该实例才会生效；卸载时先卸插件、再卸引擎类依赖。也可以把 .tgz 插件包拖进窗口，或点下方按钮选择文件导入。",
+    "pluginImportLocal": "导入本地插件",
     "pluginsPickProfile": "请先在上方选择 Profile 以查看其中的插件",
     "pluginsEmpty": "该 Profile 下没有插件",
     "pluginVersion": "版本",
@@ -412,6 +413,13 @@
     "targetExisting": "导入到现有实例",
     "existingInstance": "选择实例",
     "existingInstanceHint": "仅列出与整合包同一 DSH 版本线的实例"
+  },
+  "pluginFile": {
+    "importTitle": "导入本地插件",
+    "file": "插件包",
+    "instance": "安装到实例",
+    "instanceHint": "选择实例",
+    "profile": "Profile 名称"
   },
   "exportPack": {
     "title": "导出整合包",

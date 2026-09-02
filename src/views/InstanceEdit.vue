@@ -383,6 +383,26 @@ function startExportModpack(profile: string) {
   router.push({ name: 'modpack-export' })
 }
 
+// --- Local plugin (.tgz) import --------------------------------------------------
+
+async function importLocalPlugin() {
+  if (!editingId.value || !pluginProfile.value) return
+  const { open } = await import('@tauri-apps/plugin-dialog')
+  const file = await open({
+    multiple: false,
+    filters: [{ name: 'DSH Plugin', extensions: ['tgz'] }],
+  })
+  if (typeof file !== 'string') return
+  try {
+    await api.startInstallPluginFileTask(editingId.value, pluginProfile.value, file)
+    await store.refreshTasks()
+    Message.success(t('download.taskAdded'))
+    router.push({ name: 'tasks' })
+  } catch (e) {
+    Message.error(String(e))
+  }
+}
+
 // --- SKILL tab (issue #10) ------------------------------------------------------
 
 const skills = ref<SkillInfo[]>([])
@@ -1226,6 +1246,13 @@ const terminalRunning = ref(false)
                 >
                   <a-option v-for="p in profiles" :key="p" :value="p">{{ p }}</a-option>
                 </a-select>
+                <a-button
+                  size="small"
+                  :disabled="!pluginProfile"
+                  @click="importLocalPlugin"
+                >
+                  {{ t('instanceEdit.pluginImportLocal') }}
+                </a-button>
                 <a-button
                   size="small"
                   type="text"

@@ -851,6 +851,8 @@ async function mockCall<T>(cmd: string, args?: Record<string, unknown>): Promise
     case 'resize_terminal_session':
     case 'close_terminal_session':
       return undefined as T
+    case 'start_install_plugin_file_task':
+      return 'task-mock-plugin-file' as T
     case 'start_install_plugin_task': {
       const input = args?.input as InstallPluginInput
       const id = mockNewId('t')
@@ -1014,6 +1016,9 @@ export const api = {
   setPluginsEnabled: (input: SetPluginsEnabledInput) => call<void>('set_plugins_enabled', { input }),
   uninstallPlugin: (input: UninstallPluginInput) => call<void>('uninstall_plugin', { input }),
   startInstallPluginTask: (input: InstallPluginInput) => call<string>('start_install_plugin_task', { input }),
+  /** Installs a plugin from a local .tgz tarball (file picker / drag-drop). */
+  startInstallPluginFileTask: (instanceId: string, profile: string, path: string) =>
+    call<string>('start_install_plugin_file_task', { instance_id: instanceId, profile, path }),
 
   // Embedded terminal (PTY session)
   startTerminalSession: (input: StartTerminalInput) =>
