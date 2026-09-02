@@ -571,7 +571,7 @@ async function mockCall<T>(cmd: string, args?: Record<string, unknown>): Promise
       return 'C:\\Users\\Administrator\\AppData\\Roaming\\in.dsh-plug.dsh-launcher' as T
     case 'export_modpack': {
       const input = args?.input as { out_dir?: string; profile?: string } | undefined
-      return `${input?.out_dir ?? '.'}/${input?.profile ?? 'profile'}-1.0.0.tgz` as T
+      return `${input?.out_dir ?? '.'}/${input?.profile ?? 'profile'}-1.0.0.dspack` as T
     }
     case 'start_import_modpack_task':
       return 'task-mock-modpack' as T
@@ -652,7 +652,8 @@ async function mockCall<T>(cmd: string, args?: Record<string, unknown>): Promise
     }
     case 'read_modpack_manifest':
       return {
-        manifestVersion: 3,
+        manifestVersion: 4,
+        type: 'profile',
         name: 'all-about-whales',
         displayName: { 'en-US': 'All About Whales', 'zh-CN': '大肥鱼套装' },
         version: '1.0.0',
@@ -662,6 +663,14 @@ async function mockCall<T>(cmd: string, args?: Record<string, unknown>): Promise
         profileName: 'all-about-whales',
         bundles: ['@deepseek-ai/dsh-base', '@deepseek-ai/dsh-web-app'],
         dependencies: { 'dsh-pet': '0.2.0' },
+        files: [
+          {
+            path: 'data/models/whale-onboard.bin',
+            sha256: 'abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789',
+            size: 5242880,
+            urls: ['https://example.com/whale-onboard.bin'],
+          },
+        ],
       } as T
     case 'list_instance_status':
       return Object.values(db.running) as T
@@ -956,7 +965,7 @@ export const api = {
   /** Writes a Windows .url shortcut launching an instance via dsh-launcher://launch. */
   createLaunchShortcut: (instanceId: string, profile: string, destPath: string) =>
     call<void>('create_launch_shortcut', { instanceId, profile, destPath }),
-  /** Imports a modpack (.tgz path or URL) as a background task creating a new instance. */
+  /** Imports a modpack (.dspack / legacy .tgz path or URL) as a background task creating a new instance. */
   startImportModpackTask: (input: ImportModpackInput) =>
     call<string>('start_import_modpack_task', { input }),
 

@@ -90,7 +90,7 @@ async function pickFile() {
   const { open } = await import('@tauri-apps/plugin-dialog')
   const file = await open({
     multiple: false,
-    filters: [{ name: 'DSH Modpack', extensions: ['tgz'] }],
+    filters: [{ name: 'DSH Modpack', extensions: ['dspack', 'tgz'] }],
   })
   if (typeof file === 'string') {
     source.value = file
@@ -160,6 +160,9 @@ function close() {
           {{ manifest.name }} v{{ manifest.version }}
           <template v-if="manifest.author"> · {{ manifest.author }}</template>
           <template v-if="manifest.dshVersion"> · DSH {{ manifest.dshVersion }}</template>
+          <template v-if="manifest.files?.length">
+            · {{ t('modpack.filesCount', { count: manifest.files.length }) }}
+          </template>
         </a-alert>
         <a-form-item :label="t('modpack.target')">
           <a-radio-group v-model="importMode" type="button">

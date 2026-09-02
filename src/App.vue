@@ -46,7 +46,7 @@ onMounted(async () => {
   await setupModpackEntryPoints()
 })
 
-// --- Modpack entry points: .tgz drag-drop + dsh-launcher://pack?url= ---------
+// --- Modpack entry points: .dspack/.tgz drag-drop + dsh-launcher://pack?url= ---
 
 const modpackImportVisible = ref(false)
 const modpackImportSource = ref('')
@@ -67,7 +67,7 @@ async function setupModpackEntryPoints() {
   const { getCurrentWebview } = await import('@tauri-apps/api/webview')
   unlistenDrag = await getCurrentWebview().onDragDropEvent((event) => {
     if (event.payload.type !== 'drop') return
-    const path = event.payload.paths.find((p) => p.toLowerCase().endsWith('.tgz'))
+    const path = event.payload.paths.find((p) => /\.(dspack|tgz)$/i.test(p))
     if (path) openModpackImport(path)
   })
   const { listen } = await import('@tauri-apps/api/event')

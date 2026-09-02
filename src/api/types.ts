@@ -150,9 +150,23 @@ export interface ExportModpackInput {
   author?: string
 }
 
-/** Modpack manifest (v2/v3); displayName/description may be a string or a locale map. */
+/** A manifest-v4 files[] entry: heavy content downloaded on demand. */
+export interface ModpackFileEntry {
+  /** Destination path relative to the profile root. */
+  path: string
+  /** Lowercase hex sha256 of the file content. */
+  sha256: string
+  /** Exact byte size. */
+  size: number
+  /** Download mirrors, tried in order. */
+  urls: string[]
+}
+
+/** Modpack manifest (v2/v3 legacy tgz, v4 inside .dspack); displayName/description may be a string or a locale map. */
 export interface ModpackManifest {
   manifestVersion: number
+  /** v4: "profile" (only supported value; "collection" reserved). */
+  type?: string
   name: string
   displayName?: string | Record<string, string> | null
   version: string
@@ -164,6 +178,8 @@ export interface ModpackManifest {
   bundles: string[]
   dependencies: Record<string, string>
   patch?: string | null
+  /** v4: heavy content download manifest. */
+  files?: ModpackFileEntry[]
 }
 
 export interface ImportModpackInput {

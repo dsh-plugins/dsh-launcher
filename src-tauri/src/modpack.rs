@@ -1,17 +1,16 @@
 //! Modpack (整合包) export/import — issue #5.
 //!
-//! A modpack is a `.tgz` holding a complete DSH profile: `manifest.json`
-//! (metadata + pinned plugin coordinates), `package.json`, `cordis.patch.yml`,
-//! and optionally `pnpm-lock.yaml` / `pnpm-workspace.yaml` so transitive deps
-//! stay locked. The launcher writes manifest version 3:
+//! Current format (pack-structure v2 / manifest v4): a `.dspack` is a plain
+//! ZIP with a root `dspack.json` marker (`{"format":"dspack","version":2}`),
+//! a root `manifest.json` (v4: adds `type: "profile"` and an optional
+//! `files[]` download manifest), optional `package.json` / pnpm files, and an
+//! `overrides/` directory whose user files are copied over the profile root
+//! on import. Heavy content stays out of the archive: `files[]` entries carry
+//! `path + sha256 + size + urls[]` and are fetched on demand, each verified
+//! before the import completes.
 //!
-//! - `dependencies` maps a coordinate to an exact version: an npm name to its
-//!   installed version, or `github:owner/repo[#path:/sub]` to a commit sha.
-//! - `displayName` / `description` accept a plain string or a locale map
-//!   (`{ "en-US": "...", "zh-CN": "..." }`).
-//!
-//! Manifest version 2 packs (string fields, pnpm-spec dependency values like
-//! `git+https://...`) are still accepted on import.
+//! Legacy `.tgz` packs (flat layout, manifest v2/v3) are still accepted on
+//! import.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -23,14 +22,33 @@ use crate::config::new_id;
 use crate::AppState;
 
 /// Manifest version the launcher writes.
-pub const MANIFEST_VERSION: u32 = 3;
+pub const MANIFEST_VERSION: u32 = 4;
 
-/// Modpack manifest. `display_name` / `description` stay untyped: v3 allows
+/// `dspack.json` marker at the ZIP root (pack-structure v2).
+const DSPACK_MARKER: &str = r#"{"format":"dspack","version":2}"#;
+
+/// A `files[]` download entry (manifest v4): heavy content fetched on demand.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ModpackFileEntry {
+    /// Destination path relative to the profile root (`/` separated).
+    pub path: String,
+    /// Lowercase hex sha256 of the file content.
+    pub sha256: String,
+    /// Exact byte size.
+    pub size: u64,
+    /// Download mirrors, tried in order.
+    pub urls: Vec<String>,
+}
+
+/// Modpack manifest. `display_name` / `description` stay untyped: v3+ allows
 /// either a string or a `{locale: text}` map, and both round-trip verbatim.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ModpackManifest {
     #[serde(rename = "manifestVersion")]
     pub manifest_version: u32,
+    /// v4: "profile" (only supported value; "collection" is reserved).
+    #[serde(default, rename = "type", skip_serializing_if = "Option::is_none")]
+    pub pack_type: Option<String>,
     pub name: String,
     #[serde(default, rename = "displayName")]
     pub display_name: Option<serde_json::Value>,
@@ -51,6 +69,9 @@ pub struct ModpackManifest {
     pub dependencies: BTreeMap<String, String>,
     #[serde(default)]
     pub patch: Option<String>,
+    /// v4: heavy content download manifest (not used by legacy v2/v3 packs).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub files: Vec<ModpackFileEntry>,
 }
 
 /// Export overrides: every field falls back to a sensible default derived
@@ -59,7 +80,7 @@ pub struct ModpackManifest {
 pub struct ExportModpackInput {
     pub home_id: String,
     pub profile: String,
-    /// Directory the `.tgz` is written into.
+    /// Directory the `.dspack` is written into.
     pub out_dir: String,
     #[serde(default)]
     pub name: Option<String>,
@@ -75,7 +96,7 @@ pub struct ExportModpackInput {
 
 #[derive(Clone, Debug, Deserialize)]
 pub struct ImportModpackInput {
-    /// Local `.tgz` path or an http(s) URL.
+    /// Local `.dspack` / legacy `.tgz` path or an http(s) URL.
     pub source: String,
     /// Replace an existing profile with the same name inside the new HOME.
     #[serde(default)]
@@ -193,8 +214,9 @@ fn installed_npm_version(profile: &Path, pkg: &str) -> Option<String> {
     doc.get("version")?.as_str().map(|s| s.to_string())
 }
 
-/// Writes the modpack tgz (files at the archive root) and returns its path.
-fn write_modpack_tgz(
+/// Writes the modpack `.dspack` (pack-structure v2: plain ZIP) and returns
+/// its path. `files` are `(archive path, bytes)` pairs.
+fn write_modpack_dspack(
     out_dir: &Path,
     file_name: &str,
     files: &[(&str, Vec<u8>)],
@@ -202,18 +224,17 @@ fn write_modpack_tgz(
     std::fs::create_dir_all(out_dir).map_err(|e| format!("创建输出目录失败: {e}"))?;
     let out = out_dir.join(file_name);
     let file = std::fs::File::create(&out).map_err(|e| format!("创建整合包文件失败: {e}"))?;
-    let gz = flate2::write::GzEncoder::new(file, flate2::Compression::default());
-    let mut builder = tar::Builder::new(gz);
+    let mut writer = zip::ZipWriter::new(file);
+    let options = zip::write::SimpleFileOptions::default()
+        .compression_method(zip::CompressionMethod::Deflated);
     for (name, bytes) in files {
-        let mut header = tar::Header::new_gnu();
-        header.set_size(bytes.len() as u64);
-        header.set_mode(0o644);
-        header.set_cksum();
-        builder
-            .append_data(&mut header, name, bytes.as_slice())
+        writer
+            .start_file(name, options)
+            .map_err(|e| format!("写入整合包条目 {name} 失败: {e}"))?;
+        std::io::Write::write_all(&mut writer, bytes)
             .map_err(|e| format!("写入整合包条目 {name} 失败: {e}"))?;
     }
-    builder
+    writer
         .finish()
         .map_err(|e| format!("写入整合包失败: {e}"))?;
     Ok(out)
@@ -262,6 +283,269 @@ fn extract_modpack_tgz(tgz: &Path, dest: &Path) -> Result<(), String> {
     Ok(())
 }
 
+// ---------------------------------------------------------------------------
+// Pack-structure v2 container (.dspack = plain ZIP + root dspack.json)
+// ---------------------------------------------------------------------------
+
+/// Modpack container flavour, detected from the file magic.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ModpackContainer {
+    /// pack-structure v1: gzipped tar with a flat layout (manifest v2/v3).
+    LegacyTgz,
+    /// pack-structure v2: plain ZIP with a root `dspack.json` marker
+    /// (`format: "dspack", version: 2`) carrying manifest v4.
+    Dspack,
+}
+
+/// Sniffs the container by magic bytes: ZIP local file header `PK\x03\x04`
+/// (or the empty-archive marker `PK\x05\x06`) means `.dspack`; anything else
+/// falls back to the legacy tgz reader.
+fn detect_container(file: &Path) -> Result<ModpackContainer, String> {
+    let mut f = std::fs::File::open(file).map_err(|e| format!("打开整合包失败: {e}"))?;
+    let mut magic = [0u8; 2];
+    let n = std::io::Read::read(&mut f, &mut magic).map_err(|e| format!("读取整合包失败: {e}"))?;
+    if n == 2 && magic == *b"PK" {
+        Ok(ModpackContainer::Dspack)
+    } else {
+        Ok(ModpackContainer::LegacyTgz)
+    }
+}
+
+/// Validates the root `dspack.json` marker (pack-structure v2 §2.2).
+fn validate_dspack_marker<R: std::io::Read + std::io::Seek>(
+    archive: &mut zip::ZipArchive<R>,
+) -> Result<(), String> {
+    let mut entry = archive
+        .by_name("dspack.json")
+        .map_err(|_| "不是 .dspack 整合包（ZIP 根缺少 dspack.json 标记文件）".to_string())?;
+    let mut text = String::new();
+    std::io::Read::read_to_string(&mut entry, &mut text)
+        .map_err(|e| format!("读取 dspack.json 失败: {e}"))?;
+    let marker: serde_json::Value =
+        serde_json::from_str(&text).map_err(|e| format!("解析 dspack.json 失败: {e}"))?;
+    if marker.get("format").and_then(|v| v.as_str()) != Some("dspack")
+        || marker.get("version").and_then(|v| v.as_u64()) != Some(2)
+    {
+        return Err("不支持该 .dspack 版本（需要 format=dspack, version=2）".to_string());
+    }
+    Ok(())
+}
+
+/// Extracts a `.dspack` ZIP into `dest`, refusing path-traversal entries, and
+/// validates the root `dspack.json` marker before anything is written.
+fn extract_modpack_dspack(dspack: &Path, dest: &Path) -> Result<(), String> {
+    let file = std::fs::File::open(dspack).map_err(|e| format!("打开整合包失败: {e}"))?;
+    let mut archive =
+        zip::ZipArchive::new(file).map_err(|e| format!("解析 .dspack ZIP 失败: {e}"))?;
+    validate_dspack_marker(&mut archive)?;
+    std::fs::create_dir_all(dest).map_err(|e| format!("创建解压目录失败: {e}"))?;
+    for i in 0..archive.len() {
+        let mut entry = archive
+            .by_index(i)
+            .map_err(|e| format!("读取 .dspack 条目失败: {e}"))?;
+        let Some(name) = entry.enclosed_name().map(|p| p.to_path_buf()) else {
+            continue; // absolute / parent-traversal entry: skip
+        };
+        if name.as_os_str().is_empty() {
+            continue;
+        }
+        if entry.is_dir() {
+            std::fs::create_dir_all(dest.join(&name)).ok();
+            continue;
+        }
+        if let Some(parent) = name.parent() {
+            std::fs::create_dir_all(dest.join(parent))
+                .map_err(|e| format!("创建解压目录失败: {e}"))?;
+        }
+        std::io::copy(
+            &mut entry,
+            &mut std::fs::File::create(dest.join(&name))
+                .map_err(|e| format!("创建解压文件失败: {e}"))?,
+        )
+        .map_err(|e| format!("解压条目失败: {e}"))?;
+    }
+    Ok(())
+}
+
+/// Reads just `manifest.json` out of a `.dspack` ZIP.
+fn read_manifest_from_dspack(dspack: &Path) -> Result<ModpackManifest, String> {
+    let file = std::fs::File::open(dspack).map_err(|e| format!("打开整合包失败: {e}"))?;
+    let mut archive =
+        zip::ZipArchive::new(file).map_err(|e| format!("解析 .dspack ZIP 失败: {e}"))?;
+    validate_dspack_marker(&mut archive)?;
+    let mut entry = archive
+        .by_name("manifest.json")
+        .map_err(|_| ".dspack 缺少 manifest.json".to_string())?;
+    let mut text = String::new();
+    std::io::Read::read_to_string(&mut entry, &mut text)
+        .map_err(|e| format!("读取 manifest.json 失败: {e}"))?;
+    let manifest: ModpackManifest =
+        serde_json::from_str(&text).map_err(|e| format!("解析 manifest.json 失败: {e}"))?;
+    validate_manifest(&manifest)?;
+    // pack-structure v2 carries manifest v4; `type` defaults to "profile".
+    if manifest.manifest_version != 4 {
+        return Err(format!(
+            ".dspack 容器要求 manifestVersion 4（实际为 {}）",
+            manifest.manifest_version
+        ));
+    }
+    validate_pack_type(&manifest)?;
+    Ok(manifest)
+}
+
+/// Copies an extracted `overrides/` tree over the profile root: file-level
+/// replacement, no content merge (pack-structure v2 §5). Returns the number
+/// of files copied.
+fn apply_overrides(unpacked: &Path, profile: &Path) -> Result<usize, String> {
+    let src = unpacked.join("overrides");
+    if !src.is_dir() {
+        return Ok(0);
+    }
+    let mut count = 0usize;
+    let mut stack = vec![src.clone()];
+    while let Some(dir) = stack.pop() {
+        for entry in std::fs::read_dir(&dir).map_err(|e| format!("读取 overrides 目录失败: {e}"))?
+        {
+            let entry = entry.map_err(|e| format!("读取 overrides 条目失败: {e}"))?;
+            let path = entry.path();
+            let rel = path
+                .strip_prefix(&src)
+                .map_err(|e| format!("解析 overrides 路径失败: {e}"))?;
+            let target = profile.join(rel);
+            if path.is_dir() {
+                std::fs::create_dir_all(&target)
+                    .map_err(|e| format!("创建 overrides 目录失败: {e}"))?;
+                stack.push(path);
+            } else {
+                if let Some(parent) = target.parent() {
+                    std::fs::create_dir_all(parent)
+                        .map_err(|e| format!("创建 overrides 目录失败: {e}"))?;
+                }
+                std::fs::copy(&path, &target)
+                    .map_err(|e| format!("覆盖 {} 失败: {e}", rel.display()))?;
+                count += 1;
+            }
+        }
+    }
+    Ok(count)
+}
+
+/// Resolves a `files[]` destination inside the profile, rejecting absolute
+/// paths and parent traversal.
+fn files_target(profile: &Path, rel: &str) -> Result<PathBuf, String> {
+    let p = Path::new(rel);
+    if rel.is_empty()
+        || !p
+            .components()
+            .all(|c| matches!(c, std::path::Component::Normal(_)))
+    {
+        return Err(format!(
+            "files[] 路径非法（必须是不含 .. 的相对路径）: {rel}"
+        ));
+    }
+    Ok(profile.join(p))
+}
+
+/// Downloads one `files[]` entry to `target`, trying each mirror in order
+/// and verifying size + sha256. A failed mirror's partial file is removed
+/// before the next one is tried.
+async fn download_file_entry(entry: &ModpackFileEntry, target: &Path) -> Result<(), String> {
+    let client = crate::proxy::apply(reqwest::Client::builder())
+        .timeout(std::time::Duration::from_secs(600))
+        .user_agent("dsh-launcher")
+        .build()
+        .map_err(|e| format!("创建 HTTP 客户端失败: {e}"))?;
+    let mut last_err = "无可用下载地址".to_string();
+    for url in &entry.urls {
+        last_err = match try_download_file_url(&client, url, entry, target).await {
+            Ok(()) => return Ok(()),
+            Err(e) => {
+                std::fs::remove_file(target).ok();
+                crate::log_warn!("files[] {} 从 {url} 下载失败: {e}", entry.path);
+                e
+            }
+        };
+    }
+    Err(format!("{} 下载失败: {last_err}", entry.path))
+}
+
+async fn try_download_file_url(
+    client: &reqwest::Client,
+    url: &str,
+    entry: &ModpackFileEntry,
+    target: &Path,
+) -> Result<(), String> {
+    use sha2::Digest;
+    if !(url.starts_with("https://") || url.starts_with("http://")) {
+        return Err(format!("仅支持 http(s) 下载地址: {url}"));
+    }
+    let mut resp = client
+        .get(url)
+        .send()
+        .await
+        .map_err(|e| format!("请求失败: {e}"))?;
+    if !resp.status().is_success() {
+        return Err(format!("HTTP {}", resp.status()));
+    }
+    if let Some(parent) = target.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| format!("创建目录失败: {e}"))?;
+    }
+    let mut file = std::fs::File::create(target).map_err(|e| format!("创建文件失败: {e}"))?;
+    let mut hasher = sha2::Sha256::new();
+    let mut size: u64 = 0;
+    while let Some(chunk) = resp.chunk().await.map_err(|e| format!("下载中断: {e}"))? {
+        std::io::Write::write_all(&mut file, &chunk).map_err(|e| format!("写入文件失败: {e}"))?;
+        hasher.update(&chunk);
+        size += chunk.len() as u64;
+    }
+    drop(file);
+    if size != entry.size {
+        return Err(format!(
+            "大小不符（期望 {} 字节，实际 {size} 字节）",
+            entry.size
+        ));
+    }
+    let hash = hasher
+        .finalize()
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect::<String>();
+    if !hash.eq_ignore_ascii_case(entry.sha256.trim()) {
+        return Err("sha256 校验失败".to_string());
+    }
+    Ok(())
+}
+
+/// Fetches every `files[]` entry into the profile (manifest v4 §3). Any
+/// failure removes the files downloaded so far and rolls the profile back.
+async fn download_modpack_files(
+    app: &AppHandle,
+    state: &State<'_, AppState>,
+    task_id: &str,
+    files: &[ModpackFileEntry],
+    profile: &Path,
+) -> Result<(), String> {
+    let mut downloaded: Vec<PathBuf> = Vec::new();
+    for entry in files {
+        let target = files_target(profile, &entry.path)?;
+        crate::tasks::push_task_log_pub(
+            app,
+            state,
+            task_id,
+            &format!("下载 files[]: {}（{} 字节）", entry.path, entry.size),
+        )
+        .await;
+        if let Err(e) = download_file_entry(entry, &target).await {
+            for f in &downloaded {
+                std::fs::remove_file(f).ok();
+            }
+            return Err(format!("files[] 下载失败，已回滚: {e}"));
+        }
+        downloaded.push(target);
+    }
+    Ok(())
+}
+
 /// Reads just `manifest.json` out of a modpack tgz.
 fn read_manifest_from_tgz(tgz: &Path) -> Result<ModpackManifest, String> {
     let file = std::fs::File::open(tgz).map_err(|e| format!("打开整合包失败: {e}"))?;
@@ -303,6 +587,16 @@ fn validate_manifest(manifest: &ModpackManifest) -> Result<(), String> {
     Ok(())
 }
 
+/// v4 `type` check: absent and "profile" are accepted; "collection" is
+/// reserved and rejected for now.
+fn validate_pack_type(manifest: &ModpackManifest) -> Result<(), String> {
+    match manifest.pack_type.as_deref() {
+        None | Some("profile") => Ok(()),
+        Some("collection") => Err("整合包集合（collection）暂未支持".to_string()),
+        Some(other) => Err(format!("未知的整合包类型: {other}")),
+    }
+}
+
 /// Downloads the modpack when `source` is a URL into a temp file; local
 /// paths are used as-is. Returns (path, temp dir guard).
 async fn fetch_modpack_source(source: &str) -> Result<(PathBuf, TmpDir), String> {
@@ -310,7 +604,7 @@ async fn fetch_modpack_source(source: &str) -> Result<(PathBuf, TmpDir), String>
     std::fs::create_dir_all(&tmp).map_err(|e| format!("创建临时目录失败: {e}"))?;
     let guard = TmpDir(tmp.clone());
     if source.starts_with("https://") || source.starts_with("http://") {
-        let target = tmp.join("modpack.tgz");
+        let target = tmp.join("modpack.pack");
         download_modpack(source, &target).await?;
         Ok((target, guard))
     } else {
@@ -326,15 +620,19 @@ async fn fetch_modpack_source(source: &str) -> Result<(PathBuf, TmpDir), String>
 /// user adjust instance/profile names before starting the install task.
 #[tauri::command]
 pub async fn read_modpack_manifest(source: String) -> Result<ModpackManifest, String> {
-    let (tgz, _guard) = fetch_modpack_source(&source).await?;
-    read_manifest_from_tgz(&tgz)
+    let (file, _guard) = fetch_modpack_source(&source).await?;
+    match detect_container(&file)? {
+        ModpackContainer::Dspack => read_manifest_from_dspack(&file),
+        ModpackContainer::LegacyTgz => read_manifest_from_tgz(&file),
+    }
 }
 
 // ---------------------------------------------------------------------------
 // Export
 // ---------------------------------------------------------------------------
 
-/// Exports a profile as a manifest-v3 modpack tgz. Dependencies are pinned:
+/// Exports a profile as a manifest-v4 `.dspack` (pack-structure v2: plain
+/// ZIP + root `dspack.json` marker + `overrides/`). Dependencies are pinned:
 /// npm specs become the installed version, git specs become
 /// `github:owner/repo[#path:/sub]` → resolved commit sha. A custom instance
 /// icon (issue #8) is bundled as `icon.png`; the default launcher icon is
@@ -447,6 +745,7 @@ pub async fn export_modpack(
 
     let manifest = ModpackManifest {
         manifest_version: MANIFEST_VERSION,
+        pack_type: Some("profile".to_string()),
         name: name.clone(),
         display_name: input
             .display_name
@@ -472,6 +771,7 @@ pub async fn export_modpack(
         bundles: bundles.clone(),
         dependencies: pinned,
         patch,
+        files: Vec::new(),
     };
 
     let profile_pkg = serde_json::json!({
@@ -482,6 +782,7 @@ pub async fn export_modpack(
     });
 
     let mut files: Vec<(&str, Vec<u8>)> = vec![
+        ("dspack.json", DSPACK_MARKER.as_bytes().to_vec()),
         (
             "manifest.json",
             serde_json::to_vec_pretty(&manifest)
@@ -493,8 +794,10 @@ pub async fn export_modpack(
                 .map_err(|e| format!("序列化 package.json 失败: {e}"))?,
         ),
     ];
+    // pack-structure v2: user files live under overrides/ (file takes
+    // precedence over the manifest's inline patch on import).
     if let Some(p) = &manifest.patch {
-        files.push(("cordis.patch.yml", p.clone().into_bytes()));
+        files.push(("overrides/cordis.patch.yml", p.clone().into_bytes()));
     }
     if let Ok(lock) = std::fs::read(profile_dir.join("pnpm-lock.yaml")) {
         files.push(("pnpm-lock.yaml", lock));
@@ -506,9 +809,9 @@ pub async fn export_modpack(
         files.push(("icon.png", png));
     }
 
-    let out = write_modpack_tgz(
+    let out = write_modpack_dspack(
         Path::new(&input.out_dir),
-        &format!("{name}-{version}.tgz"),
+        &format!("{name}-{version}.dspack"),
         &files,
     )?;
     crate::log_info!("已导出整合包 {}", out.display());
@@ -645,16 +948,29 @@ async fn do_import_modpack(
     task_id: &str,
     input: &ImportModpackInput,
 ) -> Result<String, String> {
-    // 1. Obtain the tgz locally, extract, and validate the manifest.
-    let (tgz, guard) = fetch_modpack_source(&input.source).await?;
+    // 1. Obtain the pack locally, detect the container, and extract it.
+    let (pack, guard) = fetch_modpack_source(&input.source).await?;
     let tmp = guard.0.clone();
     let unpacked = tmp.join("pack");
-    extract_modpack_tgz(&tgz, &unpacked)?;
+    let container = detect_container(&pack)?;
+    match container {
+        ModpackContainer::Dspack => extract_modpack_dspack(&pack, &unpacked)?,
+        ModpackContainer::LegacyTgz => extract_modpack_tgz(&pack, &unpacked)?,
+    }
     let manifest_raw = std::fs::read_to_string(unpacked.join("manifest.json"))
         .map_err(|_| "整合包缺少 manifest.json".to_string())?;
     let manifest: ModpackManifest =
         serde_json::from_str(&manifest_raw).map_err(|e| format!("解析 manifest.json 失败: {e}"))?;
     validate_manifest(&manifest)?;
+    if container == ModpackContainer::Dspack {
+        if manifest.manifest_version != 4 {
+            return Err(format!(
+                ".dspack 容器要求 manifestVersion 4（实际为 {}）",
+                manifest.manifest_version
+            ));
+        }
+        validate_pack_type(&manifest)?;
+    }
 
     // 2. Resolve names. Profile: input override → manifest profileName →
     //    "pack" (keeping `web` clean). Instance: input override → plain-string
@@ -927,6 +1243,30 @@ async fn do_import_modpack(
         return Err(last_err);
     }
 
+    // 5. pack-structure v2: overrides/ user files land on the profile root
+    //    (file-level overwrite, after pnpm's runtime defaults).
+    if container == ModpackContainer::Dspack {
+        let count = apply_overrides(&unpacked, &dest)?;
+        if count > 0 {
+            crate::tasks::push_task_log_pub(
+                app,
+                state,
+                task_id,
+                &format!("已应用 overrides/ 的 {count} 个文件"),
+            )
+            .await;
+        }
+    }
+
+    // 6. manifest v4 files[]: heavy content fetched on demand, each file
+    //    verified by sha256 + size; any failure rolls the profile back.
+    if !manifest.files.is_empty() {
+        if let Err(e) = download_modpack_files(app, state, task_id, &manifest.files, &dest).await {
+            let _ = std::fs::remove_dir_all(&dest);
+            return Err(e);
+        }
+    }
+
     // 7. Register / update the instance with the pack profile as its default.
     let (instance_id, final_instance_name) = if let Some(id) = target_instance_id {
         let mut cfg = state.config.lock().unwrap();
@@ -1150,6 +1490,7 @@ importers:
     fn manifest_pkg_deps_converts_v3_coords() {
         let manifest = ModpackManifest {
             manifest_version: 3,
+            pack_type: None,
             name: "x".to_string(),
             display_name: None,
             version: "1.0.0".to_string(),
@@ -1168,6 +1509,7 @@ importers:
                 ("dsh-pet".to_string(), "0.2.0".to_string()),
             ]),
             patch: None,
+            files: vec![],
         };
         let deps = manifest_pkg_deps(&manifest);
         assert_eq!(deps["repo"], "github:owner/repo#abc1234");
@@ -1176,19 +1518,78 @@ importers:
     }
 
     #[test]
-    fn tgz_round_trip() {
+    fn dspack_round_trip() {
         let dir = std::env::temp_dir().join(format!("dsh-modpack-test-{}", uuid::Uuid::new_v4()));
         let files: Vec<(&str, Vec<u8>)> = vec![
+            ("dspack.json", DSPACK_MARKER.as_bytes().to_vec()),
             ("manifest.json", b"{}".to_vec()),
-            ("package.json", b"{}".to_vec()),
+            ("overrides/cordis.patch.yml", b"[]".to_vec()),
         ];
-        let tgz = write_modpack_tgz(&dir, "x-1.0.0.tgz", &files).unwrap();
+        let dspack = write_modpack_dspack(&dir, "x-1.0.0.dspack", &files).unwrap();
+        assert_eq!(detect_container(&dspack).unwrap(), ModpackContainer::Dspack);
         let out = dir.join("out");
-        extract_modpack_tgz(&tgz, &out).unwrap();
+        extract_modpack_dspack(&dspack, &out).unwrap();
         assert_eq!(
             std::fs::read_to_string(out.join("manifest.json")).unwrap(),
             "{}"
         );
+        assert_eq!(
+            std::fs::read_to_string(out.join("overrides/cordis.patch.yml")).unwrap(),
+            "[]"
+        );
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn dspack_marker_is_required() {
+        let dir = std::env::temp_dir().join(format!("dsh-modpack-test-{}", uuid::Uuid::new_v4()));
+        // A plain ZIP without dspack.json must be rejected as a dspack.
+        let files: Vec<(&str, Vec<u8>)> = vec![("manifest.json", b"{}".to_vec())];
+        let zip_path = write_modpack_dspack(&dir, "plain.zip", &files).unwrap();
+        assert_eq!(
+            detect_container(&zip_path).unwrap(),
+            ModpackContainer::Dspack
+        );
+        let err = extract_modpack_dspack(&zip_path, &dir.join("out")).unwrap_err();
+        assert!(err.contains("dspack.json"), "unexpected error: {err}");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn pack_type_validation() {
+        let mut manifest = ModpackManifest {
+            manifest_version: 4,
+            pack_type: None,
+            name: "x".to_string(),
+            display_name: None,
+            version: "1.0.0".to_string(),
+            description: None,
+            author: None,
+            icon: None,
+            dsh_version: None,
+            profile_name: None,
+            bundles: vec![],
+            dependencies: BTreeMap::new(),
+            patch: None,
+            files: vec![],
+        };
+        assert!(validate_pack_type(&manifest).is_ok());
+        manifest.pack_type = Some("profile".to_string());
+        assert!(validate_pack_type(&manifest).is_ok());
+        manifest.pack_type = Some("collection".to_string());
+        assert!(validate_pack_type(&manifest)
+            .unwrap_err()
+            .contains("暂未支持"));
+        manifest.pack_type = Some("wat".to_string());
+        assert!(validate_pack_type(&manifest).is_err());
+    }
+
+    #[test]
+    fn files_target_rejects_traversal() {
+        let profile = Path::new("/profile");
+        assert!(files_target(profile, "data/models/x.bin").is_ok());
+        assert!(files_target(profile, "../escape").is_err());
+        assert!(files_target(profile, "/absolute").is_err());
+        assert!(files_target(profile, "").is_err());
     }
 }
