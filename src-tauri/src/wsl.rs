@@ -97,7 +97,8 @@ pub fn list_distros() -> Vec<String> {
 }
 
 /// wsl.exe prints UTF-16LE when its stdout is piped; decode and clean the
-/// distro list.
+/// distro list. Only referenced from Windows builds and unit tests.
+#[cfg_attr(not(windows), allow(dead_code))]
 pub(crate) fn decode_distro_list(bytes: &[u8]) -> Vec<String> {
     let utf16ish = bytes.len() >= 2 && (bytes.starts_with(&[0xFF, 0xFE]) || bytes[1] == 0);
     let text = if utf16ish {
