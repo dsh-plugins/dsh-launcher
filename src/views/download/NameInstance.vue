@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { Message } from '@arco-design/web-vue'
@@ -12,12 +12,26 @@ const { t } = useI18n()
 const store = useLauncherStore()
 
 const version = computed(() => String(route.params.version ?? ''))
-const installedVersion = computed(() => store.versions.find((v) => v.version === version.value))
+const installedVersion = computed(() => store.versions.find((v) => v.version === version.value && !v.wsl))
 const isSourceBuild = computed(
   () =>
     !installedVersion.value &&
     store.remoteVersions.some((v) => v.version === version.value && v.source === 'github'),
 )
+
+// Runtime environment (issue #19): Windows local or a WSL distro.
+const WINDOWS = '__windows__'
+const runtime = ref<string>(WINDOWS)
+const distros = ref<string[]>([])
+const wslSelected = computed(() => runtime.value !== WINDOWS)
+
+onMounted(async () => {
+  try {
+    distros.value = await api.listWslDistros()
+  } catch {
+    distros.value = []
+  }
+})
 
 // Default instance name: version string, deduplicated against existing names.
 function suggestName(): string {
@@ -54,7 +68,7 @@ const canConfirm = computed(
   () =>
     !busy.value &&
     instanceName.value.trim().length > 0 &&
-    !!homeId.value &&
+    (wslSelected.value ? !isSourceBuild.value : !!homeId.value) &&
     !store.instances.some((i) => i.name === instanceName.value.trim()) &&
     !store.instanceNameBusy(instanceName.value.trim()),
 )
@@ -63,12 +77,16 @@ async function onConfirm() {
   if (!canConfirm.value) return
   busy.value = true
   try {
-    await api.startCreateInstanceTask(
-      instanceName.value.trim(),
-      version.value,
-      dedicated.value ? null : homeId.value!,
-      dedicated.value,
-    )
+    if (wslSelected.value) {
+      await api.startCreateWslInstanceTask(instanceName.value.trim(), version.value, runtime.value)
+    } else {
+      await api.startCreateInstanceTask(
+        instanceName.value.trim(),
+        version.value,
+        dedicated.value ? null : homeId.value!,
+        dedicated.value,
+      )
+    }
     // Pull the task list so the task page shows the new task immediately.
     await store.refreshTasks()
     Message.success(t('download.taskAdded'))
@@ -97,8 +115,25 @@ async function onConfirm() {
       />
     </div>
 
+    <!-- Runtime environment: Windows local or a WSL distro (issue #19) -->
+    <div v-if="distros.length" class="dl-card">
+      <div class="dl-card-title">
+        <h3>{{ t('download.runtimeEnv') }}</h3>
+      </div>
+      <a-radio-group v-model="runtime" type="button">
+        <a-radio :value="WINDOWS">{{ t('download.runtimeWindows') }}</a-radio>
+        <a-radio v-for="d in distros" :key="d" :value="d">WSL（{{ d }}）</a-radio>
+      </a-radio-group>
+      <a-alert v-if="wslSelected && isSourceBuild" type="warning" class="dedicated-hint">
+        {{ t('download.wslAlphaUnsupported') }}
+      </a-alert>
+      <a-alert v-else-if="wslSelected" type="info" class="dedicated-hint">
+        {{ t('download.wslHomeHint', { distro: runtime }) }}
+      </a-alert>
+    </div>
+
     <!-- DSH_HOME selection -->
-    <div class="dl-card">
+    <div v-if="!wslSelected" class="dl-card">
       <div class="dl-card-title">
         <h3>{{ t('download.chooseHome') }}</h3>
       </div>
@@ -115,13 +150,13 @@ async function onConfirm() {
 
     <!-- Action -->
     <div class="confirm-area">
-      <a-alert v-if="isSourceBuild" type="warning" class="confirm-hint">
+      <a-alert v-if="!wslSelected && isSourceBuild" type="warning" class="confirm-hint">
         {{ t('download.sourceBuildHint') }}
       </a-alert>
-      <a-alert v-if="installedVersion" type="info" class="confirm-hint">
+      <a-alert v-if="!wslSelected && installedVersion" type="info" class="confirm-hint">
         {{ t('download.alreadyInstalled') }}
       </a-alert>
-      <a-alert v-else type="info" class="confirm-hint">
+      <a-alert v-else-if="!wslSelected" type="info" class="confirm-hint">
         {{ t('download.willInstall', { version }) }}
       </a-alert>
       <a-button
@@ -132,7 +167,13 @@ async function onConfirm() {
         :loading="busy"
         @click="onConfirm"
       >
-        {{ installedVersion ? t('download.createOnly') : t('download.startDownload') }}
+        {{
+          wslSelected
+            ? t('download.createWslInstance')
+            : installedVersion
+              ? t('download.createOnly')
+              : t('download.startDownload')
+        }}
       </a-button>
     </div>
   </div>

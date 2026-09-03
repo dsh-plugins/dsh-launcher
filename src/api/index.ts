@@ -189,6 +189,96 @@ async function mockCall<T>(cmd: string, args?: Record<string, unknown>): Promise
   }
 
   switch (cmd) {
+    case 'list_wsl_distros':
+      return ['Ubuntu'] as T
+    case 'start_create_wsl_instance_task': {
+      const input = (args?.input ?? {}) as { name?: string; version?: string; distro?: string }
+      const name = String(input.name ?? '').trim()
+      const version = String(input.version ?? '').trim()
+      const distro = String(input.distro ?? '').trim()
+      if (!name) fail('实例名称不能为空')
+      if (!version || !distro) fail('版本与 WSL 发行版不能为空')
+      if (db.instances.some((i) => i.name === name)) fail('同名实例已存在')
+
+      const task: TaskInfo = {
+        id: mockNewId('t'),
+        kind: 'create-instance',
+        label: `在 WSL（${distro}）中创建实例「${name}」（DSH ${version}）`,
+        version,
+        state: 'running',
+        percent: 0,
+        created_at: Date.now(),
+        message: null,
+        instance_id: null,
+        instance_name: name,
+        logs: [],
+      }
+      mockTasks.set(task.id, task)
+      emitTaskProgress({ id: task.id, state: 'running', percent: 0, message: null, instance_id: null })
+
+      // Simulate WSL provisioning: node → pnpm → version install → template.
+      const fakeLogs = [
+        '正在查询 Node.js 最新 LTS 版本…',
+        `正在为 WSL（${distro}）安装 Node.js v22.14.0…`,
+        'WSL Node.js v22.14.0 安装完成',
+        `pnpm install（WSL） added 213 packages in 2s`,
+        'WSL web profile 模板 __temp__ 已创建',
+      ]
+      let step = 0
+      const timer = setInterval(() => {
+        const t = mockTasks.get(task.id)
+        if (!t || t.state !== 'running') {
+          clearInterval(timer)
+          return
+        }
+        if (step < fakeLogs.length) {
+          const line = fakeLogs[step]
+          t.logs.push(line)
+          t.percent = Math.min(95, t.percent + 18)
+          emitTaskLog({ id: task.id, line })
+          emitTaskProgress({ id: task.id, state: 'running', percent: t.percent, message: null, instance_id: null })
+          step += 1
+          return
+        }
+        clearInterval(timer)
+        const cur = loadDb()
+        const safe = name.replace(/[^\w一-龥.-]+/g, '_')
+        const homePath = `/home/user/.dsh-launcher/homes/${safe}`
+        let home = cur.homes.find((h) => h.path === homePath && h.wsl === distro)
+        if (!home) {
+          home = { id: mockNewId('h'), name, path: homePath, wsl: distro }
+          cur.homes.push(home)
+        }
+        let ver = cur.versions.find((v) => v.version === version && v.wsl === distro)
+        if (!ver) {
+          ver = {
+            id: mockNewId('v'),
+            version,
+            dir: `/home/user/.dsh-launcher/versions/${version}`,
+            wsl: distro,
+          }
+          cur.versions.push(ver)
+        }
+        const inst: DshInstance = {
+          id: mockNewId('i'),
+          name,
+          version_id: ver.id,
+          home_id: home.id,
+          env_overrides: {},
+          default_profile: 'web',
+          last_profile: null,
+          icon: null,
+          port: null,
+        }
+        cur.instances.push(inst)
+        saveDb(cur)
+        t.state = 'done'
+        t.percent = 100
+        t.instance_id = inst.id
+        emitTaskProgress({ id: t.id, state: 'done', percent: 100, message: null, instance_id: inst.id })
+      }, 700)
+      return task.id as T
+    }
     case 'list_homes':
       return db.homes as T
     case 'default_dedicated_home_path': {
@@ -914,6 +1004,11 @@ export const api = {
 
   startCreateInstanceTask: (name: string, version: string, homeId: string | null, dedicated: boolean) =>
     call<string>('start_create_instance_task', { name, version, home_id: homeId, dedicated }),
+  /** WSL distros available for WSL instances (issue #19); empty when WSL is unavailable. */
+  listWslDistros: () => call<string[]>('list_wsl_distros'),
+  /** Starts the WSL instance creation task: provisions node/pnpm/version + HOME inside the distro. */
+  startCreateWslInstanceTask: (name: string, version: string, distro: string) =>
+    call<string>('start_create_wsl_instance_task', { input: { name, version, distro } }),
   listTasks: () => call<TaskInfo[]>('list_tasks'),
   removeTask: (id: string) => call<void>('remove_task', { id }),
   cancelTask: (id: string) => call<void>('cancel_task', { id }),

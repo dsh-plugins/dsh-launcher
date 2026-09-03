@@ -15,6 +15,7 @@ mod terminal;
 mod tray;
 mod update;
 mod windows;
+mod wsl;
 
 use std::collections::HashMap;
 use std::sync::Mutex as StdMutex;
@@ -176,10 +177,12 @@ pub fn run() {
             commands::create_home,
             commands::default_dedicated_home_path,
             commands::remove_home,
+            commands::list_wsl_distros,
             commands::list_versions,
             commands::fetch_available_versions,
             commands::remove_version,
             tasks::start_create_instance_task,
+            tasks::start_create_wsl_instance_task,
             tasks::list_tasks,
             tasks::remove_task,
             tasks::cancel_task,

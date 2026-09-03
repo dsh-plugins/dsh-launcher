@@ -19,6 +19,9 @@ pub struct RunningInstance {
     pub kill: Arc<Notify>,
     pub profile: String,
     pub url: Option<String>,
+    /// WSL inner process (distro + captured PID) for a clean stop (issue
+    /// #19): killing the local wsl.exe alone could orphan the inner node.
+    pub wsl: Option<(String, Arc<Mutex<Option<u32>>>)>,
 }
 
 fn url_re() -> &'static Regex {
@@ -216,13 +219,15 @@ pub async fn start_instance_process(
         .find(|v| v.id == inst.version_id)
         .ok_or_else(|| "实例引用的 DSH 版本未安装".to_string())?;
 
-    let bin = version_bin(&version.dir);
-    if !version_bin_ready(&version.dir) {
-        return Err(format!(
-            "版本 {} 安装不完整（缺少 {}），请重新安装",
-            version.version,
-            bin.display()
-        ));
+    let home = cfg
+        .homes
+        .iter()
+        .find(|h| h.id == inst.home_id)
+        .cloned()
+        .ok_or_else(|| "DSH_HOME 不存在".to_string())?;
+    let wsl_distro = home.wsl.clone();
+    if wsl_distro.is_some() && version.wsl != wsl_distro {
+        return Err("实例的 DSH 版本与其 WSL 运行环境（发行版）不匹配".to_string());
     }
 
     // Guard: already running/starting.
@@ -233,43 +238,96 @@ pub async fn start_instance_process(
         }
     }
 
-    let mut cmd = Command::new(node());
-    hide_console(&mut cmd);
-    cmd.arg(&bin).arg("--profile").arg(profile);
+    let env = build_env(&cfg, instance_id)?;
+
+    // WSL inner-PID capture (issue #19): shared with the stdout watcher and
+    // stop_instance_process.
+    let wsl_proc = wsl_distro
+        .clone()
+        .map(|d| (d, Arc::new(Mutex::new(Option::<u32>::None))));
+
     // Web-app profiles (their bundle list includes @deepseek-ai/dsh-web-app)
     // get a random free port; other profiles are managed purely as processes
     // (no URL/webview). We detect the web bundle rather than relying on the
     // profile being literally named "web" so user-named web profiles work.
-    let home_path = cfg
-        .homes
-        .iter()
-        .find(|h| h.id == inst.home_id)
-        .map(|h| h.path.clone());
-    let is_web = home_path
-        .as_deref()
-        .map(|hp| is_web_profile(hp, profile))
-        .unwrap_or(profile == "web");
-    if is_web {
-        // Issue #21: a pinned port (1-65535) is used verbatim; otherwise 0
-        // binds a random free port so several instances don't collide.
-        let port = inst
-            .port
-            .map(|p| p.to_string())
-            .unwrap_or_else(|| "0".to_string());
-        cmd.arg("--host").arg("127.0.0.1").arg("--port").arg(port);
-        // `--no-open` was added to dsh-web-app in 0.1.0-rc.8: the launcher
-        // embeds the UI in its own webview, so the app must not open the
-        // system browser. Feature-detect the flag in the installed bundle's
-        // startup.js rather than comparing pre-release versions.
-        if web_app_supports_no_open(&version.dir) {
-            cmd.arg("--no-open");
+    let mut cmd = if let Some(distro) = &wsl_distro {
+        // WSL instance: run the distro-installed CLI through wsl.exe. The
+        // wrapper echoes the inner PID (marker), then execs node — stdout /
+        // stderr piping, URL capture and log files are unchanged. File
+        // probes go through the \\wsl$\ UNC share.
+        let bin_linux = format!(
+            "{}/node_modules/@deepseek-ai/dsh/lib/bin.js",
+            version.dir.to_string_lossy()
+        );
+        if !crate::wsl::wsl_test(distro, "-f", &bin_linux).await {
+            return Err(format!(
+                "版本 {} 在 WSL（{distro}）中安装不完整，请重新安装",
+                version.version
+            ));
         }
-    }
-
-    let env = build_env(&cfg, instance_id)?;
-    for (k, v) in env {
-        cmd.env(k, v);
-    }
+        let root = crate::wsl::WslRoot::resolve(distro).await?;
+        let home_linux = home.path.to_string_lossy().to_string();
+        let is_web =
+            is_web_profile(&crate::wsl::unc_path(distro, &home_linux), profile) || profile == "web";
+        let mut cli_args = vec!["--profile".to_string(), profile.to_string()];
+        if is_web {
+            // Issue #21: a pinned port (1-65535) is used verbatim; otherwise
+            // 0 binds a random free port.
+            let port = inst
+                .port
+                .map(|p| p.to_string())
+                .unwrap_or_else(|| "0".to_string());
+            cli_args.extend([
+                "--host".to_string(),
+                "127.0.0.1".to_string(),
+                "--port".to_string(),
+                port,
+            ]);
+            if web_app_supports_no_open(&crate::wsl::unc_path(
+                distro,
+                &version.dir.to_string_lossy(),
+            )) {
+                cli_args.push("--no-open".to_string());
+            }
+        }
+        crate::wsl::wsl_bash(
+            distro,
+            &crate::wsl::launch_script(&home_linux, &root.node_exe(), &bin_linux, &env, &cli_args),
+        )
+    } else {
+        let bin = version_bin(&version.dir);
+        if !version_bin_ready(&version.dir) {
+            return Err(format!(
+                "版本 {} 安装不完整（缺少 {}），请重新安装",
+                version.version,
+                bin.display()
+            ));
+        }
+        let mut cmd = Command::new(node());
+        hide_console(&mut cmd);
+        cmd.arg(&bin).arg("--profile").arg(profile);
+        let is_web = is_web_profile(&home.path, profile);
+        if is_web {
+            // Issue #21: a pinned port (1-65535) is used verbatim; otherwise 0
+            // binds a random free port so several instances don't collide.
+            let port = inst
+                .port
+                .map(|p| p.to_string())
+                .unwrap_or_else(|| "0".to_string());
+            cmd.arg("--host").arg("127.0.0.1").arg("--port").arg(port);
+            // `--no-open` was added to dsh-web-app in 0.1.0-rc.8: the launcher
+            // embeds the UI in its own webview, so the app must not open the
+            // system browser. Feature-detect the flag in the installed bundle's
+            // startup.js rather than comparing pre-release versions.
+            if web_app_supports_no_open(&version.dir) {
+                cmd.arg("--no-open");
+            }
+        }
+        for (k, v) in env {
+            cmd.env(k, v);
+        }
+        cmd
+    };
 
     cmd.stdout(std::process::Stdio::piped());
     cmd.stderr(std::process::Stdio::piped());
@@ -319,6 +377,7 @@ pub async fn start_instance_process(
             kill: kill_switch.clone(),
             profile: profile.to_string(),
             url: None,
+            wsl: wsl_proc.clone(),
         },
     );
     crate::tray::rebuild_tray_menu(app).await;
@@ -373,10 +432,19 @@ pub async fn start_instance_process(
         let reader_id = instance_id.to_string();
         let reader_profile = profile.to_string();
         let reader_log = log_file.clone();
+        let reader_wsl = wsl_proc.clone();
         tauri::async_runtime::spawn(async move {
             let state = reader_app.state::<AppState>();
             let mut lines = BufReader::new(out).lines();
             while let Ok(Some(line)) = lines.next_line().await {
+                // WSL launch wrapper marker: capture the inner PID, keep it
+                // out of the instance log.
+                if let Some((_, pid_slot)) = &reader_wsl {
+                    if let Some(p) = crate::wsl::parse_pid_marker(&line) {
+                        *pid_slot.lock().await = Some(p);
+                        continue;
+                    }
+                }
                 log_line(&reader_log, &line).await;
                 if let Some(cap) = url_re().captures(&line) {
                     let url = cap[1].to_string();
@@ -426,13 +494,13 @@ pub async fn stop_instance_process(
     state: &State<'_, AppState>,
     instance_id: &str,
 ) -> Result<(), String> {
-    let kill = state
-        .running
-        .lock()
-        .await
-        .get(instance_id)
-        .map(|r| r.kill.clone());
-    let Some(kill) = kill else {
+    let entry = {
+        let running = state.running.lock().await;
+        running
+            .get(instance_id)
+            .map(|r| (r.kill.clone(), r.wsl.clone()))
+    };
+    let Some((kill, wsl)) = entry else {
         crate::log_debug!("停止实例 {instance_id}：注册表无记录，补发 stopped 状态");
         emit_status(
             app,
@@ -447,6 +515,15 @@ pub async fn stop_instance_process(
         return Ok(());
     };
     crate::log_info!("收到停止实例 {instance_id} 的请求");
+    // WSL instance: SIGTERM the inner node process first — killing the local
+    // wsl.exe wrapper alone could leave it running.
+    if let Some((distro, pid_slot)) = &wsl {
+        if let Some(pid) = *pid_slot.lock().await {
+            let _ = crate::wsl::wsl_output(distro, &["kill".into(), pid.to_string()]).await;
+            // Give node a moment to shut down cleanly before the wrapper goes.
+            tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        }
+    }
     kill.notify_one();
     // Wait for the waiter task to finish cleanup so callers (e.g. the restart
     // flow) observe a clean registry on return.

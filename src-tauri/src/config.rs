@@ -12,6 +12,11 @@ pub struct DshHome {
     pub id: String,
     pub name: String,
     pub path: PathBuf,
+    /// WSL distro name when this HOME lives inside WSL (issue #19): `path`
+    /// then holds a Linux path string inside that distro. `None` = local
+    /// Windows HOME.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wsl: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -19,6 +24,10 @@ pub struct DshVersion {
     pub id: String,
     pub version: String,
     pub dir: PathBuf,
+    /// WSL distro this version is installed into (issue #19); `dir` is then
+    /// a Linux path inside the distro. `None` = local Windows install.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wsl: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -295,6 +304,7 @@ pub fn ensure_user_dsh_home(cfg: &mut Config) {
         id: "home-user-dsh".to_string(),
         name: "用户默认 (~/.dsh)".to_string(),
         path: dsh,
+        wsl: None,
     });
 }
 

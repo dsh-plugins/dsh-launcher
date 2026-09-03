@@ -60,6 +60,7 @@ pub(crate) fn create_home_record(
         id: new_id("h"),
         name: name.to_string(),
         path: path_buf,
+        wsl: None,
     };
     let mut cfg = state.config.lock().unwrap();
     cfg.homes.push(home.clone());
@@ -216,14 +217,27 @@ pub fn remove_version(state: State<'_, AppState>, id: String) -> Result<(), Stri
     };
     cfg.versions.retain(|v| v.id != id);
     save_state(&state, &cfg)?;
-    // Best-effort removal of the install directory.
-    let _ = std::fs::remove_dir_all(&version.dir);
+    // Best-effort removal of the install directory (inside the distro for
+    // WSL versions, issue #19).
+    if let Some(distro) = &version.wsl {
+        let dir = version.dir.to_string_lossy().to_string();
+        let _ = std::process::Command::new("wsl.exe")
+            .args(["-d", distro, "--", "rm", "-rf", &dir])
+            .status();
+    } else {
+        let _ = std::fs::remove_dir_all(&version.dir);
+    }
     Ok(())
 }
 
 // ---------------------------------------------------------------------------
 // Instances
 // ---------------------------------------------------------------------------
+
+#[tauri::command]
+pub fn list_wsl_distros() -> Vec<String> {
+    crate::wsl::list_distros()
+}
 
 #[tauri::command]
 pub fn list_instances(state: State<'_, AppState>) -> Result<Vec<DshInstance>, String> {
@@ -384,6 +398,16 @@ pub fn copy_instance(
     if !cfg.versions.iter().any(|v| v.id == source.version_id) {
         return Err("DSH 版本不存在".to_string());
     }
+    // WSL 实例（issue #19）：复制为新的专属 HOME 需要在发行版内创建文件，
+    // 暂不支持；共享源 HOME 的纯记录复制不受限。
+    if input.new_home
+        && cfg
+            .homes
+            .iter()
+            .any(|h| h.id == source.home_id && h.wsl.is_some())
+    {
+        return Err("WSL 实例暂不支持复制到新的专属 HOME".to_string());
+    }
 
     // Resolve the DSH_HOME: reuse the source's, or create a dedicated one.
     let home_id = if input.new_home {
@@ -407,6 +431,7 @@ pub fn copy_instance(
                 id: new_id("h"),
                 name: name.clone(),
                 path: path_buf,
+                wsl: None,
             };
             cfg.homes.push(home.clone());
             home.id
@@ -1022,19 +1047,30 @@ pub fn open_instance_directory(
     state: State<'_, AppState>,
     instance_id: String,
 ) -> Result<String, String> {
-    let home = {
+    let (home, wsl) = {
         let cfg = state.config.lock().unwrap();
         let inst = cfg
             .instances
             .iter()
             .find(|i| i.id == instance_id)
             .ok_or_else(|| "实例不存在".to_string())?;
-        cfg.homes
+        let h = cfg
+            .homes
             .iter()
             .find(|h| h.id == inst.home_id)
-            .map(|h| h.path.clone())
-            .ok_or_else(|| "DSH_HOME 不存在".to_string())?
+            .ok_or_else(|| "DSH_HOME 不存在".to_string())?;
+        (h.path.clone(), h.wsl.clone())
     };
+    // WSL home (issue #19): open the distro's \\wsl$\ UNC share instead.
+    if let Some(distro) = wsl {
+        let unc = crate::wsl::unc_path(&distro, &home.to_string_lossy());
+        crate::log_info!(
+            "在文件管理器中打开实例 {instance_id} 的 WSL DSH_HOME {}",
+            unc.display()
+        );
+        open::that(&unc).map_err(|e| format!("打开目录失败: {e}"))?;
+        return Ok(unc.to_string_lossy().to_string());
+    }
     if !home.is_dir() {
         std::fs::create_dir_all(&home).map_err(|e| format!("创建目录失败: {e}"))?;
     }

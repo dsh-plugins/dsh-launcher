@@ -477,6 +477,398 @@ fn rand_port_offset() -> u16 {
     (nanos % 30000) as u16
 }
 
+// ---------------------------------------------------------------------------
+// WSL instances (issue #19)
+// ---------------------------------------------------------------------------
+
+/// Installs an npm-published DSH version inside a WSL distro: the same
+/// `pnpm install @deepseek-ai/dsh@<v> --prefix <dir>` as the Windows path,
+/// executed inside the distro so pnpm pulls Linux platform binaries.
+/// Alpha (from-repo) versions are not supported for WSL yet.
+pub(crate) async fn install_version_streamed_wsl(
+    app: &AppHandle,
+    state: &State<'_, AppState>,
+    task_id: &str,
+    version: &str,
+    distro: &str,
+) -> Result<DshVersion, String> {
+    {
+        let cfg = state.config.lock().unwrap();
+        if let Some(v) = cfg
+            .versions
+            .iter()
+            .find(|v| v.version == *version && v.wsl.as_deref() == Some(distro))
+        {
+            return Ok(v.clone());
+        }
+    }
+    if !npm_has_version(version).await {
+        return Err(format!(
+            "版本 {version} 未发布到 npm；WSL 实例暂不支持从源码构建的 alpha 版本"
+        ));
+    }
+
+    let root = crate::wsl::WslRoot::resolve(distro).await?;
+    crate::wsl::ensure_node(app, state, task_id, distro, &root).await?;
+    let pnpm = crate::wsl::ensure_pnpm(app, state, task_id, distro, &root).await?;
+
+    let dir = root.version_dir(version);
+    crate::wsl::wsl_output(distro, &["mkdir".into(), "-p".into(), dir.clone()]).await?;
+    // Opt into dependency build scripts (node-pty, koffi, …) — the WSL
+    // counterpart of crate::plugins::ensure_build_scripts_allowed.
+    let ws = "packages:\n  - .\n\nonlyBuiltDependencies:\n  - '*'\n\nallowBuilds:\n";
+    let script = format!(
+        "printf %s {} > {}",
+        crate::wsl::sh_quote(ws),
+        crate::wsl::sh_quote(&format!("{dir}/pnpm-workspace.yaml"))
+    );
+    crate::wsl::wsl_output(distro, &["bash".into(), "-lc".into(), script]).await?;
+
+    let registry_arg = std::env::var("DSH_NPM_REGISTRY")
+        .ok()
+        .map(|r| r.trim().to_string())
+        .filter(|r| !r.is_empty())
+        .map(|r| format!("--registry {}", crate::wsl::sh_quote(&r)))
+        .unwrap_or_default();
+    for attempt in 1..=2 {
+        let script = format!(
+            "export PATH={}:\"$PATH\"; export CI=true; {} install --prefix {} --store-dir {} --loglevel=http --fetch-timeout 300000 --fetch-retries 5 --fetch-retry-maxtimeout 120000 --network-concurrency 4 {} {}",
+            crate::wsl::sh_quote(&root.node_bin_dir()),
+            crate::wsl::sh_quote(&pnpm),
+            crate::wsl::sh_quote(&dir),
+            crate::wsl::sh_quote(&root.pnpm_store()),
+            registry_arg,
+            crate::wsl::sh_quote(&format!("@deepseek-ai/dsh@{version}")),
+        );
+        let cmd = crate::wsl::wsl_bash(distro, &script);
+        match run_streamed_command(app, state, task_id, cmd, "pnpm install（WSL）").await {
+            Ok(()) => break,
+            Err(_e) if attempt == 1 && task_log_mentions_ignored_builds(state, task_id) => {
+                push_task_log(
+                    app,
+                    state,
+                    task_id,
+                    "pnpm 11 拦截了构建脚本，正在批准 allowBuilds 后重试…",
+                )
+                .await;
+                crate::wsl::wsl_output(
+                    distro,
+                    &[
+                        "sed".into(),
+                        "-i".into(),
+                        "s/set this to true or false/true/".into(),
+                        format!("{dir}/pnpm-workspace.yaml"),
+                    ],
+                )
+                .await?;
+            }
+            Err(e) => return Err(e),
+        }
+    }
+
+    register_version(
+        state,
+        version,
+        std::path::PathBuf::from(&dir),
+        Some(distro.to_string()),
+    )
+}
+
+/// WSL counterpart of `ensure_web_profile_template`: boots the installed DSH
+/// inside the distro with `--profile web`, waits for the web URL (profile
+/// materialized), kills it, then copies `profiles/web` to
+/// `profiles/__temp__` inside the distro.
+pub(crate) async fn ensure_web_profile_template_wsl(
+    app: &AppHandle,
+    state: &State<'_, AppState>,
+    task_id: &str,
+    distro: &str,
+    home: &str,
+    version: &DshVersion,
+) -> Result<(), String> {
+    let profiles = format!("{home}/profiles");
+    let temp_dir = format!("{profiles}/__temp__");
+    if crate::wsl::wsl_test(distro, "-d", &temp_dir).await {
+        return Ok(());
+    }
+
+    let root = crate::wsl::WslRoot::resolve(distro).await?;
+    let bin = format!(
+        "{}/node_modules/@deepseek-ai/dsh/lib/bin.js",
+        version.dir.to_string_lossy()
+    );
+    let port = 20000 + rand_port_offset();
+    let msg = format!("正在初始化 WSL web profile（端口 {port}）…");
+    push_task_log(app, state, task_id, &msg).await;
+
+    let script = crate::wsl::launch_script(
+        home,
+        &root.node_exe(),
+        &bin,
+        &[("DSH_HOME".to_string(), home.to_string())],
+        &[
+            "--profile".to_string(),
+            "web".to_string(),
+            "--host".to_string(),
+            "127.0.0.1".to_string(),
+            "--port".to_string(),
+            port.to_string(),
+        ],
+    );
+    let mut child = crate::wsl::wsl_bash(distro, &script)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("启动 WSL DSH 生成 profile 失败: {e}"))?;
+
+    let mut pid: Option<u32> = None;
+    let mut ready = false;
+    let mut timer = tokio::time::interval(std::time::Duration::from_millis(300));
+    let mut attempts = 0;
+    if let Some(out) = child.stdout.take() {
+        let mut reader = BufReader::new(out).lines();
+        loop {
+            tokio::select! {
+                line = reader.next_line() => {
+                    match line {
+                        Ok(Some(l)) => {
+                            let l = l.trim().to_string();
+                            if let Some(p) = crate::wsl::parse_pid_marker(&l) {
+                                pid = Some(p);
+                                continue;
+                            }
+                            if !l.is_empty() {
+                                push_task_log(app, state, task_id, &l).await;
+                            }
+                            if l.contains("dsh web: http") {
+                                ready = true;
+                                break;
+                            }
+                        }
+                        _ => break,
+                    }
+                }
+                _ = timer.tick() => {
+                    attempts += 1;
+                    if attempts > 200 { break; } // ~60s safety cap
+                }
+            }
+        }
+    }
+
+    // Stop the inner node process first (the wrapper exec'd it, so killing
+    // the local wsl.exe alone could leave it running).
+    if let Some(p) = pid {
+        let _ = crate::wsl::wsl_output(distro, &["kill".into(), p.to_string()]).await;
+    }
+    let _ = child.stderr.take();
+    child.kill().await.ok();
+
+    if !ready {
+        return Err("生成 WSL web profile 超时或失败".to_string());
+    }
+    crate::wsl::wsl_output(
+        distro,
+        &[
+            "cp".into(),
+            "-r".into(),
+            format!("{profiles}/web"),
+            temp_dir,
+        ],
+    )
+    .await?;
+    push_task_log(app, state, task_id, "WSL web profile 模板 __temp__ 已创建").await;
+    Ok(())
+}
+
+#[derive(Clone, Debug, serde::Deserialize)]
+pub struct CreateWslInstanceInput {
+    pub name: String,
+    /// DSH version string (installed into the distro on demand).
+    pub version: String,
+    /// Target WSL distro name.
+    pub distro: String,
+}
+
+/// Starts a background task creating a WSL instance (issue #19): provisions
+/// Node.js + pnpm + the DSH version inside the distro, materializes a
+/// dedicated WSL HOME with the web template, then registers the instance.
+#[tauri::command]
+pub async fn start_create_wsl_instance_task(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    input: CreateWslInstanceInput,
+) -> Result<String, String> {
+    let name = input.name.trim().to_string();
+    let version = input.version.trim().to_string();
+    let distro = input.distro.trim().to_string();
+    if name.is_empty() {
+        return Err("实例名称不能为空".to_string());
+    }
+    if version.is_empty() || distro.is_empty() {
+        return Err("版本与 WSL 发行版不能为空".to_string());
+    }
+    {
+        let cfg = state.config.lock().unwrap();
+        if cfg.instances.iter().any(|i| i.name == name) {
+            return Err("同名实例已存在".to_string());
+        }
+    }
+    {
+        let tasks = state.tasks.lock().await;
+        if tasks.values().any(|t| {
+            t.state == TaskState::Running && t.instance_name.as_deref() == Some(name.as_str())
+        }) {
+            return Err("同名实例的下载任务已在进行中".to_string());
+        }
+    }
+
+    let task = TaskInfo {
+        id: new_id("t"),
+        kind: "create-instance".to_string(),
+        label: format!("在 WSL（{distro}）中创建实例「{name}」（DSH {version}）"),
+        version: version.clone(),
+        state: TaskState::Running,
+        percent: 0,
+        created_at: now_millis(),
+        message: None,
+        instance_id: None,
+        instance_name: Some(name.clone()),
+        reserved_home_path: None,
+        logs: Vec::new(),
+        child: None,
+    };
+    let task_id = task.id.clone();
+    state.tasks.lock().await.insert(task_id.clone(), task);
+    emit_progress(&app, &task_id, TaskState::Running, 0, None, None);
+
+    let worker_app = app.clone();
+    let worker_task_id = task_id.clone();
+    tauri::async_runtime::spawn(async move {
+        let state = worker_app.state::<AppState>();
+        let result = do_create_wsl_instance(
+            &worker_app,
+            &state,
+            &worker_task_id,
+            &name,
+            &version,
+            &distro,
+        )
+        .await;
+        let mut tasks = state.tasks.lock().await;
+        if let Some(task) = tasks.get_mut(&worker_task_id) {
+            if task.state == TaskState::Cancelled {
+                return;
+            }
+            match result {
+                Ok(instance_id) => {
+                    task.state = TaskState::Done;
+                    task.percent = 100;
+                    task.instance_id = Some(instance_id.clone());
+                    emit_progress(
+                        &worker_app,
+                        &worker_task_id,
+                        TaskState::Done,
+                        100,
+                        None,
+                        Some(instance_id),
+                    );
+                }
+                Err(msg) => {
+                    task.state = TaskState::Error;
+                    task.message = Some(msg.clone());
+                    push_log_locked(task, &format!("error: {msg}"));
+                    let pct = task.percent;
+                    drop(tasks);
+                    emit_progress(
+                        &worker_app,
+                        &worker_task_id,
+                        TaskState::Error,
+                        pct,
+                        Some(msg),
+                        None,
+                    );
+                }
+            }
+        }
+    });
+
+    Ok(task_id)
+}
+
+async fn do_create_wsl_instance(
+    app: &AppHandle,
+    state: &State<'_, AppState>,
+    task_id: &str,
+    name: &str,
+    version: &str,
+    distro: &str,
+) -> Result<String, String> {
+    // 1. The DSH version inside this distro (installed on demand).
+    let version_record = install_version_streamed_wsl(app, state, task_id, version, distro).await?;
+
+    // 2. Dedicated WSL HOME.
+    let root = crate::wsl::WslRoot::resolve(distro).await?;
+    let home_linux = root.home_dir(&crate::config::sanitize_name(name));
+    crate::wsl::wsl_output(distro, &["mkdir".into(), "-p".into(), home_linux.clone()]).await?;
+    let home = {
+        let path_buf = std::path::PathBuf::from(&home_linux);
+        let mut cfg = state.config.lock().unwrap();
+        if let Some(existing) = cfg
+            .homes
+            .iter()
+            .find(|h| h.path == path_buf && h.wsl.as_deref() == Some(distro))
+        {
+            existing.clone()
+        } else {
+            let home = crate::config::DshHome {
+                id: new_id("h"),
+                name: name.to_string(),
+                path: path_buf,
+                wsl: Some(distro.to_string()),
+            };
+            cfg.homes.push(home.clone());
+            crate::commands::save_state(state, &cfg)?;
+            home
+        }
+    };
+
+    // 3. Web profile template inside the distro; on failure roll the fresh
+    //    HOME record and directory back.
+    if let Err(e) =
+        ensure_web_profile_template_wsl(app, state, task_id, distro, &home_linux, &version_record)
+            .await
+    {
+        let _ =
+            crate::wsl::wsl_output(distro, &["rm".into(), "-rf".into(), home_linux.clone()]).await;
+        let mut cfg = state.config.lock().unwrap();
+        cfg.homes.retain(|h| h.id != home.id);
+        crate::commands::save_state(state, &cfg).ok();
+        return Err(e);
+    }
+
+    // 4. Register the instance.
+    let inst = {
+        let mut cfg = state.config.lock().unwrap();
+        let inst = DshInstance {
+            id: new_id("i"),
+            name: name.to_string(),
+            version_id: version_record.id.clone(),
+            home_id: home.id.clone(),
+            env_overrides: Default::default(),
+            default_profile: Some("web".to_string()),
+            last_profile: None,
+            icon: None,
+            port: None,
+        };
+        cfg.instances.push(inst.clone());
+        crate::commands::save_state(state, &cfg)?;
+        inst
+    };
+    crate::log_info!("WSL 实例「{name}」已创建（distro: {distro}, DSH {version}）");
+    Ok(inst.id)
+}
+
 async fn push_task_log(app: &AppHandle, state: &State<'_, AppState>, task_id: &str, line: &str) {
     let mut tasks = state.tasks.lock().await;
     if let Some(task) = tasks.get_mut(task_id) {
@@ -607,23 +999,30 @@ async fn install_version_streamed(
         }
     }
 
-    register_version(state, version, dir)
+    register_version(state, version, dir, None)
 }
 
 /// Records an installed version in the config (idempotent by version
-/// string).
+/// string + runtime: a Windows install and a WSL-distro install of the same
+/// version coexist as separate records).
 fn register_version(
     state: &State<'_, AppState>,
     version: &str,
     dir: std::path::PathBuf,
+    wsl: Option<String>,
 ) -> Result<DshVersion, String> {
     let record = DshVersion {
         id: new_id("v"),
         version: version.to_string(),
         dir,
+        wsl: wsl.clone(),
     };
     let mut cfg = state.config.lock().unwrap();
-    if let Some(existing) = cfg.versions.iter().find(|v| v.version == *version) {
+    if let Some(existing) = cfg
+        .versions
+        .iter()
+        .find(|v| v.version == *version && v.wsl == wsl)
+    {
         return Ok(existing.clone());
     }
     cfg.versions.push(record.clone());
@@ -769,12 +1168,12 @@ async fn install_version_from_repo(
             crate::process::version_bin(&dir).display()
         ));
     }
-    register_version(state, version, dir)
+    register_version(state, version, dir, None)
 }
 
 /// Whether the task's streamed log mentions pnpm's ignored-build-scripts
 /// failure (ERR_PNPM_IGNORED_BUILDS / "Ignored build scripts").
-fn task_log_mentions_ignored_builds(state: &State<'_, AppState>, task_id: &str) -> bool {
+pub(crate) fn task_log_mentions_ignored_builds(state: &State<'_, AppState>, task_id: &str) -> bool {
     let tasks = state.tasks.try_lock().map(|t| t.clone()).ok();
     tasks
         .and_then(|t| t.get(task_id).map(|t| t.logs.clone()))
@@ -823,6 +1222,11 @@ fn pnpm_major(version_output: &str) -> Option<u32> {
         .trim()
         .parse::<u32>()
         .ok()
+}
+
+/// `pub(crate)` for the WSL bridge (issue #19).
+pub(crate) fn pnpm_major_pub(version_output: &str) -> Option<u32> {
+    pnpm_major(version_output)
 }
 
 /// Returns a pnpm executable whose major version is [`REQUIRED_PNPM_MAJOR`].

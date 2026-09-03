@@ -26,6 +26,19 @@ const store = useLauncherStore()
 const editingId = computed(() => (route.params.id as string | undefined) ?? null)
 const isNew = computed(() => !editingId.value)
 
+// --- WSL runtime (issue #19) ---------------------------------------------------
+
+/** Distro of the currently selected HOME; non-empty means a WSL instance. */
+const wslDistro = computed(() => store.homes.find((h) => h.id === homeId.value)?.wsl ?? null)
+const isWsl = computed(() => !!wslDistro.value)
+/** Versions compatible with the instance's runtime (Windows ↔ non-WSL records). */
+const versionOptions = computed(() =>
+  store.versions.filter((v) => (isWsl.value ? v.wsl === wslDistro.value : !v.wsl)),
+)
+const homeOptions = computed(() =>
+  store.homes.filter((h) => (isWsl.value ? h.wsl === wslDistro.value : !h.wsl)),
+)
+
 // --- Sidebar tabs ---------------------------------------------------------------
 
 type TabKey = 'basic' | 'env' | 'profiles' | 'plugins' | 'skills' | 'mcp' | 'terminal'
@@ -1077,7 +1090,10 @@ const terminalRunning = ref(false)
           <div v-if="activeTab === 'basic'" class="dl-card edit-card">
             <a-form layout="vertical" class="edit-form" :model="{}">
               <a-form-item :label="t('instanceEdit.name')" required>
-                <a-input v-model="name" :placeholder="t('instanceEdit.namePlaceholder')" style="max-width: 360px" />
+                <a-space>
+                  <a-input v-model="name" :placeholder="t('instanceEdit.namePlaceholder')" style="max-width: 360px" />
+                  <a-tag v-if="isWsl" color="arcoblue">WSL · {{ wslDistro }}</a-tag>
+                </a-space>
               </a-form-item>
 
               <a-form-item v-if="editingId" :label="t('instanceEdit.icon')">
@@ -1108,9 +1124,9 @@ const terminalRunning = ref(false)
               </a-form-item>
 
               <a-form-item :label="t('instanceEdit.version')" required>
-                <template v-if="store.versions.length">
+                <template v-if="versionOptions.length">
                   <a-select v-model="versionId" style="max-width: 360px">
-                    <a-option v-for="v in store.versions" :key="v.id" :value="v.id">{{ v.version }}</a-option>
+                    <a-option v-for="v in versionOptions" :key="v.id" :value="v.id">{{ v.version }}</a-option>
                   </a-select>
                 </template>
                 <a-alert v-else type="warning">
@@ -1120,13 +1136,16 @@ const terminalRunning = ref(false)
               </a-form-item>
 
               <a-form-item :label="t('instanceEdit.home')" required>
-                <a-select v-model="homeId" style="max-width: 360px">
-                  <a-option :value="DEDICATED">{{ t('instanceEdit.dedicatedHome') }}</a-option>
-                  <a-option v-for="h in store.homes" :key="h.id" :value="h.id">
+                <a-select v-model="homeId" style="max-width: 360px" :disabled="isWsl">
+                  <a-option v-if="!isWsl" :value="DEDICATED">{{ t('instanceEdit.dedicatedHome') }}</a-option>
+                  <a-option v-for="h in homeOptions" :key="h.id" :value="h.id">
                     {{ h.name }}（{{ h.path }}）
                   </a-option>
                 </a-select>
-                <a-alert v-if="homeId === DEDICATED" type="info" class="dedicated-hint">
+                <a-alert v-if="isWsl" type="info" class="dedicated-hint">
+                  {{ t('instanceEdit.wslHomeFixed') }}
+                </a-alert>
+                <a-alert v-else-if="homeId === DEDICATED" type="info" class="dedicated-hint">
                   {{ t('instanceEdit.dedicatedHomeHint', { path: dedicatedPath }) }}
                 </a-alert>
               </a-form-item>
@@ -1195,6 +1214,16 @@ const terminalRunning = ref(false)
               </a-button>
               <a-button size="large" @click="router.push({ name: 'home' })">{{ t('instanceEdit.cancel') }}</a-button>
             </div>
+          </div>
+
+          <!-- WSL instances (issue #19): file-based tabs are not supported yet -->
+          <div
+            v-else-if="isWsl && ['profiles', 'plugins', 'skills', 'mcp', 'terminal'].includes(activeTab)"
+            class="dl-card edit-card"
+          >
+            <a-alert type="info">
+              {{ t('instanceEdit.wslTabUnsupported', { tab: t(`instanceEdit.tabs.${activeTab}`) }) }}
+            </a-alert>
           </div>
 
           <!-- Profiles -->

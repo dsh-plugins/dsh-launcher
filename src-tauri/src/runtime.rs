@@ -113,9 +113,14 @@ fn node_archive_name(version: &str) -> String {
     }
 }
 
+/// dist archive file name for a WSL (linux-x64) target (issue #19).
+pub(crate) fn node_archive_name_linux(version: &str) -> String {
+    format!("node-{version}-linux-x64.tar.gz")
+}
+
 /// Latest LTS version (e.g. `v22.14.0`) from the dist index, primary source
 /// first with the mirror as fallback.
-async fn resolve_node_version() -> Result<String, String> {
+pub(crate) async fn resolve_node_version() -> Result<String, String> {
     for base in [NODE_DIST_PRIMARY, NODE_DIST_MIRROR] {
         match crate::plugins::fetch_json_pub(&format!("{base}/index.json"), 8 * 1024 * 1024).await {
             Ok(doc) => {
@@ -141,16 +146,16 @@ async fn resolve_node_version() -> Result<String, String> {
     Err("获取 Node.js 版本列表失败（官方源与镜像均不可用）".to_string())
 }
 
-/// Downloads the dist archive for `version` to `dest`, streaming progress
-/// into the task (5% → 80%). Falls back to the mirror on failure.
-async fn download_node_archive(
+/// Downloads the dist archive `name` for `version` to `dest`, streaming
+/// progress into the task (5% → 80%). Falls back to the mirror on failure.
+pub(crate) async fn download_node_archive(
     app: &AppHandle,
     state: &State<'_, AppState>,
     task_id: &str,
     version: &str,
+    name: &str,
     dest: &Path,
 ) -> Result<(), String> {
-    let name = node_archive_name(version);
     let client = crate::proxy::apply(reqwest::Client::builder())
         .timeout(std::time::Duration::from_secs(900))
         .user_agent("dsh-launcher")
@@ -396,7 +401,8 @@ async fn do_install_node(
     let tools = state.data_dir.join("tools");
     std::fs::create_dir_all(&tools).map_err(|e| format!("创建工具目录失败: {e}"))?;
     let archive = tools.join(node_archive_name(&version));
-    download_node_archive(app, state, task_id, &version, &archive).await?;
+    let name = node_archive_name(&version);
+    download_node_archive(app, state, task_id, &version, &name, &archive).await?;
 
     crate::tasks::emit_progress_pub(
         app,

@@ -4,12 +4,16 @@ export interface DshHome {
   id: string
   name: string
   path: string
+  /** WSL distro name when this HOME lives inside WSL (issue #19); `path` is then a Linux path. */
+  wsl?: string | null
 }
 
 export interface DshVersion {
   id: string
   version: string
   dir: string
+  /** WSL distro this version is installed into (issue #19); `dir` is then a Linux path. */
+  wsl?: string | null
 }
 
 export interface DshInstance {
