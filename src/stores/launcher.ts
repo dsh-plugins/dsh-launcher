@@ -32,6 +32,16 @@ export interface ModpackExportState {
   displayName: string
 }
 
+/** Context handed to the multi-profile (dshhome) modpack export page. */
+export interface ModpackExportMultiState {
+  instanceId: string
+  homeId: string
+  /** Instance display name used as the default displayName field. */
+  displayName: string
+  /** Instance's default profile (pre-selected and the default defaultProfile). */
+  defaultProfile?: string
+}
+
 interface LauncherState {
   homes: DshHome[]
   versions: DshVersion[]
@@ -47,6 +57,7 @@ interface LauncherState {
   marketLoadedAt: number | null
   pluginWizard: PluginWizardState | null
   modpackExport: ModpackExportState | null
+  modpackExportMulti: ModpackExportMultiState | null
   loaded: boolean
 }
 
@@ -80,6 +91,7 @@ export const useLauncherStore = defineStore('launcher', {
     marketLoadedAt: null,
     pluginWizard: null,
     modpackExport: null,
+    modpackExportMulti: null,
     loaded: false,
   }),
 

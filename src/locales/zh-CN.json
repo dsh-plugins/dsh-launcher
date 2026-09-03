@@ -269,6 +269,7 @@
     "profileDeleted": "Profile「{name}」已删除",
     "profileDeleteConfirm": "确定删除 Profile「{name}」？此操作不可恢复。",
     "modpackExport": "导出",
+    "modpackExportMulti": "导出整合包",
     "icon": "实例图标",
     "iconUrlHint": "粘贴图标图片的 https:// 地址，或选择本地图片",
     "iconApply": "应用",
@@ -451,6 +452,17 @@
     "contentExtraHint": "除上述文件外的用户文件，经安全过滤（排除 node_modules、.env、密钥与嵌套压缩包）后放入 overrides/",
     "start": "开始导出",
     "exported": "整合包已导出：{path}"
+  },
+  "exportMulti": {
+    "title": "导出整合包（多 Profile）",
+    "stepSelect": "选择 Profile",
+    "stepInfo": "整合包信息",
+    "pickProfiles": "选择要导出的 Profile",
+    "pickProfilesHint": "勾选需要的 profile；点击行可展开并为该 profile 单独选择导出内容",
+    "noProfiles": "没有可导出的 profile",
+    "next": "下一步",
+    "prev": "上一步",
+    "defaultProfile": "默认启动 Profile"
   },
   "modpackLaunch": {
     "instanceNotFound": "找不到实例「{name}」"

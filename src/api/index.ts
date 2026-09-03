@@ -9,6 +9,7 @@ import type {
   DshInstance,
   DshVersion,
   ExportModpackInput,
+  ExportDshhomeInput,
   ImportModpackInput,
   InstallPluginInput,
   InstalledPlugin,
@@ -586,6 +587,10 @@ async function mockCall<T>(cmd: string, args?: Record<string, unknown>): Promise
       const input = args?.input as { out_file?: string } | undefined
       return String(input?.out_file ?? './profile-1.0.0.dspack') as T
     }
+    case 'export_dshhome_modpack': {
+      const input = args?.input as { out_file?: string } | undefined
+      return String(input?.out_file ?? './dsh-home-pack-1.0.0.dspack') as T
+    }
     case 'start_import_modpack_task':
       return 'task-mock-modpack' as T
     case 'pending_deep_link':
@@ -976,6 +981,9 @@ export const api = {
   deleteMcpServer: (homeId: string, profile: string | null, id: string) =>
     call<McpServer[]>('delete_mcp_server', { homeId, profile, id }),
   exportModpack: (input: ExportModpackInput) => call<string>('export_modpack', { input }),
+  /** Multi-profile (manifest v5 dshhome) export. */
+  exportDshhomeModpack: (input: ExportDshhomeInput) =>
+    call<string>('export_dshhome_modpack', { input }),
   /** Pre-reads a modpack's manifest before installing (for the confirm dialog). */
   readModpackManifest: (source: string) => call<ModpackManifest>('read_modpack_manifest', { source }),
   /** Cold-start deep link from process argv (null when launched normally). */

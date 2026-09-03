@@ -236,6 +236,7 @@ pub fn run() {
             plugins::start_install_plugin_task,
             plugins::start_install_plugin_file_task,
             modpack::export_modpack,
+            modpack::export_dshhome_modpack,
             modpack::read_modpack_manifest,
             modpack::start_import_modpack_task,
             terminal::start_terminal_session,

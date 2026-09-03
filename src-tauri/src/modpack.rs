@@ -40,7 +40,7 @@ pub struct ProfileUnit {
     pub bundles: Vec<String>,
     #[serde(default)]
     pub dependencies: BTreeMap<String, String>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub patch: Option<String>,
 }
 
@@ -1057,6 +1057,335 @@ pub async fn export_modpack(
     };
     let out = write_modpack_dspack(&out_path, &files)?;
     crate::log_info!("已导出整合包 {}", out.display());
+    Ok(out.to_string_lossy().to_string())
+}
+
+// ---------------------------------------------------------------------------
+// Export: multi-profile (manifest v5 dshhome form, issue #24 follow-up)
+// ---------------------------------------------------------------------------
+
+/// One profile selected for export, with its own content selection.
+#[derive(Clone, Debug, Deserialize)]
+pub struct ExportProfileSpec {
+    pub profile: String,
+    /// Content selection; absent exports the default set.
+    #[serde(default)]
+    pub contents: Option<ExportContents>,
+}
+
+/// Export input for the multi-profile (dshhome) pack: several profiles of
+/// one HOME in a single `.dspack` v3 container.
+#[derive(Clone, Debug, Deserialize)]
+pub struct ExportDshhomeInput {
+    pub home_id: String,
+    /// Selected profiles (non-empty; `__temp__` / `web` / `headless` are
+    /// rejected — templates never ship in a dshhome pack).
+    pub profiles: Vec<ExportProfileSpec>,
+    /// Instance id, for dshVersion pinning and the icon.
+    #[serde(default)]
+    pub instance_id: Option<String>,
+    /// Full output file path; a missing extension gets `.dspack` appended.
+    pub out_file: String,
+    #[serde(default)]
+    pub name: Option<String>,
+    #[serde(default)]
+    pub version: Option<String>,
+    #[serde(default, rename = "displayName")]
+    pub display_name: Option<serde_json::Value>,
+    #[serde(default)]
+    pub description: Option<serde_json::Value>,
+    #[serde(default)]
+    pub author: Option<String>,
+    /// Default launch profile; falls back to the instance default (when
+    /// selected), then the first selected profile.
+    #[serde(default, rename = "defaultProfile")]
+    pub default_profile: Option<String>,
+    /// Bundle the instance icon as icon.png.
+    #[serde(default = "default_include")]
+    pub icon: bool,
+}
+
+/// Everything collected from one profile for an export.
+struct ProfileExport {
+    bundles: Vec<String>,
+    pinned: BTreeMap<String, String>,
+    patch: Option<String>,
+    lockfile: Option<Vec<u8>>,
+    workspace: Option<Vec<u8>>,
+    extra: Vec<(String, Vec<u8>)>,
+}
+
+/// Reads a profile dir and collects its export payload: the bundle stack,
+/// dependencies pinned to installed versions / commit shas, and the files
+/// chosen by the content selection.
+fn collect_profile_export(
+    profile_dir: &Path,
+    contents: &ExportContents,
+) -> Result<ProfileExport, String> {
+    let pkg_path = profile_dir.join("package.json");
+    let raw = std::fs::read_to_string(&pkg_path)
+        .map_err(|e| format!("读取 profile manifest 失败: {e}"))?;
+    let pkg: serde_json::Value =
+        serde_json::from_str(&raw).map_err(|e| format!("解析 profile manifest 失败: {e}"))?;
+
+    let bundles: Vec<String> = pkg
+        .pointer("/dsh/profile/bundles")
+        .and_then(|b| b.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|b| b.as_str().map(|s| s.to_string()))
+                .collect()
+        })
+        .unwrap_or_default();
+
+    let lock_text = std::fs::read_to_string(profile_dir.join("pnpm-lock.yaml")).ok();
+    let mut pinned = BTreeMap::new();
+    if let Some(deps) = pkg.get("dependencies").and_then(|d| d.as_object()) {
+        for (name, spec) in deps {
+            let spec = spec.as_str().unwrap_or_default();
+            if is_git_spec(spec) {
+                let Some((repo, sub, spec_ref)) = github_repo_from_spec(spec) else {
+                    crate::log_warn!("整合包导出：无法解析 git 依赖 {name}: {spec}，按原样保留");
+                    pinned.insert(name.clone(), spec.to_string());
+                    continue;
+                };
+                let sha = lock_text
+                    .as_deref()
+                    .and_then(|l| locked_git_commit(l, name))
+                    .or(spec_ref)
+                    .unwrap_or_else(|| "HEAD".to_string());
+                let coord = match &sub {
+                    Some(p) => format!("github:{repo}#path:/{p}"),
+                    None => format!("github:{repo}"),
+                };
+                pinned.insert(coord, sha);
+            } else {
+                let version = installed_npm_version(profile_dir, name)
+                    .unwrap_or_else(|| spec.trim_start_matches(['^', '~']).to_string());
+                pinned.insert(name.clone(), version);
+            }
+        }
+    }
+
+    let patch = if contents.patch {
+        std::fs::read_to_string(profile_dir.join("cordis.patch.yml")).ok()
+    } else {
+        None
+    };
+    let lockfile = if contents.lockfile {
+        std::fs::read(profile_dir.join("pnpm-lock.yaml")).ok()
+    } else {
+        None
+    };
+    let workspace = if contents.workspace {
+        std::fs::read(profile_dir.join("pnpm-workspace.yaml")).ok()
+    } else {
+        None
+    };
+    let extra = if contents.extra_files {
+        collect_extra_files(profile_dir)?
+    } else {
+        Vec::new()
+    };
+    Ok(ProfileExport {
+        bundles,
+        pinned,
+        patch,
+        lockfile,
+        workspace,
+        extra,
+    })
+}
+
+/// `dspack.json` marker for pack-structure v3 (multi-profile exports).
+const DSPACK_MARKER_V3: &str = r#"{"format":"dspack","version":3}"#;
+
+/// Exports several profiles of one HOME as a manifest-v5 `type:"dshhome"`
+/// pack in a `.dspack` v3 container: per-profile dependency layers under
+/// `overrides/profiles/<name>/`, plus the instance icon.
+#[tauri::command]
+pub async fn export_dshhome_modpack(
+    state: State<'_, AppState>,
+    input: ExportDshhomeInput,
+) -> Result<String, String> {
+    if input.profiles.is_empty() {
+        return Err("请至少勾选一个 profile".to_string());
+    }
+    let home = home_path_of(&state, &input.home_id)?;
+    let mut seen = std::collections::BTreeSet::new();
+    for spec in &input.profiles {
+        let name = spec.profile.trim();
+        if name.is_empty()
+            || matches!(name, "__temp__" | "node_modules" | "web" | "headless")
+            || !seen.insert(name.to_string())
+        {
+            return Err(format!("profile「{}」不可导出（模板或重复）", spec.profile));
+        }
+    }
+
+    // dshVersion + instance icon come from the given instance (fall back to
+    // the first instance bound to this HOME for the version).
+    let instance = {
+        let cfg = state.config.lock().unwrap();
+        input
+            .instance_id
+            .as_deref()
+            .and_then(|id| cfg.instances.iter().find(|i| i.id == id).cloned())
+    };
+    let dsh_version = {
+        let cfg = state.config.lock().unwrap();
+        let inst_ref = instance
+            .as_ref()
+            .or_else(|| cfg.instances.iter().find(|i| i.home_id == input.home_id));
+        inst_ref
+            .and_then(|i| cfg.versions.iter().find(|v| v.id == i.version_id))
+            .map(|v| v.version.clone())
+            .unwrap_or_else(|| "0.1.0".to_string())
+    };
+
+    let selected: Vec<String> = input
+        .profiles
+        .iter()
+        .map(|s| s.profile.trim().to_string())
+        .collect();
+    let default_profile = input
+        .default_profile
+        .filter(|d| selected.iter().any(|p| p == d))
+        .or_else(|| {
+            instance
+                .as_ref()
+                .and_then(|i| i.default_profile.clone())
+                .filter(|d| selected.iter().any(|p| p == d))
+        })
+        .unwrap_or_else(|| selected[0].clone());
+
+    let name = input
+        .name
+        .filter(|n| !n.trim().is_empty())
+        .unwrap_or_else(|| "dsh-home-pack".to_string());
+    let version = input
+        .version
+        .filter(|v| !v.trim().is_empty())
+        .unwrap_or_else(|| "1.0.0".to_string());
+
+    // Per-profile payloads.
+    let mut units: BTreeMap<String, ProfileUnit> = BTreeMap::new();
+    let mut collected: Vec<(String, ProfileExport)> = Vec::new();
+    for spec in &input.profiles {
+        let pname = spec.profile.trim().to_string();
+        let contents = spec.contents.unwrap_or_default();
+        let dir = crate::plugins::profile_dir_pub(&home, &pname);
+        let payload = collect_profile_export(&dir, &contents)
+            .map_err(|e| format!("profile「{pname}」: {e}"))?;
+        units.insert(
+            pname.clone(),
+            ProfileUnit {
+                bundles: payload.bundles.clone(),
+                dependencies: payload.pinned.clone(),
+                patch: None, // the patch ships as a file under overrides/
+            },
+        );
+        collected.push((pname, payload));
+    }
+
+    // Icon (same rules as the single-profile export).
+    let mut icon_field: Option<String> = None;
+    let mut icon_png: Option<Vec<u8>> = None;
+    if input.icon {
+        if let Some(inst) = &instance {
+            if let Some(icon) = &inst.icon {
+                if icon == "local" {
+                    if let Ok(bytes) = std::fs::read(crate::icons::local_icon_path(&home, &inst.id))
+                    {
+                        icon_png = Some(bytes);
+                        icon_field = Some("icon.png".to_string());
+                    }
+                } else if icon.starts_with("http") {
+                    match fetch_remote_icon(icon).await {
+                        Some(png) => {
+                            icon_png = Some(png);
+                            icon_field = Some("icon.png".to_string());
+                        }
+                        None => icon_field = Some(icon.clone()),
+                    }
+                }
+            }
+        }
+    }
+
+    let manifest = ModpackManifest {
+        manifest_version: MANIFEST_VERSION,
+        pack_type: Some("dshhome".to_string()),
+        name: name.clone(),
+        display_name: input
+            .display_name
+            .filter(|d| d.as_str().map(|s| !s.trim().is_empty()).unwrap_or(true)),
+        version: version.clone(),
+        description: Some(
+            input
+                .description
+                .unwrap_or_else(|| serde_json::Value::String(String::new())),
+        ),
+        author: input
+            .author
+            .filter(|a| !a.trim().is_empty())
+            .or_else(os_username),
+        icon: icon_field,
+        dsh_version: Some(dsh_version),
+        profile_name: None,
+        bundles: vec![],
+        dependencies: BTreeMap::new(),
+        patch: None,
+        files: Vec::new(),
+        default_profile: Some(default_profile),
+        profiles: Some(units),
+        presets: None,
+        skills: None,
+        instructions: None,
+    };
+
+    let mut files: Vec<(String, Vec<u8>)> = vec![
+        (
+            "dspack.json".to_string(),
+            DSPACK_MARKER_V3.as_bytes().to_vec(),
+        ),
+        (
+            "manifest.json".to_string(),
+            serde_json::to_vec_pretty(&manifest)
+                .map_err(|e| format!("序列化 manifest 失败: {e}"))?,
+        ),
+    ];
+    for (pname, payload) in &collected {
+        let base = format!("overrides/profiles/{pname}");
+        if let Some(p) = &payload.patch {
+            files.push((format!("{base}/cordis.patch.yml"), p.clone().into_bytes()));
+        }
+        if let Some(lock) = &payload.lockfile {
+            files.push((format!("{base}/pnpm-lock.yaml"), lock.clone()));
+        }
+        if let Some(ws) = &payload.workspace {
+            files.push((format!("{base}/pnpm-workspace.yaml"), ws.clone()));
+        }
+        for (rel, bytes) in &payload.extra {
+            files.push((format!("{base}/{rel}"), bytes.clone()));
+        }
+    }
+    if let Some(png) = icon_png {
+        files.push(("icon.png".to_string(), png));
+    }
+
+    let raw_path = input.out_file.trim();
+    let out_path = if raw_path.to_lowercase().ends_with(".dspack") {
+        PathBuf::from(raw_path)
+    } else {
+        PathBuf::from(format!("{raw_path}.dspack"))
+    };
+    let out = write_modpack_dspack(&out_path, &files)?;
+    crate::log_info!(
+        "已导出 dshhome 整合包 {}（{} 个 profile）",
+        out.display(),
+        collected.len()
+    );
     Ok(out.to_string_lossy().to_string())
 }
 

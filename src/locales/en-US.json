@@ -269,6 +269,7 @@
     "profileDeleted": "Profile \"{name}\" deleted",
     "profileDeleteConfirm": "Delete profile \"{name}\"? This cannot be undone.",
     "modpackExport": "Export",
+    "modpackExportMulti": "Export modpack",
     "icon": "Instance icon",
     "iconUrlHint": "Paste an https:// image URL, or pick a local image",
     "iconApply": "Apply",
@@ -451,6 +452,17 @@
     "contentExtraHint": "User files besides the ones above, safety-filtered (node_modules, .env, keys and nested archives excluded) into overrides/",
     "start": "Start export",
     "exported": "Modpack exported: {path}"
+  },
+  "exportMulti": {
+    "title": "Export modpack (multi-profile)",
+    "stepSelect": "Select profiles",
+    "stepInfo": "Pack metadata",
+    "pickProfiles": "Profiles to export",
+    "pickProfilesHint": "Check the profiles to include; click a row to pick its export contents",
+    "noProfiles": "No exportable profiles",
+    "next": "Next",
+    "prev": "Back",
+    "defaultProfile": "Default launch profile"
   },
   "modpackLaunch": {
     "instanceNotFound": "Instance \"{name}\" not found"

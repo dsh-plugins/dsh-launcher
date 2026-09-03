@@ -214,6 +214,30 @@ export interface ModpackManifest {
   instructions?: string | null
 }
 
+/** One profile selected for a multi-profile (dshhome) export. */
+export interface ExportProfileSpec {
+  profile: string
+  contents?: ExportContents
+}
+
+/** Multi-profile (manifest v5 dshhome) export input. */
+export interface ExportDshhomeInput {
+  home_id: string
+  profiles: ExportProfileSpec[]
+  /** Instance id, for dshVersion pinning and the icon. */
+  instance_id?: string
+  out_file: string
+  name?: string
+  version?: string
+  displayName?: string
+  description?: string
+  author?: string
+  /** Default launch profile; must be one of the selected profiles. */
+  defaultProfile?: string
+  /** Bundle the instance icon (default true). */
+  icon?: boolean
+}
+
 export interface ImportModpackInput {
   source: string
   force?: boolean

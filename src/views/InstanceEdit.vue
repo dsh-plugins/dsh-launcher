@@ -417,6 +417,18 @@ function startExportModpack(profile: string) {
   router.push({ name: 'modpack-export' })
 }
 
+/** Multi-profile export (manifest v5 dshhome): pick profiles on the wizard page. */
+function startExportModpackMulti() {
+  if (!homeId.value || !editingId.value) return
+  store.modpackExportMulti = {
+    instanceId: editingId.value,
+    homeId: homeId.value,
+    displayName: name.value.trim(),
+    defaultProfile: defaultProfile.value,
+  }
+  router.push({ name: 'modpack-export-multi' })
+}
+
 // --- Local plugin (.tgz) import --------------------------------------------------
 
 async function importLocalPlugin() {
@@ -1189,6 +1201,11 @@ const terminalRunning = ref(false)
           <div v-else-if="activeTab === 'profiles'" class="dl-card edit-card">
             <h4 class="env-title">{{ t('instanceEdit.tabs.profiles') }}</h4>
             <p class="env-desc">{{ t('instanceEdit.profilesDesc') }}</p>
+            <div class="profiles-toolbar">
+              <a-button size="small" @click="startExportModpackMulti">
+                {{ t('instanceEdit.modpackExportMulti') }}
+              </a-button>
+            </div>
 
             <template v-if="homeId && homeId !== DEDICATED">
               <div v-if="profiles.length === 0" class="profiles-empty">
@@ -1907,6 +1924,12 @@ const terminalRunning = ref(false)
   margin-top: 0;
   color: var(--color-text-3);
   font-size: 13px;
+}
+
+.profiles-toolbar {
+  display: flex;
+  gap: 8px;
+  margin: 8px 0 12px;
 }
 
 .env-row {
