@@ -411,6 +411,7 @@
     "pickFile": "选择文件",
     "load": "读取整合包信息",
     "filesCount": "{count} 个按需下载文件",
+    "dshhomeHint": "整个 DSH_HOME 快照（manifest v5）：包含 {count} 个 profile，默认启动「{default}」，将导入为全新实例",
     "instanceName": "实例名称",
     "profileName": "Profile 名称",
     "force": "覆盖同名 Profile",

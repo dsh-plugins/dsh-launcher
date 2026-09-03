@@ -411,6 +411,7 @@
     "pickFile": "Browse",
     "load": "Read modpack info",
     "filesCount": "{count} on-demand file(s)",
+    "dshhomeHint": "Whole-DSH_HOME snapshot (manifest v5): {count} profile(s), defaulting to \"{default}\"; imports as a brand-new instance",
     "instanceName": "Instance name",
     "profileName": "Profile name",
     "force": "Overwrite the profile if it exists",

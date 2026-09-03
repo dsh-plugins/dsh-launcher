@@ -1,6 +1,15 @@
 # DSH 整合包 Manifest 规范
 
-当前规范版本为 **manifestVersion 4**，容器为 **`.dspack`（pack-structure v2）**。启动器同时兼容导入旧格式：`.tgz`（pack-structure v1）+ manifestVersion 2 / 3。
+启动器**导出**仍为 **manifestVersion 4** + **`.dspack`（pack-structure v2）**；**导入**兼容：manifestVersion 2-5（含 v5 的 `profile` / `dshhome` 两种形态）与 `.dspack` 容器 v2 / v3，以及旧格式 `.tgz`（pack-structure v1）+ manifestVersion 2 / 3。
+
+## manifestVersion 5 与 pack-structure v3（导入）
+
+v5 是统一版本，`type` 分两种形态，由 `.dspack` v3 容器（根 `dspack.json` 为 `{"format":"dspack","version":3}`）承载；manifest v5 必须搭配 v3 容器（配对校验）。
+
+- **`type: "profile"`**：v4 契约 + 可选 `profileName`；容器可额外携带 `home/` 目录（`home/xxx` 安装时覆盖到 `$DSH_HOME/xxx`，用于随包分发全局 skill / `.agent-presets` / `AGENTS.md`）。
+- **`type: "dshhome"`**：整个 `$DSH_HOME` 快照。新增字段：`defaultProfile`（必需）、`profiles`（必需，`name → { bundles, dependencies, patch? }`，至少 1 个且不得含 `web` / `headless`）、`presets`（可选索引）、`skills`（可选，`{ path, sha256?, size?, urls? }`，重技能按需下载）、`instructions`（可选，缺省 `AGENTS.md`）。容器内 `overrides/` 平铺到 home 根（`overrides/profiles/<name>/` 落对应 profile，其余落 home 根）。
+
+dshhome 导入流程：校验 → 确保 `dshVersion` 已安装（未装自动安装）→ 新建专用 HOME 与 web/headless 基线 → 逐 profile 落盘 + `pnpm install`（package.json 由 manifest 权威重建）→ home 级 overrides 落盘 → `files[]` / 重 `skills[]` 下载校验 → 注册实例并设 `defaultProfile` 为默认。**任一失败回滚**：整个新建 HOME 目录与记录一并删除。dshhome 形态仅支持新建实例（不能导入进现有实例）。
 
 ## 容器：`.dspack`（pack-structure v2）
 
@@ -18,7 +27,7 @@
         └── cordis.patch.yml
 ```
 
-导入端判定：按 ZIP 打开 → 读根 `dspack.json`（缺失 / `format` ≠ `"dspack"` / `version` ≠ `2` → 拒载）→ 读 `manifest.json` 校验 v4。
+导入端判定：按 ZIP 打开 → 读根 `dspack.json`（缺失 / `format` ≠ `"dspack"` / `version` 不在 `2-3` → 拒载）→ 读 `manifest.json` 校验版本与容器配对。
 
 `overrides/` 是文件级复制替换（同名盖掉），不做字段级合并；真正的「合并式覆盖」由 `cordis.patch.yml` 补丁层在安装后完成。
 

@@ -22,10 +22,51 @@ use crate::config::new_id;
 use crate::AppState;
 
 /// Manifest version the launcher writes.
-pub const MANIFEST_VERSION: u32 = 4;
+pub const MANIFEST_VERSION: u32 = 5;
 
-/// `dspack.json` marker at the ZIP root (pack-structure v2).
+/// Exports stay on manifest v4 + pack-structure v2 for now (PackForge
+/// tooling still generates v3/v4 packs); import accepts up to v5 / v3.
+const EXPORT_MANIFEST_VERSION: u32 = 4;
+
+/// `dspack.json` marker at the ZIP root (pack-structure v2). Export keeps
+/// writing v2; import accepts v2 and v3 (see `validate_dspack_marker`).
 const DSPACK_MARKER: &str = r#"{"format":"dspack","version":2}"#;
+
+/// A profile unit inside a manifest v5 `type:"dshhome"` pack: the v4
+/// single-profile contract minus `profileName` (the map key is the name).
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ProfileUnit {
+    #[serde(default)]
+    pub bundles: Vec<String>,
+    #[serde(default)]
+    pub dependencies: BTreeMap<String, String>,
+    #[serde(default)]
+    pub patch: Option<String>,
+}
+
+/// A preset index entry (manifest v5 dshhome form); the preset itself ships
+/// as plain files under `overrides/.agent-presets/<id>/`.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct PresetUnit {
+    #[serde(default)]
+    pub path: Option<String>,
+    #[serde(default)]
+    pub description: Option<String>,
+}
+
+/// A skill index entry (manifest v5 dshhome form). Small skills ship inside
+/// `overrides/skills/` and only carry `path`; heavy skills add the pointer
+/// triple for on-demand download.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct SkillRef {
+    pub path: String,
+    #[serde(default)]
+    pub sha256: Option<String>,
+    #[serde(default)]
+    pub size: Option<u64>,
+    #[serde(default)]
+    pub urls: Vec<String>,
+}
 
 /// A `files[]` download entry (manifest v4): heavy content fetched on demand.
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -46,7 +87,7 @@ pub struct ModpackFileEntry {
 pub struct ModpackManifest {
     #[serde(rename = "manifestVersion")]
     pub manifest_version: u32,
-    /// v4: "profile" (only supported value; "collection" is reserved).
+    /// v4+: "profile" (v5 adds "dshhome"; "collection" stays reserved).
     #[serde(default, rename = "type", skip_serializing_if = "Option::is_none")]
     pub pack_type: Option<String>,
     pub name: String,
@@ -72,6 +113,17 @@ pub struct ModpackManifest {
     /// v4: heavy content download manifest (not used by legacy v2/v3 packs).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub files: Vec<ModpackFileEntry>,
+    // --- manifest v5 dshhome form (whole-DSH_HOME snapshot) ---------------
+    #[serde(default, rename = "defaultProfile")]
+    pub default_profile: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub profiles: Option<BTreeMap<String, ProfileUnit>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub presets: Option<BTreeMap<String, PresetUnit>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub skills: Option<Vec<SkillRef>>,
+    #[serde(default)]
+    pub instructions: Option<String>,
 }
 
 /// Exportable content selection; `Default` exports the standard set (patch,
@@ -407,10 +459,11 @@ fn detect_container(file: &Path) -> Result<ModpackContainer, String> {
     }
 }
 
-/// Validates the root `dspack.json` marker (pack-structure v2 §2.2).
+/// Validates the root `dspack.json` marker (pack-structure v2/v3 §2.2) and
+/// returns the container version.
 fn validate_dspack_marker<R: std::io::Read + std::io::Seek>(
     archive: &mut zip::ZipArchive<R>,
-) -> Result<(), String> {
+) -> Result<u64, String> {
     let mut entry = archive
         .by_name("dspack.json")
         .map_err(|_| "不是 .dspack 整合包（ZIP 根缺少 dspack.json 标记文件）".to_string())?;
@@ -419,10 +472,29 @@ fn validate_dspack_marker<R: std::io::Read + std::io::Seek>(
         .map_err(|e| format!("读取 dspack.json 失败: {e}"))?;
     let marker: serde_json::Value =
         serde_json::from_str(&text).map_err(|e| format!("解析 dspack.json 失败: {e}"))?;
+    let version = marker.get("version").and_then(|v| v.as_u64());
     if marker.get("format").and_then(|v| v.as_str()) != Some("dspack")
-        || marker.get("version").and_then(|v| v.as_u64()) != Some(2)
+        || !matches!(version, Some(2) | Some(3))
     {
-        return Err("不支持该 .dspack 版本（需要 format=dspack, version=2）".to_string());
+        return Err(format!(
+            "不支持该 .dspack 版本（需要 format=dspack, version 2-3；实际 version={}）",
+            version.map(|v| v.to_string()).unwrap_or_default()
+        ));
+    }
+    Ok(version.unwrap_or(2))
+}
+
+/// Container/manifest pairing (pack-structure v3 §2.2): a `.dspack` carries
+/// manifest v4+, and manifest v5 requires the v3 container.
+fn check_container_manifest(marker: u64, manifest: &ModpackManifest) -> Result<(), String> {
+    if manifest.manifest_version < 4 {
+        return Err(format!(
+            ".dspack 容器要求 manifestVersion ≥ 4（实际为 {}）",
+            manifest.manifest_version
+        ));
+    }
+    if manifest.manifest_version == 5 && marker < 3 {
+        return Err("manifest v5 需要 pack-structure v3 容器（dspack.json version 3）".to_string());
     }
     Ok(())
 }
@@ -468,7 +540,7 @@ fn read_manifest_from_dspack(dspack: &Path) -> Result<ModpackManifest, String> {
     let file = std::fs::File::open(dspack).map_err(|e| format!("打开整合包失败: {e}"))?;
     let mut archive =
         zip::ZipArchive::new(file).map_err(|e| format!("解析 .dspack ZIP 失败: {e}"))?;
-    validate_dspack_marker(&mut archive)?;
+    let marker = validate_dspack_marker(&mut archive)?;
     let mut entry = archive
         .by_name("manifest.json")
         .map_err(|_| ".dspack 缺少 manifest.json".to_string())?;
@@ -478,14 +550,9 @@ fn read_manifest_from_dspack(dspack: &Path) -> Result<ModpackManifest, String> {
     let manifest: ModpackManifest =
         serde_json::from_str(&text).map_err(|e| format!("解析 manifest.json 失败: {e}"))?;
     validate_manifest(&manifest)?;
-    // pack-structure v2 carries manifest v4; `type` defaults to "profile".
-    if manifest.manifest_version != 4 {
-        return Err(format!(
-            ".dspack 容器要求 manifestVersion 4（实际为 {}）",
-            manifest.manifest_version
-        ));
-    }
+    check_container_manifest(marker, &manifest)?;
     validate_pack_type(&manifest)?;
+    validate_dshhome(&manifest)?;
     Ok(manifest)
 }
 
@@ -493,29 +560,40 @@ fn read_manifest_from_dspack(dspack: &Path) -> Result<ModpackManifest, String> {
 /// replacement, no content merge (pack-structure v2 §5). Returns the number
 /// of files copied.
 fn apply_overrides(unpacked: &Path, profile: &Path) -> Result<usize, String> {
-    let src = unpacked.join("overrides");
+    copy_tree(&unpacked.join("overrides"), profile, None)
+}
+
+/// Copies a directory tree over `dst` (file-level replacement). Entries
+/// whose first relative component is in `skip_top` are skipped (the dshhome
+/// form applies `overrides/profiles/<name>/` per profile, separately from
+/// the home-level rest). Returns the number of files copied.
+fn copy_tree(src: &Path, dst: &Path, skip_top: Option<&[&str]>) -> Result<usize, String> {
     if !src.is_dir() {
         return Ok(0);
     }
     let mut count = 0usize;
-    let mut stack = vec![src.clone()];
+    let mut stack = vec![src.to_path_buf()];
     while let Some(dir) = stack.pop() {
-        for entry in std::fs::read_dir(&dir).map_err(|e| format!("读取 overrides 目录失败: {e}"))?
-        {
-            let entry = entry.map_err(|e| format!("读取 overrides 条目失败: {e}"))?;
+        for entry in std::fs::read_dir(&dir).map_err(|e| format!("读取目录失败: {e}"))? {
+            let entry = entry.map_err(|e| format!("读取目录条目失败: {e}"))?;
             let path = entry.path();
             let rel = path
-                .strip_prefix(&src)
-                .map_err(|e| format!("解析 overrides 路径失败: {e}"))?;
-            let target = profile.join(rel);
+                .strip_prefix(src)
+                .map_err(|e| format!("解析相对路径失败: {e}"))?;
+            if let Some(skip) = skip_top {
+                if let Some(std::path::Component::Normal(first)) = rel.components().next() {
+                    if skip.iter().any(|s| first == std::ffi::OsStr::new(s)) {
+                        continue;
+                    }
+                }
+            }
+            let target = dst.join(rel);
             if path.is_dir() {
-                std::fs::create_dir_all(&target)
-                    .map_err(|e| format!("创建 overrides 目录失败: {e}"))?;
+                std::fs::create_dir_all(&target).map_err(|e| format!("创建目录失败: {e}"))?;
                 stack.push(path);
             } else {
                 if let Some(parent) = target.parent() {
-                    std::fs::create_dir_all(parent)
-                        .map_err(|e| format!("创建 overrides 目录失败: {e}"))?;
+                    std::fs::create_dir_all(parent).map_err(|e| format!("创建目录失败: {e}"))?;
                 }
                 std::fs::copy(&path, &target)
                     .map_err(|e| format!("覆盖 {} 失败: {e}", rel.display()))?;
@@ -683,14 +761,55 @@ fn validate_manifest(manifest: &ModpackManifest) -> Result<(), String> {
     Ok(())
 }
 
-/// v4 `type` check: absent and "profile" are accepted; "collection" is
-/// reserved and rejected for now.
+/// v4+ `type` check: absent and "profile" are always accepted; v5 adds
+/// "dshhome" (whole-DSH_HOME snapshot); "collection" is reserved and
+/// rejected for now.
 fn validate_pack_type(manifest: &ModpackManifest) -> Result<(), String> {
     match manifest.pack_type.as_deref() {
         None | Some("profile") => Ok(()),
+        Some("dshhome") if manifest.manifest_version >= 5 => Ok(()),
+        Some("dshhome") => Err("dshhome 形态需要 manifestVersion 5".to_string()),
         Some("collection") => Err("整合包集合（collection）暂未支持".to_string()),
         Some(other) => Err(format!("未知的整合包类型: {other}")),
     }
+}
+
+/// manifest v5 `type:"dshhome"` shape checks (manifest v5 §4): `profiles`
+/// non-empty without the baseline `web` / `headless` templates, and
+/// `defaultProfile` pointing at an existing key.
+fn validate_dshhome(manifest: &ModpackManifest) -> Result<(), String> {
+    if manifest.pack_type.as_deref() != Some("dshhome") {
+        return Ok(());
+    }
+    let profiles = manifest
+        .profiles
+        .as_ref()
+        .filter(|p| !p.is_empty())
+        .ok_or_else(|| "dshhome 形态的整合包必须包含至少一个 profile".to_string())?;
+    for (name, unit) in profiles {
+        if name == "web" || name == "headless" {
+            return Err(format!(
+                "dshhome 形态的 profiles 不得包含基线模板 profile「{name}」"
+            ));
+        }
+        if crate::config::sanitize_name(name) != name.trim() || name.trim().is_empty() {
+            return Err(format!("dshhome 形态的 profile 名「{name}」无效"));
+        }
+        if unit.bundles.is_empty() {
+            return Err(format!("dshhome 形态的 profile「{name}」缺少 bundles"));
+        }
+    }
+    let default = manifest
+        .default_profile
+        .as_deref()
+        .filter(|d| !d.trim().is_empty())
+        .ok_or_else(|| "dshhome 形态缺少 defaultProfile".to_string())?;
+    if !profiles.contains_key(default) {
+        return Err(format!(
+            "defaultProfile「{default}」不在 dshhome 形态的 profiles 中"
+        ));
+    }
+    Ok(())
 }
 
 /// Downloads the modpack when `source` is a URL into a temp file; local
@@ -847,7 +966,7 @@ pub async fn export_modpack(
     }
 
     let manifest = ModpackManifest {
-        manifest_version: MANIFEST_VERSION,
+        manifest_version: EXPORT_MANIFEST_VERSION,
         pack_type: Some("profile".to_string()),
         name: name.clone(),
         display_name: input
@@ -875,6 +994,12 @@ pub async fn export_modpack(
         dependencies: pinned,
         patch,
         files: Vec::new(),
+        // dshhome-only fields stay empty: exports are single-profile packs.
+        default_profile: None,
+        profiles: None,
+        presets: None,
+        skills: None,
+        instructions: None,
     };
 
     let profile_pkg = serde_json::json!({
@@ -940,20 +1065,111 @@ pub async fn export_modpack(
 /// `github:owner/repo#<ref>&path:<sub>`; npm names keep their (pinned)
 /// version. v2 values are already pnpm specs and pass through.
 fn manifest_pkg_deps(manifest: &ModpackManifest) -> BTreeMap<String, String> {
-    let mut deps = BTreeMap::new();
-    for (coord, version) in &manifest.dependencies {
+    pkg_deps_from_coords(&manifest.dependencies)
+}
+
+/// Runs `pnpm install` inside a pack profile dir. A shipped lockfile gets a
+/// frozen install (exact pins); if pnpm rejects it as outdated relative to
+/// our regenerated package.json, fall back to a normal install so the
+/// import still succeeds.
+async fn pnpm_install_profile(
+    app: &AppHandle,
+    state: &State<'_, AppState>,
+    task_id: &str,
+    dest: &Path,
+    has_lock: bool,
+) -> Result<(), String> {
+    let pnpm_prog = crate::tasks::ensure_pnpm_pub(app, state, task_id).await?;
+    let store_dir = state.data_dir.join(".pnpm-store");
+    let attempts: &[&[&str]] = if has_lock {
+        &[&["--frozen-lockfile"], &["--no-frozen-lockfile"]]
+    } else {
+        &[&["--no-frozen-lockfile"]]
+    };
+    let mut last_err = String::new();
+    for (i, extra) in attempts.iter().enumerate() {
+        if i > 0 {
+            crate::tasks::push_task_log_pub(
+                app,
+                state,
+                task_id,
+                "锁定文件与依赖清单不完全匹配，改用普通安装（锁定版本仍会被优先采用）…",
+            )
+            .await;
+        }
+        let mut cmd = tokio::process::Command::new(&pnpm_prog);
+        crate::process::hide_console(&mut cmd);
+        cmd.current_dir(dest)
+            .arg("install")
+            .args(extra.iter().copied())
+            .arg("--store-dir")
+            .arg(&store_dir)
+            .args(["--loglevel=http"])
+            .args([
+                "--fetch-timeout",
+                "300000",
+                "--fetch-retries",
+                "5",
+                "--fetch-retry-maxtimeout",
+                "120000",
+                "--network-concurrency",
+                "4",
+            ]);
+        if let Ok(registry) = std::env::var("DSH_NPM_REGISTRY") {
+            let registry = registry.trim().to_string();
+            if !registry.is_empty() {
+                cmd.args(["--registry", &registry]);
+            }
+        }
+        cmd.env("CI", "true");
+        match crate::tasks::run_streamed_command(app, state, task_id, cmd, "pnpm install（整合包）")
+            .await
+        {
+            Ok(()) => {
+                last_err.clear();
+                break;
+            }
+            Err(e) => last_err = e,
+        }
+    }
+    if !last_err.is_empty() {
+        return Err(last_err);
+    }
+    Ok(())
+}
+
+/// Converts manifest dependency coordinates into package.json deps: github
+/// coords become install specs keyed by a derived package name, everything
+/// else passes through.
+fn pkg_deps_from_coords(deps: &BTreeMap<String, String>) -> BTreeMap<String, String> {
+    let mut out = BTreeMap::new();
+    for (coord, version) in deps {
         if let Some((repo, sub)) = crate::plugins::parse_github_id(coord) {
             // package.json key must be a package name; derive it from the repo.
             let pkg_name = coord_to_pkg_name(coord);
-            deps.insert(
+            out.insert(
                 pkg_name,
                 crate::plugins::github_install_spec(&repo, version, sub.as_deref()),
             );
         } else {
-            deps.insert(coord.clone(), version.clone());
+            out.insert(coord.clone(), version.clone());
         }
     }
-    deps
+    out
+}
+
+/// The manifest-authoritative machine package.json for a pack profile.
+fn profile_pkg_json(
+    profile_name: &str,
+    bundles: &[String],
+    deps: &BTreeMap<String, String>,
+) -> serde_json::Value {
+    serde_json::json!({
+        "name": format!("dsh-profile-{profile_name}"),
+        "private": true,
+        "dependencies": pkg_deps_from_coords(deps),
+        "dsh": { "profile": { "bundles": bundles } },
+    })
 }
 
 /// Derives a package name from a github coordinate: the repo basename, or
@@ -1070,23 +1286,35 @@ async fn do_import_modpack(
     let tmp = guard.0.clone();
     let unpacked = tmp.join("pack");
     let container = detect_container(&pack)?;
-    match container {
-        ModpackContainer::Dspack => extract_modpack_dspack(&pack, &unpacked)?,
-        ModpackContainer::LegacyTgz => extract_modpack_tgz(&pack, &unpacked)?,
-    }
+    let marker = match container {
+        ModpackContainer::Dspack => {
+            let file = std::fs::File::open(&pack).map_err(|e| format!("打开整合包失败: {e}"))?;
+            let mut archive =
+                zip::ZipArchive::new(file).map_err(|e| format!("解析 .dspack ZIP 失败: {e}"))?;
+            let marker = validate_dspack_marker(&mut archive)?;
+            extract_modpack_dspack(&pack, &unpacked)?;
+            Some(marker)
+        }
+        ModpackContainer::LegacyTgz => {
+            extract_modpack_tgz(&pack, &unpacked)?;
+            None
+        }
+    };
     let manifest_raw = std::fs::read_to_string(unpacked.join("manifest.json"))
         .map_err(|_| "整合包缺少 manifest.json".to_string())?;
     let manifest: ModpackManifest =
         serde_json::from_str(&manifest_raw).map_err(|e| format!("解析 manifest.json 失败: {e}"))?;
     validate_manifest(&manifest)?;
-    if container == ModpackContainer::Dspack {
-        if manifest.manifest_version != 4 {
-            return Err(format!(
-                ".dspack 容器要求 manifestVersion 4（实际为 {}）",
-                manifest.manifest_version
-            ));
-        }
-        validate_pack_type(&manifest)?;
+    validate_pack_type(&manifest)?;
+    validate_dshhome(&manifest)?;
+    if let Some(marker) = marker {
+        check_container_manifest(marker, &manifest)?;
+    }
+
+    // 1b. manifest v5 dshhome form: a whole-DSH_HOME snapshot follows its
+    //     own multi-profile import flow.
+    if manifest.pack_type.as_deref() == Some("dshhome") {
+        return do_import_dshhome(app, state, task_id, input, &unpacked, &manifest).await;
     }
 
     // 2. Resolve names. Profile: input override → manifest profileName →
@@ -1268,12 +1496,7 @@ async fn do_import_modpack(
     }
     std::fs::create_dir_all(&dest).map_err(|e| format!("创建 profile 目录失败: {e}"))?;
 
-    let pkg = serde_json::json!({
-        "name": format!("dsh-profile-{profile_name}"),
-        "private": true,
-        "dependencies": manifest_pkg_deps(&manifest),
-        "dsh": { "profile": { "bundles": manifest.bundles } },
-    });
+    let pkg = profile_pkg_json(&profile_name, &manifest.bundles, &manifest.dependencies);
     std::fs::write(
         dest.join("package.json"),
         serde_json::to_vec_pretty(&pkg).map_err(|e| e.to_string())?,
@@ -1298,66 +1521,10 @@ async fn do_import_modpack(
             .map_err(|e| format!("写入 pnpm-workspace.yaml 失败: {e}"))?;
     }
 
-    // 4. Install dependencies. A shipped lockfile gets a frozen install
-    //    (exact pins); if pnpm rejects it as outdated relative to our
-    //    regenerated package.json, fall back to a normal install so the
-    //    import still succeeds.
-    let pnpm_prog = crate::tasks::ensure_pnpm_pub(app, state, task_id).await?;
-    let store_dir = state.data_dir.join(".pnpm-store");
-    let attempts: &[&[&str]] = if has_lock {
-        &[&["--frozen-lockfile"], &["--no-frozen-lockfile"]]
-    } else {
-        &[&["--no-frozen-lockfile"]]
-    };
-    let mut last_err = String::new();
-    for (i, extra) in attempts.iter().enumerate() {
-        if i > 0 {
-            crate::tasks::push_task_log_pub(
-                app,
-                state,
-                task_id,
-                "锁定文件与依赖清单不完全匹配，改用普通安装（锁定版本仍会被优先采用）…",
-            )
-            .await;
-        }
-        let mut cmd = tokio::process::Command::new(&pnpm_prog);
-        crate::process::hide_console(&mut cmd);
-        cmd.current_dir(&dest)
-            .arg("install")
-            .args(extra.iter().copied())
-            .arg("--store-dir")
-            .arg(&store_dir)
-            .args(["--loglevel=http"])
-            .args([
-                "--fetch-timeout",
-                "300000",
-                "--fetch-retries",
-                "5",
-                "--fetch-retry-maxtimeout",
-                "120000",
-                "--network-concurrency",
-                "4",
-            ]);
-        if let Ok(registry) = std::env::var("DSH_NPM_REGISTRY") {
-            let registry = registry.trim().to_string();
-            if !registry.is_empty() {
-                cmd.args(["--registry", &registry]);
-            }
-        }
-        cmd.env("CI", "true");
-        match crate::tasks::run_streamed_command(app, state, task_id, cmd, "pnpm install（整合包）")
-            .await
-        {
-            Ok(()) => {
-                last_err.clear();
-                break;
-            }
-            Err(e) => last_err = e,
-        }
-    }
-    if !last_err.is_empty() {
+    // 4. Install dependencies (frozen when the pack ships a lockfile).
+    if let Err(e) = pnpm_install_profile(app, state, task_id, &dest, has_lock).await {
         let _ = std::fs::remove_dir_all(&dest);
-        return Err(last_err);
+        return Err(e);
     }
 
     // 5. pack-structure v2: overrides/ user files land on the profile root
@@ -1372,6 +1539,22 @@ async fn do_import_modpack(
                 &format!("已应用 overrides/ 的 {count} 个文件"),
             )
             .await;
+        }
+        // pack-structure v3: a profile-form pack may also carry home-level
+        // content in `home/` (global skills, .agent-presets, AGENTS.md),
+        // copied onto the $DSH_HOME root with the same overwrite semantics.
+        let home_dir = unpacked.join("home");
+        if home_dir.is_dir() {
+            let count = copy_tree(&home_dir, &home, None)?;
+            if count > 0 {
+                crate::tasks::push_task_log_pub(
+                    app,
+                    state,
+                    task_id,
+                    &format!("已应用 home/ 的 {count} 个文件到 DSH_HOME 根目录"),
+                )
+                .await;
+            }
         }
     }
 
@@ -1407,7 +1590,6 @@ async fn do_import_modpack(
             default_profile: Some(profile_name.clone()),
             last_profile: None,
             icon: None,
-
             port: None,
         };
         cfg.instances.push(inst.clone());
@@ -1450,6 +1632,282 @@ async fn do_import_modpack(
     );
     drop(guard);
     Ok(format!("{final_instance_name}（{instance_id}）"))
+}
+
+// ---------------------------------------------------------------------------
+// Import: manifest v5 dshhome form (whole-DSH_HOME snapshot, issue #24)
+// ---------------------------------------------------------------------------
+
+/// Imports a `type:"dshhome"` pack (pack-structure v3 §9): a fresh instance
+/// whose HOME mirrors the whole snapshot — per-profile dependency layers,
+/// home-level overrides (presets / skills / AGENTS.md / data), and pointer
+/// downloads (`files[]` + heavy `skills[]`). Any failure removes the freshly
+/// created HOME entirely (all-or-nothing rollback).
+async fn do_import_dshhome(
+    app: &AppHandle,
+    state: &State<'_, AppState>,
+    task_id: &str,
+    input: &ImportModpackInput,
+    unpacked: &Path,
+    manifest: &ModpackManifest,
+) -> Result<String, String> {
+    if input.existing_instance_id.is_some() {
+        return Err("dshhome 形态是整个 DSH_HOME 的快照，只能导入为新实例".to_string());
+    }
+    let profiles = manifest
+        .profiles
+        .clone()
+        .ok_or_else(|| "dshhome 形态缺少 profiles".to_string())?;
+    let default_profile = manifest
+        .default_profile
+        .clone()
+        .ok_or_else(|| "dshhome 形态缺少 defaultProfile".to_string())?;
+
+    let instance_name = input
+        .instance_name
+        .clone()
+        .filter(|n| !n.trim().is_empty())
+        .or_else(|| {
+            manifest
+                .display_name
+                .as_ref()
+                .and_then(|d| d.as_str().map(|s| s.to_string()))
+        })
+        .unwrap_or_else(|| manifest.name.clone());
+    let instance_name = {
+        let cfg = state.config.lock().unwrap();
+        dedupe_instance_name(&cfg, &instance_name)
+    };
+    crate::tasks::push_task_log_pub(
+        app,
+        state,
+        task_id,
+        &format!(
+            "整合包 {} v{}（dshhome 快照，{} 个 profile，默认「{}」）",
+            manifest.name,
+            manifest.version,
+            profiles.len(),
+            default_profile
+        ),
+    )
+    .await;
+
+    // Resolve the pinned DSH version, installing it when missing (same
+    // behaviour as the profile form).
+    let version_str = manifest
+        .dsh_version
+        .as_deref()
+        .map(|v| {
+            v.trim()
+                .trim_start_matches(['>', '=', '^', '~', ' '])
+                .to_string()
+        })
+        .filter(|v| !v.is_empty());
+    let version_record = {
+        let cfg = state.config.lock().unwrap();
+        match &version_str {
+            Some(v) => cfg.versions.iter().find(|r| r.version == *v).cloned(),
+            None => cfg.versions.last().cloned(),
+        }
+    };
+    let version_record = match version_record {
+        Some(v) => v,
+        None => match &version_str {
+            Some(v) => {
+                let target = resolve_version_fallback(v).await;
+                crate::tasks::push_task_log_pub(
+                    app,
+                    state,
+                    task_id,
+                    &format!("整合包需要 DSH {target}，本机未安装，开始安装…"),
+                )
+                .await;
+                crate::tasks::install_version_streamed_pub(app, state, task_id, &target).await?
+            }
+            None => {
+                return Err("整合包未声明 dshVersion 且本机没有已安装的 DSH 版本".to_string());
+            }
+        },
+    };
+
+    // Fresh dedicated HOME; a leftover directory from a failed earlier
+    // attempt is wiped so the snapshot starts clean.
+    let home_path = state
+        .data_dir
+        .join("homes")
+        .join(crate::config::sanitize_name(&instance_name));
+    if home_path.exists() {
+        std::fs::remove_dir_all(&home_path).map_err(|e| format!("清理旧 DSH_HOME 失败: {e}"))?;
+    }
+    std::fs::create_dir_all(&home_path).map_err(|e| format!("创建 DSH_HOME 失败: {e}"))?;
+    let home =
+        crate::commands::create_home_record(state, &instance_name, &home_path.to_string_lossy())?;
+
+    let result = import_dshhome_body(
+        app,
+        state,
+        task_id,
+        &home.path,
+        manifest,
+        &profiles,
+        unpacked,
+        &version_record,
+    )
+    .await;
+    if let Err(e) = result {
+        // All-or-nothing: drop the half-written snapshot and its record.
+        std::fs::remove_dir_all(&home.path).ok();
+        let mut cfg = state.config.lock().unwrap();
+        cfg.homes.retain(|h| h.id != home.id);
+        crate::commands::save_state(state, &cfg).ok();
+        return Err(e);
+    }
+
+    // Register the instance with the manifest's defaultProfile.
+    let instance_id = {
+        let mut cfg = state.config.lock().unwrap();
+        let inst = crate::config::DshInstance {
+            id: new_id("i"),
+            name: instance_name.clone(),
+            version_id: version_record.id.clone(),
+            home_id: home.id.clone(),
+            env_overrides: Default::default(),
+            default_profile: Some(default_profile.clone()),
+            last_profile: None,
+            icon: None,
+            port: None,
+        };
+        cfg.instances.push(inst.clone());
+        crate::commands::save_state(state, &cfg)?;
+        inst.id
+    };
+
+    // Icon: bundled icon.png wins; an http(s) manifest icon stays remote.
+    let imported_icon: Option<String> = if unpacked.join("icon.png").exists() {
+        let dest = crate::icons::local_icon_path(&home.path, &instance_id);
+        if let Some(parent) = dest.parent() {
+            std::fs::create_dir_all(parent).ok();
+        }
+        std::fs::copy(unpacked.join("icon.png"), &dest)
+            .map(|_| "local".to_string())
+            .ok()
+    } else {
+        manifest
+            .icon
+            .clone()
+            .filter(|i| i.starts_with("https://") || i.starts_with("http://"))
+    };
+    if let Some(icon) = imported_icon {
+        let mut cfg = state.config.lock().unwrap();
+        if let Some(inst) = cfg.instances.iter_mut().find(|i| i.id == instance_id) {
+            inst.icon = Some(icon);
+            crate::commands::save_state(state, &cfg)?;
+        }
+    }
+
+    crate::log_info!(
+        "dshhome 整合包 {} 已导入为实例「{}」（默认 profile「{}」）",
+        manifest.name,
+        instance_name,
+        default_profile
+    );
+    Ok(format!("{instance_name}（{instance_id}）"))
+}
+
+/// The body of a dshhome import, separated so the caller can roll the fresh
+/// HOME back on any failure.
+#[allow(clippy::too_many_arguments)]
+async fn import_dshhome_body(
+    app: &AppHandle,
+    state: &State<'_, AppState>,
+    task_id: &str,
+    home: &Path,
+    manifest: &ModpackManifest,
+    profiles: &BTreeMap<String, ProfileUnit>,
+    unpacked: &Path,
+    version_record: &crate::config::DshVersion,
+) -> Result<(), String> {
+    // 1. Baseline web/headless templates first, so pack content wins.
+    crate::tasks::ensure_web_profile_template_pub(app, state, task_id, home, version_record)
+        .await?;
+
+    // 2. Per profile: overrides/profiles/<name>/ → profile dir, then the
+    //    manifest-authoritative package.json, then pnpm install.
+    for (name, unit) in profiles {
+        let dest = crate::plugins::profile_dir_pub(home, name);
+        std::fs::create_dir_all(&dest)
+            .map_err(|e| format!("创建 profile「{name}」目录失败: {e}"))?;
+        let profile_overrides = unpacked.join("overrides").join("profiles").join(name);
+        if profile_overrides.is_dir() {
+            let count = copy_tree(&profile_overrides, &dest, None)?;
+            if count > 0 {
+                crate::tasks::push_task_log_pub(
+                    app,
+                    state,
+                    task_id,
+                    &format!("profile「{name}」: 已应用 overrides 的 {count} 个文件"),
+                )
+                .await;
+            }
+        }
+        // Manifest wins over any copied machine file.
+        let pkg = profile_pkg_json(name, &unit.bundles, &unit.dependencies);
+        std::fs::write(
+            dest.join("package.json"),
+            serde_json::to_vec_pretty(&pkg).map_err(|e| e.to_string())?,
+        )
+        .map_err(|e| format!("写入 profile「{name}」package.json 失败: {e}"))?;
+        if !dest.join("cordis.patch.yml").exists() {
+            if let Some(patch) = &unit.patch {
+                std::fs::write(dest.join("cordis.patch.yml"), patch)
+                    .map_err(|e| format!("写入 profile「{name}」cordis.patch.yml 失败: {e}"))?;
+            }
+        }
+        crate::tasks::push_task_log_pub(
+            app,
+            state,
+            task_id,
+            &format!("profile「{name}」: 安装依赖…"),
+        )
+        .await;
+        let has_lock = dest.join("pnpm-lock.yaml").exists();
+        pnpm_install_profile(app, state, task_id, &dest, has_lock).await?;
+    }
+
+    // 3. Home-level overrides: everything except the per-profile subtrees.
+    let count = copy_tree(&unpacked.join("overrides"), home, Some(&["profiles"]))?;
+    if count > 0 {
+        crate::tasks::push_task_log_pub(
+            app,
+            state,
+            task_id,
+            &format!("已应用 home 级 overrides/ 的 {count} 个文件"),
+        )
+        .await;
+    }
+
+    // 4. Pointer downloads into the HOME root: files[] plus heavy skills[]
+    //    (small skills already shipped inside overrides/skills/).
+    let mut entries: Vec<ModpackFileEntry> = manifest.files.clone();
+    if let Some(skills) = &manifest.skills {
+        for skill in skills {
+            match (&skill.sha256, skill.size) {
+                (Some(sha256), Some(size)) if !skill.urls.is_empty() => {
+                    entries.push(ModpackFileEntry {
+                        path: skill.path.clone(),
+                        sha256: sha256.clone(),
+                        size,
+                        urls: skill.urls.clone(),
+                    });
+                }
+                _ => {} // pure-file skill: carried by overrides/skills/
+            }
+        }
+    }
+    if !entries.is_empty() {
+        download_modpack_files(app, state, task_id, &entries, home).await?;
+    }
+    Ok(())
 }
 
 /// Finds a free instance name, appending `-2`, `-3`, … when taken.
@@ -1629,6 +2087,11 @@ importers:
             ]),
             patch: None,
             files: vec![],
+            default_profile: None,
+            profiles: None,
+            presets: None,
+            skills: None,
+            instructions: None,
         };
         let deps = manifest_pkg_deps(&manifest);
         assert_eq!(deps["repo"], "github:owner/repo#abc1234");
@@ -1691,6 +2154,11 @@ importers:
             dependencies: BTreeMap::new(),
             patch: None,
             files: vec![],
+            default_profile: None,
+            profiles: None,
+            presets: None,
+            skills: None,
+            instructions: None,
         };
         assert!(validate_pack_type(&manifest).is_ok());
         manifest.pack_type = Some("profile".to_string());
@@ -1710,5 +2178,143 @@ importers:
         assert!(files_target(profile, "../escape").is_err());
         assert!(files_target(profile, "/absolute").is_err());
         assert!(files_target(profile, "").is_err());
+    }
+
+    /// A valid manifest v5 dshhome baseline for shape tests.
+    fn dshhome_manifest() -> ModpackManifest {
+        ModpackManifest {
+            manifest_version: 5,
+            pack_type: Some("dshhome".to_string()),
+            name: "x".to_string(),
+            display_name: None,
+            version: "1.0.0".to_string(),
+            description: None,
+            author: None,
+            icon: None,
+            dsh_version: None,
+            profile_name: None,
+            bundles: vec![],
+            dependencies: BTreeMap::new(),
+            patch: None,
+            files: vec![],
+            default_profile: Some("main".to_string()),
+            profiles: Some(BTreeMap::from([(
+                "main".to_string(),
+                ProfileUnit {
+                    bundles: vec!["@deepseek-ai/dsh-base".to_string()],
+                    dependencies: BTreeMap::new(),
+                    patch: None,
+                },
+            )])),
+            presets: None,
+            skills: None,
+            instructions: None,
+        }
+    }
+
+    #[test]
+    fn dshhome_type_requires_v5() {
+        let mut m = dshhome_manifest();
+        m.manifest_version = 4;
+        assert!(validate_pack_type(&m)
+            .unwrap_err()
+            .contains("manifestVersion 5"));
+        m.manifest_version = 5;
+        assert!(validate_pack_type(&m).is_ok());
+    }
+
+    #[test]
+    fn dshhome_shape_validation() {
+        let ok = dshhome_manifest();
+        assert!(validate_dshhome(&ok).is_ok());
+
+        let mut empty = dshhome_manifest();
+        empty.profiles = Some(BTreeMap::new());
+        assert!(validate_dshhome(&empty).unwrap_err().contains("至少一个"));
+
+        let mut missing = dshhome_manifest();
+        missing.profiles = None;
+        assert!(validate_dshhome(&missing).is_err());
+
+        let mut web = dshhome_manifest();
+        web.profiles.as_mut().unwrap().insert(
+            "web".to_string(),
+            ProfileUnit {
+                bundles: vec!["b".to_string()],
+                dependencies: BTreeMap::new(),
+                patch: None,
+            },
+        );
+        assert!(validate_dshhome(&web).unwrap_err().contains("web"));
+
+        let mut bad_default = dshhome_manifest();
+        bad_default.default_profile = Some("nope".to_string());
+        assert!(validate_dshhome(&bad_default).unwrap_err().contains("nope"));
+
+        let mut no_bundles = dshhome_manifest();
+        no_bundles
+            .profiles
+            .as_mut()
+            .unwrap()
+            .get_mut("main")
+            .unwrap()
+            .bundles = vec![];
+        assert!(validate_dshhome(&no_bundles)
+            .unwrap_err()
+            .contains("bundles"));
+    }
+
+    #[test]
+    fn container_manifest_pairing() {
+        let mut m = dshhome_manifest();
+        // manifest v5 needs the v3 container.
+        assert!(check_container_manifest(2, &m).is_err());
+        assert!(check_container_manifest(3, &m).is_ok());
+        // A dspack never carries a pre-v4 manifest.
+        m.manifest_version = 3;
+        m.pack_type = None;
+        assert!(check_container_manifest(3, &m).is_err());
+        // v4 manifest in either container is fine.
+        m.manifest_version = 4;
+        assert!(check_container_manifest(2, &m).is_ok());
+        assert!(check_container_manifest(3, &m).is_ok());
+    }
+
+    #[test]
+    fn dspack_v3_marker_accepted() {
+        let dir = std::env::temp_dir().join(format!("dsh-modpack-test-{}", uuid::Uuid::new_v4()));
+        let files: Vec<(String, Vec<u8>)> = vec![
+            (
+                "dspack.json".to_string(),
+                br#"{"format":"dspack","version":3}"#.to_vec(),
+            ),
+            (
+                "manifest.json".to_string(),
+                serde_json::to_vec(&dshhome_manifest()).unwrap(),
+            ),
+        ];
+        let dspack = write_modpack_dspack(&dir.join("x-1.0.0.dspack"), &files).unwrap();
+        let manifest = read_manifest_from_dspack(&dspack).unwrap();
+        assert_eq!(manifest.manifest_version, 5);
+        assert_eq!(manifest.pack_type.as_deref(), Some("dshhome"));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn copy_tree_skip_top_excludes_subtree() {
+        let dir = std::env::temp_dir().join(format!("dsh-modpack-test-{}", uuid::Uuid::new_v4()));
+        let src = dir.join("src");
+        std::fs::create_dir_all(src.join("profiles/main")).unwrap();
+        std::fs::create_dir_all(src.join("skills/x")).unwrap();
+        std::fs::write(src.join("AGENTS.md"), "a").unwrap();
+        std::fs::write(src.join("profiles/main/cordis.patch.yml"), "p").unwrap();
+        std::fs::write(src.join("skills/x/SKILL.md"), "s").unwrap();
+        let dst = dir.join("dst");
+        let count = copy_tree(&src, &dst, Some(&["profiles"])).unwrap();
+        assert_eq!(count, 2);
+        assert!(dst.join("AGENTS.md").exists());
+        assert!(dst.join("skills/x/SKILL.md").exists());
+        assert!(!dst.join("profiles/main/cordis.patch.yml").exists());
+        std::fs::remove_dir_all(&dir).ok();
     }
 }

@@ -184,7 +184,7 @@ export interface ModpackFileEntry {
 /** Modpack manifest (v2/v3 legacy tgz, v4 inside .dspack); displayName/description may be a string or a locale map. */
 export interface ModpackManifest {
   manifestVersion: number
-  /** v4: "profile" (only supported value; "collection" reserved). */
+  /** v4: "profile"; v5 adds "dshhome" ("collection" reserved). */
   type?: string
   name: string
   displayName?: string | Record<string, string> | null
@@ -199,6 +199,19 @@ export interface ModpackManifest {
   patch?: string | null
   /** v4: heavy content download manifest. */
   files?: ModpackFileEntry[]
+  /** v5 dshhome form: default launch profile key. */
+  defaultProfile?: string | null
+  /** v5 dshhome form: profile name → unit (v4 contract minus profileName). */
+  profiles?: Record<
+    string,
+    { bundles: string[]; dependencies: Record<string, string>; patch?: string | null }
+  > | null
+  /** v5 dshhome form: preset index entries (content ships under overrides/). */
+  presets?: Record<string, { path?: string | null; description?: string | null }> | null
+  /** v5 dshhome form: skill index entries. */
+  skills?: { path: string; sha256?: string | null; size?: number | null; urls?: string[] }[] | null
+  /** v5 dshhome form: global instructions file (default AGENTS.md). */
+  instructions?: string | null
 }
 
 export interface ImportModpackInput {

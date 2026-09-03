@@ -29,6 +29,10 @@ const busy = ref(false)
 const importMode = ref<'new' | 'existing'>('new')
 const existingInstanceId = ref<string | undefined>(undefined)
 
+/** manifest v5 dshhome: a whole-DSH_HOME snapshot — always a fresh instance,
+ * profiles come from the manifest (no profileName/force overrides). */
+const isDshhome = computed(() => manifest.value?.type === 'dshhome')
+
 /** Instances whose DSH version shares the manifest's version line. */
 const eligibleInstances = computed(() => {
   const want = manifest.value?.dshVersion?.trim().replace(/^[>=^~\s]+/, '')
@@ -105,11 +109,10 @@ async function confirm() {
     await api.startImportModpackTask({
       source: source.value.trim(),
       force: force.value,
-      instance_name:
-        importMode.value === 'new' ? instanceName.value.trim() : undefined,
-      profile_name: profileName.value.trim() || undefined,
+      instance_name: instanceName.value.trim() || undefined,
+      profile_name: isDshhome.value ? undefined : profileName.value.trim() || undefined,
       existing_instance_id:
-        importMode.value === 'existing' ? existingInstanceId.value : undefined,
+        !isDshhome.value && importMode.value === 'existing' ? existingInstanceId.value : undefined,
     })
     emit('update:visible', false)
     await store.refreshTasks()
@@ -164,7 +167,15 @@ function close() {
             · {{ t('modpack.filesCount', { count: manifest.files.length }) }}
           </template>
         </a-alert>
-        <a-form-item :label="t('modpack.target')">
+        <a-alert v-if="isDshhome" type="warning" class="modpack-summary">
+          {{
+            t('modpack.dshhomeHint', {
+              count: Object.keys(manifest.profiles ?? {}).length,
+              default: manifest.defaultProfile,
+            })
+          }}
+        </a-alert>
+        <a-form-item v-if="!isDshhome" :label="t('modpack.target')">
           <a-radio-group v-model="importMode" type="button">
             <a-radio value="new">{{ t('modpack.targetNew') }}</a-radio>
             <a-radio value="existing" :disabled="eligibleInstances.length === 0">
@@ -182,10 +193,10 @@ function close() {
         <a-form-item v-else :label="t('modpack.instanceName')" required>
           <a-input v-model="instanceName" />
         </a-form-item>
-        <a-form-item :label="t('modpack.profileName')">
+        <a-form-item v-if="!isDshhome" :label="t('modpack.profileName')">
           <a-input v-model="profileName" :placeholder="'pack'" />
         </a-form-item>
-        <a-form-item>
+        <a-form-item v-if="!isDshhome">
           <a-checkbox v-model="force">{{ t('modpack.force') }}</a-checkbox>
         </a-form-item>
       </template>
