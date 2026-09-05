@@ -9,6 +9,7 @@ mod plugins;
 mod process;
 mod proxy;
 mod runtime;
+mod scan;
 mod skills;
 mod tasks;
 mod terminal;
@@ -202,6 +203,10 @@ pub fn run() {
             commands::copy_instance,
             commands::list_profiles,
             commands::list_profile_infos,
+            scan::scan_local_dsh,
+            scan::validate_local_version,
+            scan::import_scanned,
+            scan::detect_external_running,
             commands::create_profile,
             commands::copy_profile,
             commands::rename_profile,

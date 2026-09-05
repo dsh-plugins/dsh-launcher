@@ -481,3 +481,64 @@ export interface TuiData {
   instanceId: string
   data: string
 }
+
+// ---------------------------------------------------------------------------
+// Local environment scan / import (issue #31)
+// ---------------------------------------------------------------------------
+
+/** A profile found inside a scanned home. */
+export interface ScannedProfile {
+  name: string
+  kind: 'web' | 'tui' | 'other'
+}
+
+/** A DSH_HOME discovered on the machine. */
+export interface ScannedHome {
+  path: string
+  wsl?: string
+  profiles: ScannedProfile[]
+  alreadyKnown: boolean
+}
+
+/** Full scan report for the import wizard. */
+export interface ScanReport {
+  homes: ScannedHome[]
+  envDshHome?: string
+}
+
+/** A user-picked local version directory, validated. */
+export interface ScannedVersion {
+  dir: string
+  version: string
+  /** "checkout" | "npm" */
+  layout: 'checkout' | 'npm'
+  /** The CLI entry exists (unbuilt checkouts are importable but not launchable). */
+  ready: boolean
+  alreadyKnown: boolean
+}
+
+export interface ImportHomeInput {
+  path: string
+  wsl?: string
+  profiles: string[]
+}
+
+export interface ImportScannedInput {
+  homes: ImportHomeInput[]
+  versions: { dir: string }[]
+}
+
+export interface ImportReport {
+  homesAdded: number
+  versionsAdded: number
+  instancesAdded: number
+  skippedKnown: number
+}
+
+/** An instance running outside the launcher (pinned port answers, not tracked). */
+export interface ExternalStatus {
+  id: string
+  name: string
+  port: number
+  profile: string | null
+}

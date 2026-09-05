@@ -28,6 +28,8 @@ import type {
   ProfileInfo,
   RemoteVersion,
   RuntimeStatus,
+  ScanReport,
+  ScannedVersion,
   SetPluginsEnabledInput,
   StartTerminalInput,
   TaskInfo,
@@ -40,6 +42,9 @@ import type {
   TuiSessionInput,
   TuiWriteInput,
   UninstallPluginInput,
+  ImportScannedInput,
+  ImportReport,
+  ExternalStatus,
 } from './types'
 
 const isTauri = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window
@@ -979,6 +984,32 @@ async function mockCall<T>(cmd: string, args?: Record<string, unknown>): Promise
     case 'write_tui_input':
     case 'resize_tui_session':
       return undefined as T
+    case 'scan_local_dsh':
+      return {
+        homes: [
+          {
+            path: 'C:\\Users\\Administrator\\.dsh-dev',
+            profiles: [
+              { name: 'web', kind: 'web' },
+              { name: 'dsh-tui', kind: 'tui' },
+            ],
+            alreadyKnown: false,
+          },
+        ],
+        envDshHome: undefined,
+      } as T
+    case 'validate_local_version':
+      return {
+        dir: String(args?.dir ?? ''),
+        version: '0.1.1-rc.2',
+        layout: 'checkout',
+        ready: true,
+        alreadyKnown: false,
+      } as T
+    case 'import_scanned':
+      return { homesAdded: 1, versionsAdded: 0, instancesAdded: 2, skippedKnown: 0 } as T
+    case 'detect_external_running':
+      return [] as T
     case 'start_install_plugin_file_task':
       return 'task-mock-plugin-file' as T
     case 'start_install_plugin_task': {
@@ -1194,6 +1225,12 @@ export const api = {
   startTuiSession: (input: TuiSessionInput) => call<void>('start_tui_session', { input }),
   writeTuiInput: (input: TuiWriteInput) => call<void>('write_tui_input', { input }),
   resizeTuiSession: (input: TuiSessionInput) => call<void>('resize_tui_session', { input }),
+
+  // Local environment scan / import (issue #31)
+  scanLocalDsh: () => call<ScanReport>('scan_local_dsh'),
+  validateLocalVersion: (dir: string) => call<ScannedVersion>('validate_local_version', { dir }),
+  importScanned: (input: ImportScannedInput) => call<ImportReport>('import_scanned', { input }),
+  detectExternalRunning: () => call<ExternalStatus[]>('detect_external_running'),
   async onTuiData(cb: Listener<TuiData>): Promise<() => void> {
     if (isTauri) {
       const { listen } = await import('@tauri-apps/api/event')
