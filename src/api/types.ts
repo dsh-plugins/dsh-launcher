@@ -450,3 +450,34 @@ export interface TerminalData {
   instanceId: string
   data: string
 }
+
+// ---------------------------------------------------------------------------
+// TUI instance sessions (issue #31)
+// ---------------------------------------------------------------------------
+
+/** A profile plus its detected kind from `list_profile_infos`. */
+export interface ProfileInfo {
+  name: string
+  /** "web" | "tui" | "other" */
+  kind: 'web' | 'tui' | 'other'
+}
+
+/** Input for starting / resizing a TUI session. */
+export interface TuiSessionInput {
+  instanceId: string
+  cols?: number
+  rows?: number
+}
+
+/** Input for writing to a live TUI session. */
+export interface TuiWriteInput {
+  instanceId: string
+  /** base64 of raw bytes to feed the PTY. */
+  data: string
+}
+
+/** Raw PTY output pushed as `tui://data`. */
+export interface TuiData {
+  instanceId: string
+  data: string
+}
