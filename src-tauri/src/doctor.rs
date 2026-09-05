@@ -6,7 +6,7 @@
 //!
 //! 1. the profile's `node_modules` contains any `@deepseek-ai/*` core package;
 //! 2. two generations of core are mixed (the copy inside the profile has a
-//!    different version than the core in the CLI tree).
+//!    different version than the same package inside the CLI tree).
 //!
 //! (2) is the silent failure mode: two copies of a core package mint two
 //! unequal module-local `Symbol()`s, the agent loop's scheduler lookup on
@@ -14,6 +14,16 @@
 //! in `.prepare` with no load-time error and no hint about which package was
 //! duplicated. A launcher that creates many instances/versions is the most
 //! likely producer of that state, so it checks for it before starting.
+//!
+//! The comparator is per package, not the `@deepseek-ai/dsh` generation
+//! number (issue #32): the scope mixes generation-following packages (`dsh`,
+//! `dsh-settings`, …, all versioned with the CLI) with independent version
+//! lines (`cosmokit` 1.x, `schemastery` 3.x, `cordis` 4.x) that never equal
+//! the generation, so generation-number comparison flagged byte-identical
+//! copies as red errors. Each profile copy is now compared against the same
+//! package inside the CLI tree (the pnpm virtual store); a copy whose
+//! package the tree does not provide at all gets an explicit
+//! unknown-generation warning instead of a guessed verdict.
 //!
 //! The report is advisory: findings are logged and surfaced in the UI, never
 //! used to block a launch.
@@ -62,6 +72,45 @@ fn cli_core_version(version_dir: &Path) -> Option<String> {
             .join("dsh"),
     )
     .or_else(|| package_version(&version_dir.join("apps").join("cli")))
+}
+
+/// Versions of every `@deepseek-ai/*` package the CLI tree provides, as
+/// (package id, version) pairs (issue #32). Scanned from the pnpm virtual
+/// store: `<version_dir>/node_modules/.pnpm/` holds one directory per
+/// package version named `@scope+name@version[_peer-suffix]`, so scope
+/// packages appear as `@deepseek-ai+cosmokit@1.8.3`. This is the only place
+/// the full dependency set is visible — top-level `node_modules/@deepseek-ai` only
+/// carries direct dependencies (`dsh`), while transitive core packages
+/// (cosmokit, schemastery, cordis, …) live solely in `.pnpm`.
+fn cli_tree_versions(version_dir: &Path) -> Vec<(String, String)> {
+    let store = version_dir.join("node_modules").join(".pnpm");
+    let Ok(entries) = std::fs::read_dir(&store) else {
+        return Vec::new();
+    };
+    let mut out: Vec<(String, String)> = entries
+        .filter_map(|e| e.ok())
+        .filter(|e| e.file_type().map(|t| t.is_dir()).unwrap_or(false))
+        .filter_map(|e| {
+            let dir_name = e.file_name().to_string_lossy().to_string();
+            // `<pkg>@<version>` with the scope flattened to `@scope+name`;
+            // the package name itself never contains `@`, so the first `@`
+            // starts the version. Peer-dependency resolution suffixes follow
+            // after `_` (or parens on some pnpm majors) — neither character
+            // can occur inside a semver version, so truncating is safe.
+            let rest = dir_name.strip_prefix("@deepseek-ai+")?;
+            let at = rest.find('@')?;
+            let (name, version) = rest.split_at(at);
+            let version = &version[1..];
+            let version = version.split(['_', '(']).next().unwrap_or(version);
+            if name.is_empty() || version.is_empty() {
+                return None;
+            }
+            Some((format!("@deepseek-ai/{name}"), version.to_string()))
+        })
+        .collect();
+    out.sort();
+    out.dedup();
+    out
 }
 
 /// Every `@deepseek-ai/*` package that has a copy inside the profile's
@@ -116,33 +165,65 @@ pub fn inspect(
         _ => {}
     }
 
-    // 2. A profile must not carry core copies; a version-mismatched copy is
-    //    the two-generations state and gets escalated to an error.
+    // 2. A profile must not carry core copies. Each copy is compared against
+    //    the same package inside the CLI tree (issue #32): equal → a plain
+    //    "should not be here" warning; different → the two-generations state
+    //    and an error; not provided by the tree at all → the generation
+    //    cannot be judged, so it stays a warning.
+    let tree_versions = cli_tree_versions(version_dir);
     for (pkg, version) in profile_core_copies(profile_dir) {
-        let mixed = match (&version, &cli_core) {
-            (Some(v), Some(core)) => v != core,
-            _ => false,
-        };
+        let tree = tree_versions
+            .iter()
+            .find(|(name, _)| name == &pkg)
+            .map(|(_, v)| v.as_str());
         let shown = version.clone().unwrap_or_else(|| "未知版本".to_string());
-        if mixed {
-            let core = cli_core.clone().unwrap_or_default();
-            findings.push(DoctorFinding {
-                level: FindingLevel::Error,
-                code: "profile-core-mixed".to_string(),
-                message: format!(
-                    "Profile「{profile}」的 node_modules 中存在核心包 {pkg}@{shown}，与 CLI 树中的 {core} 不同代；\
-                     该 profile 的工具调用可能全部失败，请卸载该包后重装插件"
-                ),
-            });
-        } else {
-            findings.push(DoctorFinding {
-                level: FindingLevel::Warn,
-                code: "profile-core-copy".to_string(),
-                message: format!(
-                    "Profile「{profile}」的 node_modules 中存在核心包 {pkg}@{shown}；\
-                     核心包应由 CLI 依赖树提供，profile 中不应出现"
-                ),
-            });
+        match (&version, tree) {
+            // Copy equals the tree's own package: no mixed-generation risk.
+            (Some(v), Some(tree_v)) if v == tree_v => {
+                findings.push(DoctorFinding {
+                    level: FindingLevel::Warn,
+                    code: "profile-core-copy".to_string(),
+                    message: format!(
+                        "Profile「{profile}」的 node_modules 中存在核心包 {pkg}@{shown}；\
+                         核心包应由 CLI 依赖树提供，profile 中不应出现"
+                    ),
+                });
+            }
+            // Copy differs from the tree's own package: two generations.
+            (Some(_), Some(tree_v)) => {
+                findings.push(DoctorFinding {
+                    level: FindingLevel::Error,
+                    code: "profile-core-mixed".to_string(),
+                    message: format!(
+                        "Profile「{profile}」的 node_modules 中存在核心包 {pkg}@{shown}，与 CLI 树中的 {tree_v} 不同代；\
+                         该 profile 的工具调用可能全部失败，请卸载该包后重装插件；\
+                         若该副本由插件的 dependencies 声明引入，需插件方将 {pkg} 移入 peerDependencies 后发版"
+                    ),
+                });
+            }
+            // The tree does not provide this package: generation unknown.
+            (_, None) => {
+                findings.push(DoctorFinding {
+                    level: FindingLevel::Warn,
+                    code: "profile-core-orphan".to_string(),
+                    message: format!(
+                        "Profile「{profile}」的 node_modules 中存在核心包 {pkg}@{shown}，\
+                         但 CLI 依赖树未提供该包，无法判断代际；\
+                         核心包应由 CLI 依赖树提供，profile 中不应出现"
+                    ),
+                });
+            }
+            // Copy with an unreadable version but the tree has the package.
+            (None, Some(_)) => {
+                findings.push(DoctorFinding {
+                    level: FindingLevel::Warn,
+                    code: "profile-core-copy".to_string(),
+                    message: format!(
+                        "Profile「{profile}」的 node_modules 中存在核心包 {pkg}（版本未知）；\
+                         核心包应由 CLI 依赖树提供，profile 中不应出现"
+                    ),
+                });
+            }
         }
     }
 
@@ -216,6 +297,17 @@ mod tests {
             self.write_pkg(&dir, "@deepseek-ai/dsh", version);
         }
 
+        /// A package inside the CLI tree's pnpm virtual store, as pnpm lays
+        /// it out: `.pnpm/@deepseek-ai+<name>@<version>/`.
+        fn tree_pkg(&self, short_name: &str, version: &str) {
+            let dir = self
+                .version_dir
+                .join("node_modules")
+                .join(".pnpm")
+                .join(format!("@deepseek-ai+{short_name}@{version}"));
+            self.write_pkg(&dir, &format!("@deepseek-ai/{short_name}"), version);
+        }
+
         fn profile_core(&self, short_name: &str, version: &str) {
             let dir = self
                 .profile_dir
@@ -268,8 +360,13 @@ mod tests {
 
     #[test]
     fn same_generation_profile_copy_is_a_warning() {
+        // The tree provides dsh-tools@0.1.1-rc.2 and the profile carries the
+        // same version: no mixed-generation risk, only a "should not be here"
+        // warning. (Since issue #32 the comparison is per package against
+        // the CLI tree, so the tree must actually provide the package.)
         let fx = Fixture::new();
         fx.cli_core("0.1.1-rc.2");
+        fx.tree_pkg("dsh-tools", "0.1.1-rc.2");
         fx.profile_core("dsh-tools", "0.1.1-rc.2");
         let report = fx.run("0.1.1-rc.2");
         assert_eq!(report.findings.len(), 1);
@@ -282,15 +379,97 @@ mod tests {
 
     #[test]
     fn mixed_generation_profile_copy_is_an_error() {
-        // The #4640 signature: CLI on 0.1.1-rc.2, a stale core copy in the
-        // profile on 0.1.0-rc.8.
+        // The #4640 signature: the tree provides dsh-tools@0.1.1-rc.2, a
+        // stale core copy in the profile is on 0.1.0-rc.8.
         let fx = Fixture::new();
         fx.cli_core("0.1.1-rc.2");
+        fx.tree_pkg("dsh-tools", "0.1.1-rc.2");
         fx.profile_core("dsh-tools", "0.1.0-rc.8");
         let report = fx.run("0.1.1-rc.2");
         assert_eq!(report.findings.len(), 1);
         assert_eq!(report.findings[0].code, "profile-core-mixed");
         assert_eq!(report.findings[0].level, FindingLevel::Error);
+    }
+
+    #[test]
+    fn independent_version_line_copy_is_not_mixed_when_identical() {
+        // Issue #32: cosmokit / schemastery follow their own version lines.
+        // A profile copy identical to the tree's own package must be a plain
+        // warning, never the red "different generations" error.
+        let fx = Fixture::new();
+        fx.cli_core("0.1.2-rc.1");
+        fx.tree_pkg("cosmokit", "1.8.3");
+        fx.tree_pkg("schemastery", "3.18.2");
+        fx.profile_core("cosmokit", "1.8.3");
+        fx.profile_core("schemastery", "3.18.2");
+        let report = fx.run("0.1.2-rc.1");
+        assert_eq!(report.findings.len(), 2, "{:?}", report.findings);
+        assert!(report
+            .findings
+            .iter()
+            .all(|f| f.code == "profile-core-copy" && f.level == FindingLevel::Warn));
+    }
+
+    #[test]
+    fn independent_version_line_copy_differs_is_an_error() {
+        // The tree provides cosmokit@1.8.3, the profile carries 1.7.0:
+        // a genuine mixed-copy state, escalated to an error.
+        let fx = Fixture::new();
+        fx.cli_core("0.1.2-rc.1");
+        fx.tree_pkg("cosmokit", "1.8.3");
+        fx.profile_core("cosmokit", "1.7.0");
+        let report = fx.run("0.1.2-rc.1");
+        assert_eq!(report.findings.len(), 1);
+        assert_eq!(report.findings[0].code, "profile-core-mixed");
+        assert_eq!(report.findings[0].level, FindingLevel::Error);
+        // Error advice mentions the peerDependencies escape hatch.
+        assert!(report.findings[0].message.contains("peerDependencies"));
+    }
+
+    #[test]
+    fn package_absent_from_tree_is_an_orphan_warning() {
+        // The tree provides no such package at all: the generation cannot be
+        // judged, so the copy stays a warning (profile-core-orphan).
+        let fx = Fixture::new();
+        fx.cli_core("0.1.2-rc.1");
+        fx.tree_pkg("cosmokit", "1.8.3");
+        fx.profile_core("dsh-util-values", "0.1.2-rc.1");
+        let report = fx.run("0.1.2-rc.1");
+        assert_eq!(report.findings.len(), 1);
+        assert_eq!(report.findings[0].code, "profile-core-orphan");
+        assert_eq!(report.findings[0].level, FindingLevel::Warn);
+    }
+
+    #[test]
+    fn tree_scan_parses_pnpm_dir_names() {
+        // Directory names in the virtual store: scope flattened with `+`,
+        // peer-dependency suffixes joined with `_`, prereleases keep their
+        // `-rc.N` tail.
+        let fx = Fixture::new();
+        fx.tree_pkg("cosmokit", "1.8.3");
+        std::fs::create_dir_all(
+            fx.version_dir
+                .join("node_modules")
+                .join(".pnpm")
+                .join("@deepseek-ai+schemastery@3.18.2_peer@4.0.0"),
+        )
+        .unwrap();
+        std::fs::create_dir_all(
+            fx.version_dir
+                .join("node_modules")
+                .join(".pnpm")
+                .join("@deepseek-ai+dsh-settings@0.1.2-rc.1"),
+        )
+        .unwrap();
+        let versions = cli_tree_versions(&fx.version_dir);
+        assert!(versions.contains(&("@deepseek-ai/cosmokit".to_string(), "1.8.3".to_string())));
+        assert!(versions.contains(&("@deepseek-ai/schemastery".to_string(), "3.18.2".to_string())));
+        assert!(versions.contains(&(
+            "@deepseek-ai/dsh-settings".to_string(),
+            "0.1.2-rc.1".to_string()
+        )));
+        // Nothing is invented for non-scope entries.
+        assert_eq!(versions.len(), 3);
     }
 
     #[test]
