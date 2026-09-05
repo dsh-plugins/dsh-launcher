@@ -25,6 +25,7 @@ import type {
   SkillUpdateInfo,
   PluginChannel,
   PluginVersionPage,
+  ProfileInfo,
   RemoteVersion,
   RuntimeStatus,
   SetPluginsEnabledInput,
@@ -35,6 +36,9 @@ import type {
   TerminalData,
   TerminalIpcInput,
   TerminalStatus,
+  TuiData,
+  TuiSessionInput,
+  TuiWriteInput,
   UninstallPluginInput,
 } from './types'
 
@@ -959,6 +963,22 @@ async function mockCall<T>(cmd: string, args?: Record<string, unknown>): Promise
     case 'resize_terminal_session':
     case 'close_terminal_session':
       return undefined as T
+    case 'list_profile_infos': {
+      const homeId = String(args?.home_id ?? '')
+      const home = db.homes.find((h) => h.id === homeId)
+      if (!home) fail('DSH_HOME 不存在')
+      const base: string[] = home.path.endsWith('.dsh') ? ['web', 'demo', 'pack'] : ['web']
+      const names = [...base, ...(mockProfiles[homeId] ?? [])]
+      return names.map((name) => ({
+        name,
+        kind: name.includes('tui') ? ('tui' as const) : ('web' as const),
+      })) as T
+    }
+    case 'start_tui_session':
+      return undefined as T
+    case 'write_tui_input':
+    case 'resize_tui_session':
+      return undefined as T
     case 'start_install_plugin_file_task':
       return 'task-mock-plugin-file' as T
     case 'start_install_plugin_task': {
@@ -1167,6 +1187,21 @@ export const api = {
     }
     terminalStatusListeners.add(cb)
     return () => terminalStatusListeners.delete(cb)
+  },
+
+  // TUI instance sessions (issue #31)
+  listProfileInfos: (homeId: string) => call<ProfileInfo[]>('list_profile_infos', { home_id: homeId }),
+  startTuiSession: (input: TuiSessionInput) => call<void>('start_tui_session', { input }),
+  writeTuiInput: (input: TuiWriteInput) => call<void>('write_tui_input', { input }),
+  resizeTuiSession: (input: TuiSessionInput) => call<void>('resize_tui_session', { input }),
+  async onTuiData(cb: Listener<TuiData>): Promise<() => void> {
+    if (isTauri) {
+      const { listen } = await import('@tauri-apps/api/event')
+      const un = await listen<TuiData>('tui://data', (e) => cb(e.payload))
+      return un
+    }
+    // Browser preview: no live session; nothing to stream.
+    return () => {}
   },
 
   async onInstanceStatus(cb: Listener<InstanceStatus>): Promise<() => void> {

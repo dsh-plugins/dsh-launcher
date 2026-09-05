@@ -1,8 +1,8 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Default capability for the launcher main window",
-  "windows": ["main"],
+  "description": "Default capability for the launcher windows (main + TUI terminal windows)",
+  "windows": ["main", "tui-*"],
   "permissions": [
     "core:default",
     "core:event:default",
