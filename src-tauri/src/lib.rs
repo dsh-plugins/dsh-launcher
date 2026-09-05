@@ -9,10 +9,12 @@ mod plugins;
 mod process;
 mod proxy;
 mod runtime;
+mod scan;
 mod skills;
 mod tasks;
 mod terminal;
 mod tray;
+mod tui;
 mod update;
 mod windows;
 mod wsl;
@@ -37,6 +39,10 @@ pub struct AppState {
     pub last_focused_instance: StdMutex<Option<String>>,
     /// Embedded PTY terminal sessions per instance id.
     pub terminals: tokio::sync::Mutex<HashMap<String, terminal::TerminalSession>>,
+    /// PTY-backed TUI instance sessions per instance id (issue #31). Separate
+    /// from `terminals` (the settings-page shell): different lifecycle,
+    /// different status wiring.
+    pub tui_sessions: tokio::sync::Mutex<HashMap<String, tui::TuiSession>>,
 }
 
 /// Extracts a `dsh-launcher://…` deep link from process arguments (Windows
@@ -144,6 +150,7 @@ pub fn run() {
                 profile_locks: tokio::sync::Mutex::new(HashMap::new()),
                 last_focused_instance: StdMutex::new(None),
                 terminals: tokio::sync::Mutex::new(HashMap::new()),
+                tui_sessions: tokio::sync::Mutex::new(HashMap::new()),
             });
 
             // System tray with dynamic menu.
@@ -195,6 +202,11 @@ pub fn run() {
             commands::delete_instance,
             commands::copy_instance,
             commands::list_profiles,
+            commands::list_profile_infos,
+            scan::scan_local_dsh,
+            scan::validate_local_version,
+            scan::import_scanned,
+            scan::detect_external_running,
             commands::create_profile,
             commands::copy_profile,
             commands::rename_profile,
@@ -246,6 +258,9 @@ pub fn run() {
             terminal::write_terminal_input,
             terminal::resize_terminal_session,
             terminal::close_terminal_session,
+            tui::start_tui_session,
+            tui::write_tui_input,
+            tui::resize_tui_session,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
@@ -256,6 +271,7 @@ pub fn run() {
                 let state = app_handle.state::<AppState>();
                 process::kill_all(&state);
                 terminal::kill_all(&state);
+                tui::kill_all(&state);
             }
         });
 }

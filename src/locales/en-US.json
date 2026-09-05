@@ -1,4 +1,18 @@
 {
+  "importScan": {
+    "title": "Import local DSH environments",
+    "hint": "Scan the machine for DSH environments the launcher did not install (~/.dsh*, the DSH_HOME env var and WSL distros), pick the profiles to import; local DSH version directories can be imported too.",
+    "nothingFound": "No importable DSH environment found",
+    "known": "known",
+    "versions": "Local DSH version directories",
+    "versionDirPlaceholder": "Paste a local DSH version directory (source checkout or npm tree)",
+    "addVersion": "Add",
+    "versionAlreadyAdded": "That version directory is already in the list",
+    "needsBuild": "needs build",
+    "summary": "Import finished: {homesAdded} homes, {versionsAdded} versions, {instancesAdded} instances added; {skippedKnown} already known",
+    "rescan": "Rescan",
+    "import": "Import selected"
+  },
   "app": {
     "title": "DSH Launcher",
     "mockBadge": "Browser preview mode"
@@ -30,13 +44,20 @@
       "exited": "Exited"
     },
     "started": "Start command sent",
+    "startedTui": "TUI instance started; terminal window opened",
     "stopped": "Instance stopped",
+    "profileTui": "TUI",
+    "statusExternal": "External",
+    "externalHint": "Something is listening on :{port} for this instance (started outside the launcher)",
     "health": {
       "prefix": "Dependency check: ",
       "warnTitle": "Dependency tree notice",
       "errorTitle": "Dependency tree fault"
     },
     "noProfile": "No profile available under this instance's DSH_HOME"
+  },
+  "tui": {
+    "starting": "Starting TUI session…"
   },
   "instances": {
     "title": "Instances",
@@ -144,6 +165,11 @@
   },
   "settings": {
     "title": "Settings",
+    "importScan": {
+      "title": "Import local environments",
+      "hint": "Discover DSH installs that exist outside the launcher (source checkouts, npm trees, ~/.dsh-dev, …) and import them as instances",
+      "open": "Scan & import…"
+    },
     "general": "General",
     "language": "Language",
     "theme": {

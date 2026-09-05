@@ -1,4 +1,18 @@
 {
+  "importScan": {
+    "title": "导入本机 DSH 环境",
+    "hint": "扫描本机已有的 DSH 环境（~/.dsh*、DSH_HOME 环境变量与 WSL 发行版），勾选要导入的 profile；也可添加本地已有的 DSH 版本目录。",
+    "nothingFound": "没有发现可导入的 DSH 环境",
+    "known": "已登记",
+    "versions": "本地 DSH 版本目录",
+    "versionDirPlaceholder": "粘贴本地 DSH 版本目录路径（源码 checkout 或 npm 安装树）",
+    "addVersion": "添加",
+    "versionAlreadyAdded": "该版本目录已在列表中",
+    "needsBuild": "需要先构建",
+    "summary": "导入完成：新增 {homesAdded} 个 HOME、{versionsAdded} 个版本、{instancesAdded} 个实例，跳过 {skippedKnown} 个已存在项",
+    "rescan": "重新扫描",
+    "import": "导入所选"
+  },
   "app": {
     "title": "DSH 启动器",
     "mockBadge": "浏览器预览模式"
@@ -30,13 +44,20 @@
       "exited": "已退出"
     },
     "started": "实例启动命令已发送",
+    "startedTui": "TUI 实例已启动，终端窗口已打开",
     "stopped": "实例已停止",
+    "profileTui": "TUI",
+    "statusExternal": "外部运行中",
+    "externalHint": "该实例的端口 :{port} 有服务在监听（由启动器之外启动）",
     "health": {
       "prefix": "依赖自检：",
       "warnTitle": "依赖树提示",
       "errorTitle": "依赖树异常"
     },
     "noProfile": "该实例的 DSH_HOME 下没有可用 Profile"
+  },
+  "tui": {
+    "starting": "正在启动 TUI 会话…"
   },
   "instances": {
     "title": "实例列表",
@@ -144,6 +165,11 @@
   },
   "settings": {
     "title": "设置",
+    "importScan": {
+      "title": "导入本机环境",
+      "hint": "扫描启动器之外已存在的 DSH 安装（源码 checkout、npm 安装树、~/.dsh-dev 等）并导入为实例",
+      "open": "扫描并导入…"
+    },
     "general": "常规",
     "language": "界面语言",
     "theme": {

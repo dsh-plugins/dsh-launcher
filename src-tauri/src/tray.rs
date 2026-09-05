@@ -61,8 +61,9 @@ pub async fn rebuild_tray_menu(app: &AppHandle) {
 async fn running_snapshot(app: &AppHandle) -> Vec<RunningItem> {
     let state = app.state::<AppState>();
     let running = state.running.lock().await;
+    let tui = state.tui_sessions.lock().await;
     let cfg = state.config.lock().unwrap();
-    running
+    let mut items: Vec<RunningItem> = running
         .iter()
         .map(|(id, entry)| {
             let name = cfg
@@ -73,7 +74,21 @@ async fn running_snapshot(app: &AppHandle) -> Vec<RunningItem> {
                 .unwrap_or_else(|| id.clone());
             (id.clone(), name, entry.profile.clone())
         })
-        .collect()
+        .collect();
+    // TUI sessions (issue #31): profile resolved from the instance config.
+    for id in tui.keys() {
+        let Some(profile) = crate::process::tui_active_profile(&cfg, id) else {
+            continue;
+        };
+        let name = cfg
+            .instances
+            .iter()
+            .find(|i| i.id == *id)
+            .map(|i| i.name.clone())
+            .unwrap_or_else(|| id.clone());
+        items.push((id.clone(), name, profile));
+    }
+    items
 }
 
 fn build_menu(app: &AppHandle, running: &[RunningItem]) -> tauri::Result<Menu<tauri::Wry>> {
@@ -139,6 +154,7 @@ fn show_launcher(app: &AppHandle) {
 fn quit(app: &AppHandle) {
     let state = app.state::<AppState>();
     process::kill_all(&state);
+    crate::tui::kill_all(&state);
     app.exit(0);
 }
 
@@ -147,6 +163,11 @@ fn open_instance_from_tray(app: &AppHandle, instance_id: &str) {
     let id = instance_id.to_string();
     tauri::async_runtime::spawn(async move {
         let state = app.state::<AppState>();
+        // TUI instances: reopen the terminal window (issue #31).
+        if state.tui_sessions.lock().await.contains_key(&id) {
+            let _ = crate::windows::open_tui_window(&app, &id);
+            return;
+        }
         let url = state.running.lock().await.get(&id).map(|r| r.url.clone());
         let url = match url {
             Some(Some(u)) => u,
@@ -170,7 +191,12 @@ fn stop_instance_from_tray(app: &AppHandle, instance_id: &str) {
     let id = instance_id.to_string();
     tauri::async_runtime::spawn(async move {
         let state = app.state::<AppState>();
-        let _ = process::stop_instance_process(&app, &state, &id).await;
+        // TUI instances live in their own session map (issue #31).
+        if state.tui_sessions.lock().await.contains_key(&id) {
+            let _ = crate::tui::stop_tui_session(&app, &state, &id).await;
+        } else {
+            let _ = process::stop_instance_process(&app, &state, &id).await;
+        }
     });
 }
 
@@ -179,16 +205,33 @@ fn handle_double_click(app: &AppHandle) {
     tauri::async_runtime::spawn(async move {
         let state = app.state::<AppState>();
         // Prefer the profile page the user focused last; fall back to the
-        // single running instance; otherwise just show the launcher.
+        // single running instance; otherwise just show the launcher. TUI
+        // sessions count as running too (issue #31).
         let last = state.last_focused_instance.lock().unwrap().clone();
         let running = state.running.lock().await;
-        let target_id = last.filter(|id| running.contains_key(id)).or_else(|| {
-            if running.len() == 1 {
-                running.keys().next().cloned()
+        let tui_running = state.tui_sessions.lock().await;
+        let is_running = |id: &str| running.contains_key(id) || tui_running.contains_key(id);
+        let target_id = last.filter(|id| is_running(id)).or_else(|| {
+            let total = running.len() + tui_running.len();
+            if total == 1 {
+                running
+                    .keys()
+                    .next()
+                    .or_else(|| tui_running.keys().next())
+                    .cloned()
             } else {
                 None
             }
         });
+        // TUI first: no URL window, reopen the terminal window.
+        let tui_target = target_id.clone().filter(|id| tui_running.contains_key(id));
+        if let Some(id) = tui_target {
+            drop(tui_running);
+            drop(running);
+            let _ = crate::windows::open_tui_window(&app, &id);
+            return;
+        }
+        drop(tui_running);
         let target = target_id.and_then(|id| {
             let entry = running.get(&id)?;
             let url = entry.url.clone()?;
