@@ -5,6 +5,7 @@ import type {
   DshHome,
   DshInstance,
   DshVersion,
+  ExternalStatus,
   InstanceStatus,
   LauncherSettings,
   MarketPlugin,
@@ -58,6 +59,8 @@ interface LauncherState {
   pluginWizard: PluginWizardState | null
   modpackExport: ModpackExportState | null
   modpackExportMulti: ModpackExportMultiState | null
+  /** Instances running outside the launcher (issue #31): id → info. */
+  externals: Record<string, ExternalStatus>
   loaded: boolean
 }
 
@@ -92,6 +95,7 @@ export const useLauncherStore = defineStore('launcher', {
     pluginWizard: null,
     modpackExport: null,
     modpackExportMulti: null,
+    externals: {},
     loaded: false,
   }),
 
@@ -101,6 +105,8 @@ export const useLauncherStore = defineStore('launcher', {
     instanceById: (s) => (id: string) => s.instances.find((i) => i.id === id),
     statusOf: (s) => (id: string): InstanceStatus =>
       s.statusById[id] ?? { id, state: 'stopped', url: null, profile: null, exit_code: null },
+    /** Info about an externally running instance (issue #31), if detected. */
+    externalOf: (s) => (id: string): ExternalStatus | undefined => s.externals[id],
     taskList: (s) => Object.values(s.tasks).sort((a, b) => b.created_at - a.created_at),
     // A queued task is pending work too, so both counts treat it as active.
     runningTaskCount: (s) =>
@@ -132,15 +138,17 @@ export const useLauncherStore = defineStore('launcher', {
         else pending.push(st)
       })
 
-      const [homes, versions, instances, settings, statuses, tasks, runtime] = await Promise.all([
-        api.listHomes(),
-        api.listVersions(),
-        api.listInstances(),
-        api.getSettings(),
-        api.listInstanceStatus(),
-        api.listTasks(),
-        api.getRuntimeStatus(),
-      ])
+      const [homes, versions, instances, settings, statuses, tasks, runtime, externals] =
+        await Promise.all([
+          api.listHomes(),
+          api.listVersions(),
+          api.listInstances(),
+          api.getSettings(),
+          api.listInstanceStatus(),
+          api.listTasks(),
+          api.getRuntimeStatus(),
+          api.detectExternalRunning(),
+        ])
       this.homes = homes
       this.versions = versions
       this.instances = instances
@@ -148,6 +156,7 @@ export const useLauncherStore = defineStore('launcher', {
       this.statusById = Object.fromEntries(statuses.map((st) => [st.id, st]))
       this.tasks = Object.fromEntries(tasks.map((t) => [t.id, t]))
       this.runtime = runtime
+      this.externals = Object.fromEntries(externals.map((e) => [e.id, e]))
       this.loaded = true
       live = true
       pending.forEach(applyStatus)
