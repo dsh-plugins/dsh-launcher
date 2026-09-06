@@ -591,5 +591,17 @@
     "refresh": "Refresh",
     "loading": "Loading…",
     "operationFailed": "Operation failed: {msg}"
+  },
+  "launchError": {
+    "title": "Instance failed to launch",
+    "summaryExited": "Instance \"{name}\" exited unexpectedly after launch (exit code: {code})",
+    "summaryDefault": "Instance \"{name}\" failed to launch",
+    "tailTitle": "Key logs",
+    "tailEmpty": "No log content available (use \"Open full log\" below to view the file)",
+    "copy": "Copy error info",
+    "revealLog": "Open full log",
+    "close": "Close",
+    "copied": "Error info copied",
+    "copyFailed": "Copy failed"
   }
 }

@@ -591,5 +591,17 @@
     "refresh": "刷新",
     "loading": "加载中…",
     "operationFailed": "操作失败：{msg}"
+  },
+  "launchError": {
+    "title": "实例启动失败",
+    "summaryExited": "实例「{name}」启动后意外退出（exit code: {code}）",
+    "summaryDefault": "实例「{name}」启动失败",
+    "tailTitle": "关键日志",
+    "tailEmpty": "没有可用的日志内容（可点击下方「打开完整日志」查看文件）",
+    "copy": "复制错误信息",
+    "revealLog": "打开完整日志",
+    "close": "关闭",
+    "copied": "错误信息已复制",
+    "copyFailed": "复制失败"
   }
 }

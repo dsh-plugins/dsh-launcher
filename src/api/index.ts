@@ -755,6 +755,9 @@ async function mockCall<T>(cmd: string, args?: Record<string, unknown>): Promise
     case 'open_instance_log':
     case 'open_instance_directory':
       // Browser preview has no file manager; the target path is reported as-is.
+    case 'read_instance_log_tail':
+      // Browser preview: the mock never writes instance logs; no tail.
+      return [] as T
       return 'C:\\Users\\Administrator\\AppData\\Roaming\\in.dsh-plug.dsh-launcher' as T
     case 'get_launcher_directory':
       return 'C:\\Users\\Administrator\\AppData\\Roaming\\in.dsh-plug.dsh-launcher' as T
@@ -1265,6 +1268,9 @@ export const api = {
   openLauncherLog: () => call<string>('open_launcher_log'),
   /** Reveals one instance's runtime log with the file selected. */
   openInstanceLog: (instanceId: string) => call<string>('open_instance_log', { instanceId }),
+  /** Reads the tail of one instance's runtime log (launch-failure dialog). */
+  readInstanceLogTail: (instanceId: string, maxLines = 30) =>
+    call<string[]>('read_instance_log_tail', { instanceId, maxLines }),
   /** Opens an instance's DSH_HOME directory in the file manager. */
   openInstanceDirectory: (instanceId: string) =>
     call<string>('open_instance_directory', { instanceId }),

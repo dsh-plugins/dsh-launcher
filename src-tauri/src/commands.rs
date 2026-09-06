@@ -1217,6 +1217,58 @@ pub fn open_instance_log(
     reveal_log_file(&app, log_dir.join(format!("{instance_id}.log")))
 }
 
+/// Reads the tail of one instance's runtime log
+/// (`<data_dir>/logs/<instance_id>.log`) so a startup failure can be shown
+/// with its error detail instead of hammering `open_instance_log` (issue
+/// #30). Missing files yield an empty list, never an error.
+#[tauri::command]
+pub fn read_instance_log_tail(
+    state: State<'_, AppState>,
+    instance_id: String,
+    max_lines: Option<usize>,
+) -> Result<Vec<String>, String> {
+    {
+        let cfg = state.config.lock().unwrap();
+        if !cfg.instances.iter().any(|i| i.id == instance_id) {
+            return Err("实例不存在".to_string());
+        }
+    }
+    let log_path = state
+        .data_dir
+        .join("logs")
+        .join(format!("{instance_id}.log"));
+    Ok(read_tail(&log_path, max_lines.unwrap_or(30).min(200)))
+}
+
+/// Reads the last `n` lines of `path`, bounding the read to the final 64 KiB
+/// so a multi-megabyte log does not get slurped in just to show its tail.
+fn read_tail(path: &std::path::Path, n: usize) -> Vec<String> {
+    use std::io::{Read, Seek, SeekFrom};
+    let Ok(mut file) = std::fs::File::open(path) else {
+        return Vec::new();
+    };
+    let Ok(len) = file.metadata().map(|m| m.len()) else {
+        return Vec::new();
+    };
+    if len == 0 {
+        return Vec::new();
+    }
+    let chunk = len.min(64 * 1024);
+    let mut buf = vec![0u8; chunk as usize];
+    if file.seek(SeekFrom::End(-(chunk as i64))).is_err() || file.read_exact(&mut buf).is_err() {
+        return Vec::new();
+    }
+    let text = String::from_utf8_lossy(&buf);
+    let mut lines: Vec<&str> = text.lines().collect();
+    // A trailing newline produces an empty final line; drop it so the tail
+    // ends at the last real line.
+    if lines.last().is_some_and(|l| l.is_empty()) {
+        lines.pop();
+    }
+    let start = lines.len().saturating_sub(n);
+    lines[start..].iter().map(|s| s.to_string()).collect()
+}
+
 /// Opens the DSH_HOME directory of one instance in the file manager.
 #[tauri::command]
 pub fn open_instance_directory(
