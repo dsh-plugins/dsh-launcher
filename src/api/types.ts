@@ -63,7 +63,7 @@ export type FindingLevel = 'warn' | 'error'
 
 export interface DoctorFinding {
   level: FindingLevel
-  /** core-version-mismatch | core-missing | profile-core-copy | profile-core-mixed */
+  /** core-version-mismatch | core-missing | profile-core-copy | profile-core-mixed | profile-core-orphan */
   code: string
   message: string
 }
