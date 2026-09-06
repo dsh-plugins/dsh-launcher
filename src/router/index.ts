@@ -24,6 +24,15 @@ const router = createRouter({
     { path: '/settings', name: 'settings', component: () => import('@/views/Settings.vue') },
     { path: '/tasks', name: 'tasks', component: () => import('@/views/Tasks.vue') },
     { path: '/setup', name: 'setup', component: () => import('@/views/Setup.vue') },
+    // TUI instance terminal: hosted in the dedicated `tui-<id>` window
+    // (issue #31), rendered without the app shell (see App.vue).
+    {
+      path: '/terminal/:instanceId',
+      name: 'tui-terminal',
+      component: () => import('@/views/TuiTerminal.vue'),
+      // Pass the route param straight into the component's instanceId prop.
+      props: true,
+    },
     { path: '/:pathMatch(.*)*', redirect: '/' },
   ],
 })

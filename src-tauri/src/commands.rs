@@ -510,6 +510,55 @@ pub fn list_profiles(state: State<'_, AppState>, home_id: String) -> Result<Vec<
     Ok(out)
 }
 
+/// A profile plus its detected kind (issue #31): `web` profiles run in a
+/// webview window, `tui` profiles run in a PTY terminal window, `other`
+/// profiles are managed as plain processes.
+#[derive(Clone, Debug, serde::Serialize)]
+pub struct ProfileInfo {
+    pub name: String,
+    /// "web" | "tui" | "other"
+    pub kind: String,
+}
+
+/// Like `list_profiles` but annotated with the profile kind, so the UI can
+/// mark TUI profiles instead of offering a launch path that cannot work.
+#[tauri::command(rename_all = "snake_case")]
+pub fn list_profile_infos(
+    state: State<'_, AppState>,
+    home_id: String,
+) -> Result<Vec<ProfileInfo>, String> {
+    let cfg = state.config.lock().unwrap();
+    let home = cfg
+        .homes
+        .iter()
+        .find(|h| h.id == home_id)
+        .ok_or_else(|| "DSH_HOME 不存在".to_string())?;
+    let profiles_dir = home.path.join("profiles");
+    let mut out = Vec::new();
+    if let Ok(entries) = std::fs::read_dir(&profiles_dir) {
+        for entry in entries.flatten() {
+            let name = entry.file_name().to_string_lossy().to_string();
+            // Skip the template and non-profile entries.
+            if name == "node_modules" || name == "__temp__" {
+                continue;
+            }
+            if entry.path().is_dir() {
+                let kind = match process::profile_kind(&home.path, &name) {
+                    process::InstanceKind::Web => "web",
+                    process::InstanceKind::Tui => "tui",
+                    process::InstanceKind::Other => "other",
+                };
+                out.push(ProfileInfo {
+                    name,
+                    kind: kind.to_string(),
+                });
+            }
+        }
+    }
+    out.sort_by(|a, b| a.name.cmp(&b.name));
+    Ok(out)
+}
+
 /// Creates a new profile by copying the `__temp__` template inside the
 /// given HOME. Returns the created profile name.
 #[tauri::command(rename_all = "snake_case")]
@@ -787,6 +836,23 @@ pub async fn start_instance(
         }
     }
 
+    // TUI profiles cannot run as piped child processes (the CLI's
+    // interactive-terminal guard refuses pipes, issue #31): they run in a
+    // PTY session instead. Validate the profile kind here and open the
+    // terminal window; the window's frontend then starts the PTY session.
+    if let Ok((home_path, _, _)) = resolve_instance_paths(&state, &id) {
+        if process::profile_kind(&home_path, &profile) == process::InstanceKind::Tui {
+            crate::windows::open_tui_window(&app, &id)?;
+            // Remember the last used profile.
+            let mut cfg = state.config.lock().unwrap();
+            if let Some(inst) = cfg.instances.iter_mut().find(|i| i.id == id) {
+                inst.last_profile = Some(profile);
+            }
+            save_state(&state, &cfg)?;
+            return Ok(());
+        }
+    }
+
     process::start_instance_process(&app, &state, &id, &profile).await?;
     // Remember the last used profile.
     let mut cfg = state.config.lock().unwrap();
@@ -802,6 +868,10 @@ pub async fn stop_instance(
     state: State<'_, AppState>,
     id: String,
 ) -> Result<(), String> {
+    // A TUI instance lives in its own session map, not `state.running`.
+    if state.tui_sessions.lock().await.contains_key(&id) {
+        return crate::tui::stop_tui_session(&app, &state, &id).await;
+    }
     process::stop_instance_process(&app, &state, &id).await
 }
 
@@ -818,6 +888,10 @@ pub async fn open_instance_window(
     state: State<'_, AppState>,
     id: String,
 ) -> Result<(), String> {
+    // TUI instance: reopen its terminal window (issue #31).
+    if state.tui_sessions.lock().await.contains_key(&id) {
+        return crate::windows::open_tui_window(&app, &id);
+    }
     let entry = state.running.lock().await.get(&id).map(|r| r.url.clone());
     let Some(url) = entry.flatten() else {
         return Err("实例未在运行或尚未就绪".to_string());

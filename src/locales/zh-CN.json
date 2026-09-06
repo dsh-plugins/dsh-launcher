@@ -30,13 +30,18 @@
       "exited": "已退出"
     },
     "started": "实例启动命令已发送",
+    "startedTui": "TUI 实例已启动，终端窗口已打开",
     "stopped": "实例已停止",
+    "profileTui": "TUI",
     "health": {
       "prefix": "依赖自检：",
       "warnTitle": "依赖树提示",
       "errorTitle": "依赖树异常"
     },
     "noProfile": "该实例的 DSH_HOME 下没有可用 Profile"
+  },
+  "tui": {
+    "starting": "正在启动 TUI 会话…"
   },
   "instances": {
     "title": "实例列表",

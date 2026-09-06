@@ -79,6 +79,8 @@ const store = useLauncherStore()
 
 const selectedInstanceId = ref<string | undefined>(store.settings.last_instance_id ?? undefined)
 const profiles = ref<string[]>([])
+/** Kind per profile name ("web" | "tui" | "other") for dropdown badges. */
+const profileKinds = ref<Record<string, string>>({})
 const selectedProfile = ref<string | undefined>(undefined)
 const profilesLoading = ref(false)
 
@@ -111,12 +113,17 @@ const sharedHome = computed(() => {
 
 async function loadProfiles() {
   profiles.value = []
+  profileKinds.value = {}
   selectedProfile.value = undefined
   const inst = selectedInstance.value
   if (!inst) return
   profilesLoading.value = true
   try {
-    profiles.value = await api.listProfiles(inst.home_id)
+    // Issue #31: annotated list so TUI profiles can be labeled in the
+    // dropdown (launching them opens the terminal window, not a webview).
+    const infos = await api.listProfileInfos(inst.home_id)
+    profiles.value = infos.map((p) => p.name)
+    for (const p of infos) profileKinds.value[p.name] = p.kind
     selectedProfile.value =
       (inst.last_profile && profiles.value.includes(inst.last_profile) && inst.last_profile) ||
       (inst.default_profile && profiles.value.includes(inst.default_profile) && inst.default_profile) ||
@@ -269,6 +276,11 @@ const canStart = computed(
     !!store.versionById(selectedInstance.value.version_id),
 )
 
+/** Kind of the currently selected profile ("web" | "tui" | "other"). */
+const selectedProfileKind = computed(
+  () => (selectedProfile.value && profileKinds.value[selectedProfile.value]) || 'other',
+)
+
 const launchSubtitle = computed(() => {
   if (!selectedInstance.value) return ''
   const v = selectedVersion.value?.version ?? '?'
@@ -280,7 +292,13 @@ async function onStart() {
   if (!selectedInstanceId.value || !selectedProfile.value) return
   try {
     await api.startInstance(selectedInstanceId.value, selectedProfile.value)
-    Message.success(t('home.started'))
+    // TUI profiles: start_instance opens the terminal window; the PTY session
+    // is started by that window (issue #31).
+    if (selectedProfileKind.value === 'tui') {
+      Message.success(t('home.startedTui'))
+    } else {
+      Message.success(t('home.started'))
+    }
     // Dependency-tree preflight: advisory only, never blocks the launch. A
     // duplicated core copy in the profile silently breaks every tool call at
     // runtime, so surface it here instead of leaving users to dig through logs.
@@ -392,7 +410,15 @@ function goEditSelected() {
             :disabled="!selectedInstance"
             allow-clear
           >
-            <a-option v-for="p in profiles" :key="p" :value="p">{{ p }}</a-option>
+            <a-option v-for="p in profiles" :key="p" :value="p">
+              <span class="option-line">
+                {{ p }}
+                <a-tag v-if="profileKinds[p] === 'tui'" size="small" color="purple">
+                  {{ t('home.profileTui') }}
+                </a-tag>
+                <a-tag v-else-if="profileKinds[p] === 'web'" size="small" color="green">Web</a-tag>
+              </span>
+            </a-option>
           </a-select>
         </div>
       </div>

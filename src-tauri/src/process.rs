@@ -140,28 +140,69 @@ pub fn build_env(cfg: &Config, instance_id: &str) -> Result<Vec<(String, String)
     Ok(env)
 }
 
-/// Whether a profile is a DSH web application: its package.json
-/// `dsh.profile.bundles` includes `@deepseek-ai/dsh-web-app`. Such profiles
-/// understand `--host/--port` and get a webview; they must bind a random
-/// free port so several instances don't collide.
-fn is_web_profile(home_path: &std::path::Path, profile: &str) -> bool {
+/// Bundle names that classify a profile (issue #31): the web app bundle
+/// drives the webview branch, the TUI bundle requires a real TTY (PTY
+/// branch). A profile bundling both counts as web.
+pub const WEB_BUNDLE: &str = "@deepseek-ai/dsh-web-app";
+pub const TUI_BUNDLE: &str = "@deepseek-harness-tui/dsh-tui";
+
+/// What kind of front end a profile runs, derived from its
+/// `dsh.profile.bundles` (see `profile_kind`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum InstanceKind {
+    /// Web GUI profile: spawned with piped stdio, status via the `dsh web:`
+    /// URL, displayed in a webview window.
+    Web,
+    /// Terminal UI profile: needs a real TTY, runs inside a PTY session and
+    /// is displayed in an embedded xterm.js window.
+    Tui,
+    /// Anything else: managed purely as a process (legacy behavior).
+    Other,
+}
+
+/// Reads the profile's `dsh.profile.bundles` array, `[]` when unreadable
+/// (missing package.json / malformed JSON).
+fn profile_bundles(home_path: &std::path::Path, profile: &str) -> Vec<String> {
     let pkg = home_path
         .join("profiles")
         .join(profile)
         .join("package.json");
     let Ok(raw) = std::fs::read_to_string(&pkg) else {
-        return false;
+        return Vec::new();
     };
     let Ok(doc) = serde_json::from_str::<serde_json::Value>(&raw) else {
-        return false;
+        return Vec::new();
     };
     doc.pointer("/dsh/profile/bundles")
         .and_then(|b| b.as_array())
         .map(|arr| {
             arr.iter()
-                .any(|b| b.as_str() == Some("@deepseek-ai/dsh-web-app"))
+                .filter_map(|b| b.as_str().map(str::to_string))
+                .collect()
         })
-        .unwrap_or(false)
+        .unwrap_or_default()
+}
+
+/// Classifies a profile by its bundles: web app bundle → `Web` (even when a
+/// TUI bundle is also present — the web front end wins, matching the pre-TUI
+/// behavior), TUI bundle → `Tui`, otherwise `Other`.
+pub fn profile_kind(home_path: &std::path::Path, profile: &str) -> InstanceKind {
+    let bundles = profile_bundles(home_path, profile);
+    if bundles.iter().any(|b| b == WEB_BUNDLE) {
+        InstanceKind::Web
+    } else if bundles.iter().any(|b| b == TUI_BUNDLE) {
+        InstanceKind::Tui
+    } else {
+        InstanceKind::Other
+    }
+}
+
+/// Whether a profile is a DSH web application: its package.json
+/// `dsh.profile.bundles` includes `@deepseek-ai/dsh-web-app`. Such profiles
+/// understand `--host/--port` and get a webview; they must bind a random
+/// free port so several instances don't collide.
+fn is_web_profile(home_path: &std::path::Path, profile: &str) -> bool {
+    profile_kind(home_path, profile) == InstanceKind::Web
 }
 
 /// Whether the installed `dsh-web-app` bundle accepts `--no-open` (added in
@@ -566,13 +607,60 @@ async fn log_line(log: &Arc<Mutex<std::fs::File>>, line: &str) {
     let _ = f.flush();
 }
 
-fn emit_status(app: &AppHandle, status: &InstanceStatus) {
+pub fn emit_status(app: &AppHandle, status: &InstanceStatus) {
     let _ = app.emit(STATUS_EVENT, status);
+}
+
+/// Resolves the profile a TUI session should run: the launcher-passed
+/// `last_profile` when set, else the instance default. TUI windows are only
+/// opened right after `start_instance`, so `last_profile` is authoritative;
+/// the default is a fallback for reattaching after a launcher restart.
+pub fn tui_active_profile(cfg: &Config, instance_id: &str) -> Option<String> {
+    let inst = cfg.instances.iter().find(|i| i.id == instance_id)?;
+    inst.last_profile
+        .clone()
+        .or_else(|| inst.default_profile.clone())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn profile_kind_classifies_web_tui_other() {
+        let dir = std::env::temp_dir().join(format!("dsh-proc-test-{}", uuid::Uuid::new_v4()));
+        let mk = |name: &str, bundles: &str| {
+            let p = dir.join("profiles").join(name);
+            std::fs::create_dir_all(&p).unwrap();
+            std::fs::write(
+                p.join("package.json"),
+                format!(
+                    r#"{{"name":"dsh-profile-{name}","private":true,"dependencies":{{}},"dsh":{{"profile":{{"bundles":{bundles}}}}}}}"#
+                ),
+            )
+            .unwrap();
+        };
+        // Missing package.json -> Other.
+        std::fs::create_dir_all(dir.join("profiles").join("empty")).unwrap();
+        assert_eq!(profile_kind(&dir, "empty"), InstanceKind::Other);
+        // Real-world TUI bundle name (issue #31).
+        mk(
+            "tui",
+            r#"["@deepseek-ai/dsh-base","@deepseek-harness-tui/dsh-tui"]"#,
+        );
+        assert_eq!(profile_kind(&dir, "tui"), InstanceKind::Tui);
+        // Web wins when both bundles are present.
+        mk(
+            "both",
+            r#"["@deepseek-ai/dsh-web-app","@deepseek-harness-tui/dsh-tui"]"#,
+        );
+        assert_eq!(profile_kind(&dir, "both"), InstanceKind::Web);
+        mk("web", r#"["@deepseek-ai/dsh-web-app"]"#);
+        assert_eq!(profile_kind(&dir, "web"), InstanceKind::Web);
+        mk("bot", r#"["@deepseek-ai/dsh-base"]"#);
+        assert_eq!(profile_kind(&dir, "bot"), InstanceKind::Other);
+        std::fs::remove_dir_all(&dir).ok();
+    }
 
     #[test]
     fn is_web_profile_detects_web_app_bundle() {

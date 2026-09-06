@@ -141,13 +141,19 @@ async function launchFromDeepLink(u: URL) {
   }
 }
 
-/** Waits for the instance to report `running` with a URL, then opens its window. */
+/** Waits for the instance to report `running` with a URL, then opens its window.
+ * TUI instances (issue #31) run without a URL — the backend already opened
+ * their terminal window in `start_instance`, so reaching running is done. */
 async function openWindowWhenReady(id: string) {
   const deadline = Date.now() + 120_000
   for (;;) {
     const st = store.statusOf(id)
     if (st.state === 'running' && st.url) {
       await api.openInstanceWindow(id)
+      return
+    }
+    if (st.state === 'running' && !st.url) {
+      // TUI: running without a URL; the terminal window is already open.
       return
     }
     if (st.state === 'exited' || Date.now() > deadline) {
@@ -249,7 +255,9 @@ async function onHeaderMouseDown(e: MouseEvent) {
 </script>
 
 <template>
-  <a-layout class="app-shell">
+  <!-- TUI terminal window: bare full-bleed terminal, no app shell. -->
+  <router-view v-if="route.name === 'tui-terminal'" />
+  <a-layout v-else class="app-shell">
     <a-layout-header class="app-header" @mousedown="onHeaderMouseDown">
       <!-- Brand; dragging is handled manually via onHeaderMouseDown. -->
       <div v-if="!onInstancePage" class="app-brand">
@@ -310,7 +318,6 @@ async function onHeaderMouseDown(e: MouseEvent) {
     />
   </a-layout>
 </template>
-
 <style lang="scss" scoped>
 .app-shell {
   height: 100%;
