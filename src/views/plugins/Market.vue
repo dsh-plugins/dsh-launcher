@@ -1,19 +1,28 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { useLauncherStore } from '@/stores/launcher'
+import { injectDownloadScroll } from '@/composables/download-scroll'
 import { api } from '@/api'
 import type { MarketPlugin, PluginSource } from '@/api/types'
 
 const router = useRouter()
 const { t } = useI18n()
 const store = useLauncherStore()
+const scrollAccessor = injectDownloadScroll()
 
-const search = ref('')
+const search = ref(store.pluginMarketSearch)
 const error = ref<string | null>(null)
 /** '' means "all sources". */
-const sourceFilter = ref<'' | PluginSource>('')
+const sourceFilter = ref<'' | PluginSource>(store.pluginMarketSource)
+
+// Persist the search box + source filter in the store so they survive a trip
+// into the install wizard and back (issue #29).
+watch([search, sourceFilter], ([q, src]) => {
+  store.pluginMarketSearch = q
+  store.pluginMarketSource = src
+})
 
 function pickDescription(p: MarketPlugin): string {
   const d = p.description
@@ -73,6 +82,18 @@ async function load() {
 
 onMounted(() => {
   if (store.marketPlugins.length === 0) load()
+  // Restore the saved scroll offset once the list has re-rendered.
+  nextTick(() => {
+    if (store.pluginMarketScrollTop > 0) {
+      scrollAccessor?.(store.pluginMarketScrollTop)
+    }
+  })
+})
+
+onBeforeUnmount(() => {
+  // Remember where the user was scrolled for the next visit.
+  const top = (scrollAccessor?.(null) as number) ?? 0
+  store.pluginMarketScrollTop = top
 })
 </script>
 

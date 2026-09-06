@@ -1,13 +1,32 @@
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { useLauncherStore } from '@/stores/launcher'
+import { provideDownloadScroll } from '@/composables/download-scroll'
+import type { ScrollbarInstance } from '@arco-design/web-vue'
 
 const route = useRoute()
 const router = useRouter()
 const { t } = useI18n()
 const store = useLauncherStore()
+
+const scrollbar = ref<ScrollbarInstance | null>(null)
+
+/**
+ * Read (top === null) or write the shared scrollbar's scrollTop. The scrollable
+ * element is .arco-scrollbar-container: the template style (`overflow-y: auto`)
+ * is forwarded there via $attrs rather than onto the root .arco-scrollbar.
+ */
+function scrollAccessor(top: number | null): number | void {
+  if (top === null) {
+    const el = scrollbar.value?.$el?.querySelector('.arco-scrollbar-container')
+    return el ? (el as HTMLElement).scrollTop : 0
+  }
+  scrollbar.value?.scrollTop(top)
+}
+
+provideDownloadScroll(scrollAccessor)
 
 const selectedKeys = computed(() => {
   const name = route.name as string
@@ -49,7 +68,12 @@ function onRefreshVersions() {
       </a-menu>
     </aside>
     <section class="download-content">
-      <a-scrollbar type="track" outer-style="height: 100%" style="height: 100%; overflow-y: auto">
+      <a-scrollbar
+        ref="scrollbar"
+        type="track"
+        outer-style="height: 100%"
+        style="height: 100%; overflow-y: auto"
+      >
         <div class="download-inner">
           <router-view />
         </div>
