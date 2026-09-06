@@ -70,8 +70,7 @@ pub struct TuiSession {
     /// Resolves with the exit code once the child exits; taken once by the
     /// waiter task. The blocking `wait()` runs on a dedicated thread so the
     /// async waiter can select it against the kill signal.
-    pub child_waiter:
-        Arc<Mutex<Option<tokio::sync::oneshot::Receiver<Option<i32>>>>>,
+    pub child_waiter: Arc<Mutex<Option<tokio::sync::oneshot::Receiver<Option<i32>>>>>,
 }
 
 fn base64_encode(bytes: &[u8]) -> String {
