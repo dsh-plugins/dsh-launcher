@@ -6,9 +6,13 @@ import { api } from '@/api'
 import type { LauncherUpdateInfo, LogLevel, ThemeMode } from '@/api/types'
 import { SUPPORTED_LOCALES } from '@/i18n'
 import { useLauncherStore } from '@/stores/launcher'
+import ImportScanDialog from '@/components/ImportScanDialog.vue'
 
 const { t } = useI18n()
 const store = useLauncherStore()
+
+/** Local-environment import wizard (issue #31). */
+const importScanVisible = ref(false)
 
 const THEME_OPTIONS = computed<{ value: ThemeMode; label: string }[]>(() => [
   { value: 'light', label: t('settings.theme.light') },
@@ -249,6 +253,16 @@ const homeColumns = computed(() => [
   <div class="dl-page">
     <div class="dl-card">
       <div class="dl-card-title">
+        <h3>{{ t('settings.importScan.title') }}</h3>
+      </div>
+      <p class="news-source-hint">{{ t('settings.importScan.hint') }}</p>
+      <a-button type="primary" @click="importScanVisible = true">
+        {{ t('settings.importScan.open') }}
+      </a-button>
+    </div>
+
+    <div class="dl-card">
+      <div class="dl-card-title">
         <h3>{{ t('settings.general') }}</h3>
       </div>
       <a-form :model="store.settings" layout="vertical" class="settings-form">
@@ -467,6 +481,8 @@ const homeColumns = computed(() => [
         </template>
       </a-table>
     </div>
+
+    <ImportScanDialog v-model:visible="importScanVisible" />
   </div>
 </template>
 

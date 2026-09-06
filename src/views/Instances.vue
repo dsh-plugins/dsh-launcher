@@ -167,6 +167,14 @@ async function onOpenWindow(id: string) {
           <a-tag :color="stateColor(store.statusOf(record.id).state)">
             {{ t(`home.status.${store.statusOf(record.id).state}`) }}
           </a-tag>
+          <a-tooltip
+            v-if="store.externalOf(record.id)"
+            :content="t('home.externalHint', { port: store.externalOf(record.id)!.port })"
+          >
+            <a-tag size="small" color="arcoblue">
+              {{ t('home.statusExternal') }} :{{ store.externalOf(record.id)!.port }}
+            </a-tag>
+          </a-tooltip>
           <template v-if="store.statusOf(record.id).url">
             <a-link
               class="status-url"
