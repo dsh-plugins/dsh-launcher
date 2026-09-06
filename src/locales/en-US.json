@@ -9,7 +9,8 @@
     "addVersion": "Add",
     "versionAlreadyAdded": "That version directory is already in the list",
     "needsBuild": "needs build",
-    "summary": "Import finished: {homesAdded} homes, {versionsAdded} versions, {instancesAdded} instances added; {skippedKnown} already known",
+    "summary": "Import finished: {homes_added} homes, {versions_added} versions, {instances_added} instances added; {skipped_known} already known",
+    "done": "Imported {instances} instance(s)",
     "rescan": "Rescan",
     "import": "Import selected"
   },

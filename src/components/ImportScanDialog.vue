@@ -42,7 +42,7 @@ async function runScan() {
     // Default-select web/tui profiles of unknown homes (skip known ones).
     const defaults: string[] = []
     for (const home of report.value.homes) {
-      if (home.alreadyKnown) continue
+      if (home.already_known) continue
       for (const p of home.profiles) {
         if (p.kind !== 'other') defaults.push(`${home.path}::${p.name}`)
       }
@@ -108,7 +108,7 @@ async function doImport() {
       versions: versions.value.map((v) => ({ dir: v.dir })),
     })
     importResult.value = result
-    Message.success(t('importScan.done', { instances: result.instancesAdded }))
+    Message.success(t('importScan.done', { instances: result.instances_added }))
     emit('imported')
     // Reload the store so new instances appear immediately.
     await store.init()
@@ -145,7 +145,7 @@ function close() {
           <div class="home-head">
             <span class="home-path">{{ home.path }}</span>
             <a-tag v-if="home.wsl" size="small" color="orange">WSL: {{ home.wsl }}</a-tag>
-            <a-tag v-if="home.alreadyKnown" size="small" color="gray">
+            <a-tag v-if="home.already_known" size="small" color="gray">
               {{ t('importScan.known') }}
             </a-tag>
           </div>
@@ -154,7 +154,7 @@ function close() {
               v-for="p in home.profiles"
               :key="p.name"
               :value="profileKey(home.path, p.name)"
-              :disabled="home.alreadyKnown"
+              :disabled="home.already_known"
             >
               {{ p.name }}
               <a-tag v-if="p.kind === 'tui'" size="small" color="purple">TUI</a-tag>

@@ -497,13 +497,13 @@ export interface ScannedHome {
   path: string
   wsl?: string
   profiles: ScannedProfile[]
-  alreadyKnown: boolean
+  already_known: boolean
 }
 
 /** Full scan report for the import wizard. */
 export interface ScanReport {
   homes: ScannedHome[]
-  envDshHome?: string
+  env_dsh_home?: string
 }
 
 /** A user-picked local version directory, validated. */
@@ -514,7 +514,7 @@ export interface ScannedVersion {
   layout: 'checkout' | 'npm'
   /** The CLI entry exists (unbuilt checkouts are importable but not launchable). */
   ready: boolean
-  alreadyKnown: boolean
+  already_known: boolean
 }
 
 export interface ImportHomeInput {
@@ -529,10 +529,10 @@ export interface ImportScannedInput {
 }
 
 export interface ImportReport {
-  homesAdded: number
-  versionsAdded: number
-  instancesAdded: number
-  skippedKnown: number
+  homes_added: number
+  versions_added: number
+  instances_added: number
+  skipped_known: number
 }
 
 /** An instance running outside the launcher (pinned port answers, not tracked). */

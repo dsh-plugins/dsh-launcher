@@ -131,6 +131,9 @@ export const useLauncherStore = defineStore('launcher', {
           delete this.statusById[st.id]
         } else {
           this.statusById[st.id] = st
+          // The launcher is now driving this instance, so it is no longer
+          // "running externally" (issue #31): drop a stale external badge.
+          delete this.externals[st.id]
         }
       }
       await api.onInstanceStatus((st) => {

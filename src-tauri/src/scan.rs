@@ -99,7 +99,11 @@ fn read_local_version(version_dir: &Path) -> String {
     let manifest = if is_checkout(version_dir) {
         version_dir.join("apps").join("cli").join("package.json")
     } else {
-        version_dir.join("node_modules").join("@deepseek-ai").join("dsh").join("package.json")
+        version_dir
+            .join("node_modules")
+            .join("@deepseek-ai")
+            .join("dsh")
+            .join("package.json")
     };
     read_pkg_version(&manifest).unwrap_or_else(|| "local".to_string())
 }
@@ -160,11 +164,13 @@ pub async fn scan_local_dsh(state: State<'_, AppState>) -> Result<ScanReport, St
     // are few; each probe is one short-lived wsl.exe call).
     #[cfg(windows)]
     for distro in crate::wsl::list_distros() {
-        for (home, profiles) in scan_wsl_homes(&distro) {
+        for (home, profiles) in scan_wsl_homes(&distro).await {
             let path = PathBuf::from(home);
-            if report.homes.iter().any(|h| {
-                h.wsl.as_deref() == Some(distro.as_str()) && paths_equal(&h.path, &path)
-            }) {
+            if report
+                .homes
+                .iter()
+                .any(|h| h.wsl.as_deref() == Some(distro.as_str()) && paths_equal(&h.path, &path))
+            {
                 continue;
             }
             let mut scanned = scan_one_home(&cfg, path, Some(distro.clone()));
@@ -224,12 +230,16 @@ fn local_profiles(home_path: &Path) -> Vec<(String, String)> {
 /// (home_path, [(profile_name, kind)]) pairs; empty when the distro has no
 /// DSH homes (or wsl.exe is unavailable).
 #[cfg(windows)]
-fn scan_wsl_homes(distro: &str) -> Vec<(String, Vec<(String, String)>)> {
+async fn scan_wsl_homes(distro: &str) -> Vec<(String, Vec<(String, String)>)> {
     // One call lists homes and their profile dirs together; each output
     // line is either `H<TAB><home>` or `P<TAB><home><TAB><profile>`.
     let script = r#"for h in "$HOME"/.dsh*; do [ -d "$h" ] || continue; echo "H	$h"; for p in "$h"/profiles/*; do [ -d "$p" ] || continue; echo "P	$h	$(basename "$p")"; done; done"#;
     let argv = vec!["sh".to_string(), "-c".to_string(), script.to_string()];
-    let out = match tauri::async_runtime::block_on(crate::wsl::wsl_output(distro, &argv)) {
+    // `scan_local_dsh` runs on Tauri's tokio runtime, so `wsl_output` must be
+    // awaited rather than driven with `async_runtime::block_on` (which would
+    // panic with "Cannot start a runtime from within a runtime" on any WSL
+    // machine). This was the only non-`.await` `wsl_output` call in the tree.
+    let out = match crate::wsl::wsl_output(distro, &argv).await {
         Ok(out) => out,
         Err(_) => return Vec::new(),
     };
@@ -270,7 +280,7 @@ fn scan_wsl_homes(distro: &str) -> Vec<(String, Vec<(String, String)>)> {
             };
         }
     }
-    homes.retain(|(_, profiles)| !profiles.is_empty() || true);
+    homes.retain(|(_, profiles)| !profiles.is_empty());
     homes
 }
 
@@ -402,12 +412,14 @@ pub async fn import_scanned(
             }
         };
         for profile in &home.profiles {
-            // One instance per (home, profile); skip names that exist.
+            // One instance per (home, profile); skip names that exist. The
+            // name embeds the home display name (which appends the distro for
+            // WSL homes) so a Windows `~/.dsh` and a WSL `~/.dsh` with the
+            // same profile no longer produce the same globally-unique name
+            // (the editor enforces global name uniqueness in create/rename).
             let inst_name = format!(
                 "{}·{}",
-                path.file_name()
-                    .map(|n| n.to_string_lossy().to_string())
-                    .unwrap_or_else(|| "DSH".to_string()),
+                home_display_name(&path, home.wsl.as_deref()),
                 profile
             );
             if cfg
@@ -471,7 +483,9 @@ pub struct ExternalStatus {
 
 /// Detects launcher-external running instances among the pinned-port ones.
 #[tauri::command(rename_all = "snake_case")]
-pub async fn detect_external_running(state: State<'_, AppState>) -> Result<Vec<ExternalStatus>, String> {
+pub async fn detect_external_running(
+    state: State<'_, AppState>,
+) -> Result<Vec<ExternalStatus>, String> {
     let cfg = state.config.lock().unwrap().clone();
     let mut out = Vec::new();
     for inst in &cfg.instances {

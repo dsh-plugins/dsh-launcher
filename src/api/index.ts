@@ -993,10 +993,10 @@ async function mockCall<T>(cmd: string, args?: Record<string, unknown>): Promise
               { name: 'web', kind: 'web' },
               { name: 'dsh-tui', kind: 'tui' },
             ],
-            alreadyKnown: false,
+            already_known: false,
           },
         ],
-        envDshHome: undefined,
+        env_dsh_home: undefined,
       } as T
     case 'validate_local_version':
       return {
@@ -1004,10 +1004,10 @@ async function mockCall<T>(cmd: string, args?: Record<string, unknown>): Promise
         version: '0.1.1-rc.2',
         layout: 'checkout',
         ready: true,
-        alreadyKnown: false,
+        already_known: false,
       } as T
     case 'import_scanned':
-      return { homesAdded: 1, versionsAdded: 0, instancesAdded: 2, skippedKnown: 0 } as T
+      return { homes_added: 1, versions_added: 0, instances_added: 2, skipped_known: 0 } as T
     case 'detect_external_running':
       return [] as T
     case 'start_install_plugin_file_task':

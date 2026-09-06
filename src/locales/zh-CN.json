@@ -9,7 +9,8 @@
     "addVersion": "添加",
     "versionAlreadyAdded": "该版本目录已在列表中",
     "needsBuild": "需要先构建",
-    "summary": "导入完成：新增 {homesAdded} 个 HOME、{versionsAdded} 个版本、{instancesAdded} 个实例，跳过 {skippedKnown} 个已存在项",
+    "summary": "导入完成：新增 {homes_added} 个 HOME、{versions_added} 个版本、{instances_added} 个实例，跳过 {skipped_known} 个已存在项",
+    "done": "已导入 {instances} 个实例",
     "rescan": "重新扫描",
     "import": "导入所选"
   },
