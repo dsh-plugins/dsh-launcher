@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { Message } from '@arco-design/web-vue'
@@ -11,6 +11,7 @@ import type {
   McpKv,
   McpServer,
   McpTransport,
+  PluginUpdateInfo,
   SkillInfo,
   SkillUpdateInfo,
 } from '@/api/types'
@@ -916,6 +917,8 @@ const installedPlugins = ref<InstalledPlugin[]>([])
 const pluginsLoading = ref(false)
 const selectedPlugins = ref<string[]>([])
 const pluginsBusy = ref(false)
+/** Latest-version info per installed plugin id, from checkPluginUpdates (issue #27). */
+const pluginUpdates = ref<Record<string, PluginUpdateInfo>>({})
 
 const visiblePlugins = computed(() =>
   // Backend already excludes @deepseek-ai/*; double-filter for safety.
@@ -969,10 +972,18 @@ watch(activeTab, async (tab) => {
 async function loadPlugins() {
   installedPlugins.value = []
   selectedPlugins.value = []
+  pluginUpdates.value = {}
   if (!editingId.value || !pluginProfile.value) return
   pluginsLoading.value = true
   try {
     installedPlugins.value = await api.listInstalledPlugins(editingId.value, pluginProfile.value)
+    // Update detection is best-effort (network/registry): never block the list.
+    try {
+      const updates = await api.checkPluginUpdates(editingId.value, pluginProfile.value)
+      pluginUpdates.value = Object.fromEntries(updates.map((u) => [u.id, u]))
+    } catch {
+      pluginUpdates.value = {}
+    }
   } catch (e) {
     Message.error(String(e))
   } finally {
@@ -1064,6 +1075,67 @@ const rowSelection = {
   showCheckedAll: true,
   onlyCurrent: true,
 }
+
+// --- Plugin updates (issue #27) --------------------------------------------
+
+/** Ids of installed plugins with a newer version available. */
+const updatableIds = computed(() =>
+  visiblePlugins.value.filter((p) => pluginUpdates.value[p.id]?.has_update).map((p) => p.id),
+)
+
+/** Selected rows that actually have an update available. */
+const selectedUpdatableIds = computed(() =>
+  selectedPlugins.value.filter((id) => updatableIds.value.includes(id)),
+)
+
+/** Update task ids started from this page; the list reloads as they settle. */
+const pendingUpdateTasks = ref<string[]>([])
+
+/** Starts one background install task per plugin at its latest stable version. */
+async function updatePlugins(ids: string[]) {
+  if (!editingId.value || !pluginProfile.value || ids.length === 0) return
+  pluginsBusy.value = true
+  let started = 0
+  try {
+    for (const id of ids) {
+      const info = pluginUpdates.value[id]
+      if (!info?.has_update || !info.latest) continue
+      const taskId = await api.startInstallPluginTask({
+        pluginId: id,
+        version: info.latest,
+        channel: 'stable',
+        instanceId: editingId.value,
+        profile: pluginProfile.value,
+      })
+      pendingUpdateTasks.value.push(taskId)
+      started += 1
+    }
+    if (started > 0) {
+      Message.success(t('instanceEdit.pluginUpdatesStarted', { count: started }))
+      await store.refreshTasks()
+    }
+  } catch (e) {
+    Message.error(String(e))
+  } finally {
+    pluginsBusy.value = false
+  }
+}
+
+const unlistenTaskProgress = ref<(() => void) | null>(null)
+onMounted(async () => {
+  unlistenTaskProgress.value = await api.onTaskProgress((p) => {
+    const idx = pendingUpdateTasks.value.indexOf(p.id)
+    if (idx === -1 || (p.state !== 'done' && p.state !== 'error' && p.state !== 'cancelled')) return
+    pendingUpdateTasks.value.splice(idx, 1)
+    if (p.state === 'done') {
+      Message.success(t('instanceEdit.pluginUpdateDone'))
+    } else if (p.state === 'error') {
+      Message.error(p.message ?? t('instanceEdit.pluginUpdateFailed'))
+    }
+    loadPlugins()
+  })
+})
+onBeforeUnmount(() => unlistenTaskProgress.value?.())
 
 // --- Terminal tab ------------------------------------------------------------
 
@@ -1351,12 +1423,19 @@ const terminalRunning = ref(false)
                 </a-button>
                 <a-button
                   size="small"
-                  type="text"
+                  type="primary"
+                  :disabled="!pluginProfile || updatableIds.length === 0 || pluginsBusy"
+                  @click="updatePlugins(updatableIds)"
+                >
+                  {{ t('instanceEdit.pluginUpdateAll', { count: updatableIds.length }) }}
+                </a-button>
+                <a-button
+                  size="small"
                   :disabled="!pluginProfile"
                   :loading="pluginsLoading"
                   @click="loadPlugins"
                 >
-                  ⟳
+                  {{ t('common.refresh') }}
                 </a-button>
               </div>
 
@@ -1376,9 +1455,15 @@ const terminalRunning = ref(false)
                         <span class="plugin-cell-id">{{ record.id }}</span>
                       </template>
                     </a-table-column>
-                    <a-table-column :title="t('instanceEdit.pluginVersion')" data-index="version" :width="140">
+                    <a-table-column :title="t('instanceEdit.pluginVersion')" data-index="version" :width="180">
                       <template #cell="{ record }">
-                        <span v-if="record.version">{{ displayVersion(record.version) }}</span>
+                        <span v-if="pluginUpdates[record.id]?.has_update" class="plugin-update-available">
+                          {{ pluginUpdates[record.id].current ?? displayVersion(record.version) }} →
+                          {{ pluginUpdates[record.id].latest }}
+                        </span>
+                        <span v-else-if="record.version">{{
+                          displayVersion(pluginUpdates[record.id]?.current ?? record.version)
+                        }}</span>
                         <span v-else class="plugin-no-version">-</span>
                       </template>
                     </a-table-column>
@@ -1393,16 +1478,27 @@ const terminalRunning = ref(false)
                         />
                       </template>
                     </a-table-column>
-                    <a-table-column :title="t('instanceEdit.pluginActions')" :width="90">
+                    <a-table-column :title="t('instanceEdit.pluginActions')" :width="160">
                       <template #cell="{ record }">
-                        <a-popconfirm
-                          :content="t('instanceEdit.pluginUninstallConfirm', { name: record.id })"
-                          @ok="onUninstallPlugin(record)"
-                        >
-                          <a-button size="small" status="danger" :disabled="pluginsBusy">
-                            {{ t('instances.table.delete') }}
+                        <a-space>
+                          <a-button
+                            v-if="pluginUpdates[record.id]?.has_update"
+                            size="small"
+                            type="primary"
+                            :disabled="pluginsBusy"
+                            @click="updatePlugins([record.id])"
+                          >
+                            {{ t('instanceEdit.pluginUpdate') }}
                           </a-button>
-                        </a-popconfirm>
+                          <a-popconfirm
+                            :content="t('instanceEdit.pluginUninstallConfirm', { name: record.id })"
+                            @ok="onUninstallPlugin(record)"
+                          >
+                            <a-button size="small" status="danger" :disabled="pluginsBusy">
+                              {{ t('instances.table.delete') }}
+                            </a-button>
+                          </a-popconfirm>
+                        </a-space>
                       </template>
                     </a-table-column>
                   </template>
@@ -1424,6 +1520,14 @@ const terminalRunning = ref(false)
                     @click="batchSetEnabled(false)"
                   >
                     {{ t('instanceEdit.pluginsBatchDisable', { count: selectedPlugins.length }) }}
+                  </a-button>
+                  <a-button
+                    size="small"
+                    type="primary"
+                    :disabled="selectedUpdatableIds.length === 0 || pluginsBusy"
+                    @click="updatePlugins(selectedUpdatableIds)"
+                  >
+                    {{ t('instanceEdit.pluginsBatchUpdate', { count: selectedUpdatableIds.length }) }}
                   </a-button>
                 </div>
 
@@ -2007,6 +2111,11 @@ const terminalRunning = ref(false)
 
 .plugin-no-version {
   color: var(--color-text-4);
+}
+
+.plugin-update-available {
+  color: rgb(var(--orange-6));
+  font-weight: 600;
 }
 
 .plugins-batch {

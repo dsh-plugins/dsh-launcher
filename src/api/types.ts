@@ -397,6 +397,16 @@ export interface InstalledPlugin {
   cordis_id?: string
 }
 
+/** Update availability for one installed npm plugin (issue #27). */
+export interface PluginUpdateInfo {
+  id: string
+  /** Resolved installed version (node_modules), or the cleaned manifest spec. */
+  current?: string
+  /** Latest stable version (npm dist-tag `latest`); absent when unknown. */
+  latest?: string
+  has_update: boolean
+}
+
 export interface InstallPluginInput {
   pluginId: string
   version: string

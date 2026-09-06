@@ -920,6 +920,135 @@ pub(crate) fn resolve_instance(
 }
 
 // ---------------------------------------------------------------------------
+// Commands: update check (issue #27)
+// ---------------------------------------------------------------------------
+
+/// Update availability for one installed npm plugin.
+#[derive(Clone, Debug, Serialize)]
+pub struct PluginUpdateInfo {
+    pub id: String,
+    /// Resolved installed version (from node_modules), or the manifest spec
+    /// with range prefixes stripped when the package cannot be read.
+    pub current: Option<String>,
+    /// Latest stable version (npm dist-tag `latest`); None when the registry
+    /// lookup failed or the plugin is not registry-backed.
+    pub latest: Option<String>,
+    pub has_update: bool,
+}
+
+/// Compares two version strings; true when `latest` is strictly newer.
+/// Tolerates a leading `v` on either side.
+fn semver_newer(latest: &str, current: &str) -> bool {
+    let parse = |s: &str| semver::Version::parse(s.trim().trim_start_matches('v')).ok();
+    match (parse(latest), parse(current)) {
+        (Some(l), Some(c)) => l > c,
+        _ => false,
+    }
+}
+
+/// Strips npm range prefixes (`^`, `~`, `>=`, …) from a manifest spec so it
+/// can serve as a fallback "current version" when node_modules is unreadable.
+/// Returns None for wildcard / dist-tag specs that carry no version.
+fn spec_to_version(spec: &str) -> Option<String> {
+    let s = spec
+        .trim()
+        .trim_start_matches(['^', '~'])
+        .trim_start_matches(">=")
+        .trim_start_matches("<=")
+        .trim_start_matches('=')
+        .trim();
+    if s.is_empty() || s == "*" || s == "latest" {
+        None
+    } else {
+        Some(s.to_string())
+    }
+}
+
+/// The installed version of a package in a profile: the real version from
+/// `node_modules/<pkg>/package.json`, falling back to the cleaned spec.
+fn installed_version_of(dir: &std::path::Path, id: &str, spec: &str) -> Option<String> {
+    let pkg_json = dir.join("node_modules").join(id).join("package.json");
+    if let Ok(raw) = std::fs::read_to_string(&pkg_json) {
+        if let Ok(doc) = serde_json::from_str::<serde_json::Value>(&raw) {
+            if let Some(v) = doc.get("version").and_then(|v| v.as_str()) {
+                return Some(v.to_string());
+            }
+        }
+    }
+    spec_to_version(spec)
+}
+
+/// Checks each installed npm plugin in the profile against the registry's
+/// `latest` dist-tag (issue #27). Non-registry plugins (git/tgz/local specs)
+/// are skipped: their manifest spec does not identify an upstream version.
+/// Per-plugin failures degrade to `latest: None` instead of failing the
+/// whole check.
+#[tauri::command(rename_all = "snake_case")]
+pub async fn check_plugin_updates(
+    state: State<'_, AppState>,
+    instance_id: String,
+    profile: String,
+) -> Result<Vec<PluginUpdateInfo>, String> {
+    let (home_path, _version) = resolve_instance(&state, &instance_id)?;
+    let dir = profile_dir(&home_path, &profile);
+    let manifest = read_profile_manifest(&dir)?;
+
+    let mut npm_deps: Vec<(String, String)> = Vec::new();
+    if let Some(deps) = manifest.get("dependencies").and_then(|d| d.as_object()) {
+        for (name, spec) in deps {
+            if name.starts_with("@deepseek-ai/") {
+                continue;
+            }
+            let spec = spec.as_str().unwrap_or("");
+            // git/tgz/local specs carry no registry version to compare against.
+            if spec.contains(':') {
+                continue;
+            }
+            npm_deps.push((name.clone(), spec.to_string()));
+        }
+    }
+    npm_deps.sort();
+
+    let mut set = tokio::task::JoinSet::new();
+    for (id, spec) in npm_deps {
+        let dir = dir.clone();
+        set.spawn(async move {
+            let current = installed_version_of(&dir, &id, &spec);
+            let latest = match npm_versions(&id, &PluginChannel::Stable).await {
+                Ok(versions) => versions
+                    .iter()
+                    .find(|v| v.is_default)
+                    .or(versions.first())
+                    .map(|v| v.version.clone()),
+                Err(e) => {
+                    crate::log_warn!("查询插件 {id} 最新版本失败: {e}");
+                    None
+                }
+            };
+            let has_update = match (&current, &latest) {
+                (Some(c), Some(l)) => semver_newer(l, c),
+                _ => false,
+            };
+            PluginUpdateInfo {
+                id,
+                current,
+                latest,
+                has_update,
+            }
+        });
+    }
+
+    let mut out = Vec::new();
+    while let Some(res) = set.join_next().await {
+        if let Ok(info) = res {
+            out.push(info);
+        }
+    }
+    out.sort_by(|a, b| a.id.cmp(&b.id));
+    Ok(out)
+}
+
+// ---------------------------------------------------------------------------
 // Commands: enable / disable (cordis.patch.yml disabled rows)
 // ---------------------------------------------------------------------------
 
@@ -2085,6 +2214,30 @@ mod tests {
         assert_eq!(cordis_id_of("@dsh-external/dsh-sidechain"), "dsh-sidechain");
         assert_eq!(cordis_id_of("dsh-better-sidebar"), "dsh-better-sidebar");
         assert_eq!(cordis_id_of("@canglongcl/dsh-web-review"), "dsh-web-review");
+    }
+
+    #[test]
+    fn semver_newer_compares_and_tolerates_v_prefix() {
+        assert!(semver_newer("1.2.0", "1.0.0"));
+        assert!(semver_newer("v1.2.0", "1.0.0"));
+        assert!(semver_newer("1.2.0", "v1.0.0"));
+        assert!(!semver_newer("1.0.0", "1.0.0"));
+        assert!(!semver_newer("1.0.0", "1.2.0"));
+        assert!(semver_newer("1.0.0", "1.0.0-beta.1"));
+        // Unparseable input (commit shas, tags) never reports an update.
+        assert!(!semver_newer("abc1234", "1.0.0"));
+        assert!(!semver_newer("1.2.0", "release-x"));
+    }
+
+    #[test]
+    fn spec_to_version_strips_range_prefixes() {
+        assert_eq!(spec_to_version("^1.0.0"), Some("1.0.0".to_string()));
+        assert_eq!(spec_to_version("~1.0.0"), Some("1.0.0".to_string()));
+        assert_eq!(spec_to_version(">=1.0.0"), Some("1.0.0".to_string()));
+        assert_eq!(spec_to_version("1.0.0"), Some("1.0.0".to_string()));
+        assert_eq!(spec_to_version("*"), None);
+        assert_eq!(spec_to_version("latest"), None);
+        assert_eq!(spec_to_version("  "), None);
     }
 
     #[test]

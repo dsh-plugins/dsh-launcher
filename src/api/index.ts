@@ -24,6 +24,7 @@ import type {
   SkillInfo,
   SkillUpdateInfo,
   PluginChannel,
+  PluginUpdateInfo,
   PluginVersionPage,
   ProfileInfo,
   RemoteVersion,
@@ -953,6 +954,12 @@ async function mockCall<T>(cmd: string, args?: Record<string, unknown>): Promise
         { id: '@dsh-plugin/dsh-thought-buddy', version: '^0.3.1', enabled: false, cordis_id: 'dsh-thought-buddy' },
       ] as T
     }
+    case 'check_plugin_updates': {
+      return [
+        { id: '@dsh-plugin/dsh-auxiliary', current: '0.4.1', latest: '0.5.0', has_update: true },
+        { id: '@dsh-plugin/dsh-thought-buddy', current: '0.3.1', latest: '0.3.1', has_update: false },
+      ] as T
+    }
     case 'set_plugins_enabled':
       return undefined as T
     case 'uninstall_plugin':
@@ -1198,6 +1205,9 @@ export const api = {
     call<PluginVersionPage>('fetch_plugin_versions', { plugin_id: pluginId, channel, page }),
   listInstalledPlugins: (instanceId: string, profile: string) =>
     call<InstalledPlugin[]>('list_installed_plugins', { instance_id: instanceId, profile }),
+  /** Checks each installed npm plugin against the registry's latest dist-tag (issue #27). */
+  checkPluginUpdates: (instanceId: string, profile: string) =>
+    call<PluginUpdateInfo[]>('check_plugin_updates', { instance_id: instanceId, profile }),
   setPluginsEnabled: (input: SetPluginsEnabledInput) => call<void>('set_plugins_enabled', { input }),
   uninstallPlugin: (input: UninstallPluginInput) => call<void>('uninstall_plugin', { input }),
   startInstallPluginTask: (input: InstallPluginInput) => call<string>('start_install_plugin_task', { input }),

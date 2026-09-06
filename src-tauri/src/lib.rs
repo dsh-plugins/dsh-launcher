@@ -246,6 +246,7 @@ pub fn run() {
             plugins::fetch_plugin_market,
             plugins::fetch_plugin_versions,
             plugins::list_installed_plugins,
+            plugins::check_plugin_updates,
             plugins::set_plugins_enabled,
             plugins::uninstall_plugin,
             plugins::start_install_plugin_task,
