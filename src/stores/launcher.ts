@@ -10,6 +10,7 @@ import type {
   LauncherSettings,
   MarketPlugin,
   PluginChannel,
+  PluginSource,
   PluginVersionInfo,
   RemoteVersion,
   RuntimeStatus,
@@ -56,6 +57,12 @@ interface LauncherState {
   marketPlugins: MarketPlugin[]
   marketLoading: boolean
   marketLoadedAt: number | null
+  /** Search box of the plugin market page, persisted across navigations. */
+  pluginMarketSearch: string
+  /** Source filter ('' | 'dsh-plugins' | 'awesome-dsh-plugin') of the market page. */
+  pluginMarketSource: PluginSource | ''
+  /** Scroll offset of the plugin market page's scrollbar, in px. */
+  pluginMarketScrollTop: number
   pluginWizard: PluginWizardState | null
   modpackExport: ModpackExportState | null
   modpackExportMulti: ModpackExportMultiState | null
@@ -92,6 +99,9 @@ export const useLauncherStore = defineStore('launcher', {
     marketPlugins: [],
     marketLoading: false,
     marketLoadedAt: null,
+    pluginMarketSearch: '',
+    pluginMarketSource: '' as PluginSource | '',
+    pluginMarketScrollTop: 0,
     pluginWizard: null,
     modpackExport: null,
     modpackExportMulti: null,
