@@ -552,7 +552,9 @@ mod tests {
 
     #[test]
     fn home_display_name_appends_distro() {
-        let p = Path::new("C:\\Users\\x\\.dsh-dev");
+        // Forward slashes: `Path::file_name` must split the last component on
+        // every CI platform (backslash is a separator only on Windows).
+        let p = Path::new("C:/Users/x/.dsh-dev");
         assert_eq!(home_display_name(p, None), ".dsh-dev");
         assert_eq!(home_display_name(p, Some("Ubuntu")), ".dsh-dev（Ubuntu）");
     }
