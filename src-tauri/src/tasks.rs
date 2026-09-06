@@ -41,6 +41,11 @@ pub struct TaskInfo {
     /// cancelled/failed task never leaves an orphan HOME. Not serialized.
     #[serde(skip)]
     pub reserved_home_path: Option<std::path::PathBuf>,
+    /// Display name for a dedicated HOME (issue #26): defaults to the
+    /// instance name but the creation wizard lets the user override it.
+    /// Not serialized.
+    #[serde(skip)]
+    pub dedicated_home_name: Option<String>,
     pub logs: Vec<String>,
     #[serde(skip)]
     pub child: Option<Arc<Mutex<Option<tokio::process::Child>>>>,
@@ -72,6 +77,15 @@ fn now_millis() -> i64 {
 // Commands
 // ---------------------------------------------------------------------------
 
+/// Resolves the dedicated HOME display name (issue #26): the user-provided
+/// name wins when non-empty, otherwise the instance name is used.
+fn dedicated_home_name_or(instance_name: &str, dedicated_home_name: Option<String>) -> String {
+    dedicated_home_name
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| instance_name.to_string())
+}
+
 /// Enqueues a background task that installs the given DSH version (if not
 /// installed yet) and then creates the instance. Returns the task id.
 #[tauri::command(rename_all = "snake_case")]
@@ -82,6 +96,7 @@ pub async fn start_create_instance_task(
     version: String,
     home_id: Option<String>,
     dedicated: bool,
+    dedicated_home_name: Option<String>,
 ) -> Result<String, String> {
     let name = name.trim().to_string();
     let version = version.trim().to_string();
@@ -92,18 +107,23 @@ pub async fn start_create_instance_task(
         return Err("版本号不能为空".to_string());
     }
 
-    // Dedicated HOME: reserve the path now (placeholder) but do NOT create the
-    // HOME record yet — it is created only once the instance is actually made,
-    // so a failed/cancelled task leaves no orphan HOME behind.
-    let reserved_home_path: Option<std::path::PathBuf> = if dedicated {
-        let path = state
-            .data_dir
-            .join("homes")
-            .join(crate::config::sanitize_name(&name));
-        Some(path)
+    // Dedicated HOME display name (issue #26): user-provided when the wizard
+    // carries one, otherwise derived from the instance name as before.
+    let dedicated_home_name: Option<String> = if dedicated {
+        Some(dedicated_home_name_or(&name, dedicated_home_name))
     } else {
         None
     };
+
+    // Dedicated HOME: reserve the path now (placeholder) but do NOT create the
+    // HOME record yet — it is created only once the instance is actually made,
+    // so a failed/cancelled task leaves no orphan HOME behind.
+    let reserved_home_path: Option<std::path::PathBuf> = dedicated_home_name.as_ref().map(|n| {
+        state
+            .data_dir
+            .join("homes")
+            .join(crate::config::sanitize_name(n))
+    });
 
     // Validate early so a doomed task is never enqueued.
     {
@@ -151,6 +171,7 @@ pub async fn start_create_instance_task(
         instance_id: None,
         instance_name: Some(name.clone()),
         reserved_home_path,
+        dedicated_home_name,
         logs: Vec::new(),
         child: None,
     };
@@ -243,13 +264,16 @@ async fn run_create_instance_task(
     version: &str,
     home_id: &Option<String>,
 ) {
-    // The dedicated HOME path is read from the task's reservation; only then
-    // is the actual HOME record created (inside do_create_instance).
-    let reserved = {
+    // The dedicated HOME path and display name are read from the task's
+    // reservation; only then is the actual HOME record created (inside
+    // do_create_instance).
+    let (reserved, dedicated_name) = {
         let tasks = state.tasks.lock().await;
-        tasks
-            .get(task_id)
-            .and_then(|t| t.reserved_home_path.clone())
+        let t = tasks.get(task_id);
+        (
+            t.and_then(|t| t.reserved_home_path.clone()),
+            t.and_then(|t| t.dedicated_home_name.clone()),
+        )
     };
     let result = do_create_instance(
         app,
@@ -259,6 +283,7 @@ async fn run_create_instance_task(
         version,
         home_id,
         reserved.as_deref(),
+        dedicated_name.as_deref(),
     )
     .await;
 
@@ -295,6 +320,7 @@ async fn run_create_instance_task(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn do_create_instance(
     app: &AppHandle,
     state: &State<'_, AppState>,
@@ -303,6 +329,7 @@ async fn do_create_instance(
     version: &str,
     home_id: &Option<String>,
     reserved_home_path: Option<&std::path::Path>,
+    dedicated_home_name: Option<&str>,
 ) -> Result<String, String> {
     // 1. Install the version if missing.
     let version_record = {
@@ -324,7 +351,10 @@ async fn do_create_instance(
                 .ok_or_else(|| "缺少专属 DSH_HOME 路径".to_string())?
                 .to_string_lossy()
                 .to_string();
-            crate::commands::create_home_record(state, name, &path)?.id
+            // The HOME record takes the dedicated display name (issue #26),
+            // falling back to the instance name.
+            let home_name = dedicated_home_name.unwrap_or(name);
+            crate::commands::create_home_record(state, home_name, &path)?.id
         }
     };
     let home_path = {
@@ -735,6 +765,7 @@ pub async fn start_create_wsl_instance_task(
         instance_id: None,
         instance_name: Some(name.clone()),
         reserved_home_path: None,
+        dedicated_home_name: None,
         logs: Vec::new(),
         child: None,
     };
@@ -1661,5 +1692,15 @@ mod tests {
         // DSH profiles are initialized by pnpm 11; changing this constant
         // means the launcher drives installs with a different major.
         assert_eq!(REQUIRED_PNPM_MAJOR, 11);
+    }
+
+    #[test]
+    fn dedicated_home_name_falls_back_to_instance_name() {
+        assert_eq!(dedicated_home_name_or("inst", None), "inst");
+        assert_eq!(dedicated_home_name_or("inst", Some("  ".into())), "inst");
+        assert_eq!(
+            dedicated_home_name_or("inst", Some(" my home ".into())),
+            "my home"
+        );
     }
 }

@@ -326,6 +326,7 @@ pub async fn start_install_node_task(
         instance_id: None,
         instance_name: None,
         reserved_home_path: None,
+        dedicated_home_name: None,
         logs: Vec::new(),
         child: None,
     };

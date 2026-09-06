@@ -103,6 +103,8 @@
     "instanceName": "Instance name",
     "chooseHome": "Choose DSH_HOME",
     "dedicatedHome": "✦ New dedicated DSH_HOME for this instance",
+    "dedicatedHomeName": "DSH_HOME name",
+    "dedicatedHomeNamePlaceholder": "Defaults to the instance name; editable",
     "dedicatedHomeHint": "A dedicated directory will be created: {path}",
     "noHome": "No DSH_HOME configured yet — add one in Settings first",
     "goSettings": "Open Settings",

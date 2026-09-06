@@ -48,27 +48,49 @@ const instanceName = ref(suggestName())
 const DEDICATED = '__dedicated__'
 const homeId = ref<string | undefined>(DEDICATED)
 const dedicatedPath = ref('')
+// Dedicated HOME display name (issue #26): syncs from the instance name
+// until the user edits it manually, then stays decoupled.
+const dedicatedName = ref(instanceName.value)
+const dedicatedNameTouched = ref(false)
 const busy = ref(false)
 
 const dedicated = computed(() => homeId.value === DEDICATED)
 
+async function refreshDedicatedPath() {
+  dedicatedPath.value = await api.defaultDedicatedHomePath(
+    dedicatedName.value.trim() || instanceName.value.trim() || version.value,
+  )
+}
+
 watch(homeId, async (v) => {
   if (v === DEDICATED && !dedicatedPath.value) {
-    dedicatedPath.value = await api.defaultDedicatedHomePath(instanceName.value.trim() || version.value)
+    await refreshDedicatedPath()
   }
 }, { immediate: true })
 
-watch(instanceName, async (v) => {
-  if (dedicated.value) {
-    dedicatedPath.value = await api.defaultDedicatedHomePath(v.trim() || version.value)
+watch(instanceName, (v) => {
+  if (!dedicatedNameTouched.value) {
+    dedicatedName.value = v
   }
 })
+
+watch(dedicatedName, async () => {
+  if (dedicated.value) {
+    await refreshDedicatedPath()
+  }
+})
+
+function onDedicatedNameInput(v: string) {
+  dedicatedName.value = v
+  dedicatedNameTouched.value = true
+}
 
 const canConfirm = computed(
   () =>
     !busy.value &&
     instanceName.value.trim().length > 0 &&
     (wslSelected.value ? !isSourceBuild.value : !!homeId.value) &&
+    (!dedicated.value || dedicatedName.value.trim().length > 0) &&
     !store.instances.some((i) => i.name === instanceName.value.trim()) &&
     !store.instanceNameBusy(instanceName.value.trim()),
 )
@@ -85,6 +107,7 @@ async function onConfirm() {
         version.value,
         dedicated.value ? null : homeId.value!,
         dedicated.value,
+        dedicated.value ? dedicatedName.value.trim() : null,
       )
     }
     // Pull the task list so the task page shows the new task immediately.
@@ -143,6 +166,15 @@ async function onConfirm() {
           {{ h.name }}（{{ h.path }}）
         </a-option>
       </a-select>
+      <div v-if="dedicated" class="dedicated-name-row">
+        <span class="dedicated-name-label">{{ t('download.dedicatedHomeName') }}</span>
+        <a-input
+          :model-value="dedicatedName"
+          :placeholder="t('download.dedicatedHomeNamePlaceholder')"
+          style="max-width: 320px"
+          @update:model-value="onDedicatedNameInput"
+        />
+      </div>
       <a-alert v-if="dedicated" type="info" class="dedicated-hint">
         {{ t('download.dedicatedHomeHint', { path: dedicatedPath }) }}
       </a-alert>
@@ -233,6 +265,18 @@ async function onConfirm() {
 .dedicated-hint {
   margin-top: 12px;
   max-width: 480px;
+}
+
+.dedicated-name-row {
+  margin-top: 12px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.dedicated-name-label {
+  flex-shrink: 0;
+  color: var(--color-text-2);
 }
 
 .confirm-button {

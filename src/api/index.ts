@@ -326,6 +326,7 @@ async function mockCall<T>(cmd: string, args?: Record<string, unknown>): Promise
       const version = String(args?.version ?? '').trim()
       const dedicated = Boolean(args?.dedicated)
       const homeIdArg = args?.home_id as string | null
+      const dedicatedHomeName = (args?.dedicated_home_name as string | null)?.trim() || name
       if (!name) fail('实例名称不能为空')
       if (!version) fail('版本号不能为空')
       if (db.instances.some((i) => i.name === name)) fail('同名实例已存在')
@@ -337,7 +338,7 @@ async function mockCall<T>(cmd: string, args?: Record<string, unknown>): Promise
       // the real backend's placeholder semantics.
       let dedicatedPath: string | null = null
       if (dedicated) {
-        const safe = name.replace(/[^\w一-龥.-]+/g, '_')
+        const safe = dedicatedHomeName.replace(/[^\w一-龥.-]+/g, '_')
         dedicatedPath = `C:\\Users\\Administrator\\AppData\\Roaming\\in.dsh-plug.dsh-launcher\\homes\\${safe}`
       }
       if (!dedicated && (!homeIdArg || !db.homes.some((h) => h.id === homeIdArg))) {
@@ -394,7 +395,7 @@ async function mockCall<T>(cmd: string, args?: Record<string, unknown>): Promise
           if (existing) {
             resolvedHomeId = existing.id
           } else {
-            const home: DshHome = { id: mockNewId('h'), name, path: dedicatedPath! }
+            const home: DshHome = { id: mockNewId('h'), name: dedicatedHomeName, path: dedicatedPath! }
             cur.homes.push(home)
             resolvedHomeId = home.id
           }
@@ -1053,8 +1054,20 @@ export const api = {
   fetchAvailableVersions: () => call<RemoteVersion[]>('fetch_available_versions'),
   removeVersion: (id: string) => call<void>('remove_version', { id }),
 
-  startCreateInstanceTask: (name: string, version: string, homeId: string | null, dedicated: boolean) =>
-    call<string>('start_create_instance_task', { name, version, home_id: homeId, dedicated }),
+  startCreateInstanceTask: (
+    name: string,
+    version: string,
+    homeId: string | null,
+    dedicated: boolean,
+    dedicatedHomeName: string | null = null,
+  ) =>
+    call<string>('start_create_instance_task', {
+      name,
+      version,
+      home_id: homeId,
+      dedicated,
+      dedicated_home_name: dedicatedHomeName,
+    }),
   /** WSL distros available for WSL instances (issue #19); empty when WSL is unavailable. */
   listWslDistros: () => call<string[]>('list_wsl_distros'),
   /** Starts the WSL instance creation task: provisions node/pnpm/version + HOME inside the distro. */

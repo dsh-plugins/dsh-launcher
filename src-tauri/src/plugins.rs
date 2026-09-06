@@ -1201,6 +1201,7 @@ pub async fn start_install_plugin_task(
         instance_id: Some(input.instance_id.clone()),
         instance_name: Some(display_name),
         reserved_home_path: None,
+        dedicated_home_name: None,
         logs: Vec::new(),
         child: None,
     };

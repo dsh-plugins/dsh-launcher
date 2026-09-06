@@ -103,6 +103,8 @@
     "instanceName": "实例名称",
     "chooseHome": "选择 DSH_HOME",
     "dedicatedHome": "✦ 为此实例新建专属 DSH_HOME",
+    "dedicatedHomeName": "DSH_HOME 名称",
+    "dedicatedHomeNamePlaceholder": "默认为实例名称，可自定义",
     "dedicatedHomeHint": "将创建专属目录：{path}",
     "noHome": "尚未配置 DSH_HOME，请先在设置页添加",
     "goSettings": "前往设置",
