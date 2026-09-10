@@ -504,7 +504,9 @@
     "stepInfo": "Pack metadata",
     "pickProfiles": "Profiles to export",
     "pickProfilesHint": "Check the profiles to include; click a row to pick its export contents",
-    "noProfiles": "No exportable profiles",
+    "noProfiles": "No exportable profiles — create a custom profile in Instance settings → Profiles first",
+    "baselineTag": "Baseline",
+    "baselineHint": "web/headless are baseline templates bundled with the DSH install; the dshhome pack spec (manifest v5 §4) excludes them. To export their content, copy one as a custom profile in Instance settings → Profiles first.",
     "next": "Next",
     "prev": "Back",
     "defaultProfile": "Default launch profile"

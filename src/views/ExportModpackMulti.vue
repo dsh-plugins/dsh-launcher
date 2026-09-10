@@ -6,6 +6,7 @@ import { Message } from '@arco-design/web-vue'
 import { api } from '@/api'
 import type { ExportContents, ExportProfileSpec } from '@/api/types'
 import { useLauncherStore } from '@/stores/launcher'
+import HintIcon from '@/components/HintIcon.vue'
 
 const router = useRouter()
 const { t } = useI18n()
@@ -24,8 +25,16 @@ const busy = ref(false)
 /** Per-profile content selection, created on first expand. */
 const contentsMap = reactive<Record<string, ExportContents>>({})
 
-/** Templates never ship in a dshhome pack (manifest v5 §4). */
-const EXCLUDED = new Set(['__temp__', 'node_modules', 'web', 'headless'])
+/** Internal entries never listed at all. */
+const EXCLUDED = new Set(['__temp__', 'node_modules'])
+/** Baseline template profiles: shown but not selectable — manifest v5 §4
+ * forbids them in dshhome packs (they are materialized from the installed
+ * DSH version on every HOME). */
+const BASELINE = new Set(['web', 'headless'])
+
+function isBaseline(p: string) {
+  return BASELINE.has(p)
+}
 
 function defaultContents(): ExportContents {
   return { patch: true, lockfile: true, workspace: true, icon: false, extra_files: false }
@@ -37,6 +46,7 @@ function contentsFor(p: string): ExportContents {
 }
 
 function toggleExpand(p: string) {
+  if (isBaseline(p)) return
   expanded.value = expanded.value === p ? null : p
   contentsFor(p)
 }
@@ -55,7 +65,7 @@ onMounted(async () => {
   }
   const list = await api.listProfiles(ctx.homeId)
   profiles.value = list.filter((p) => !EXCLUDED.has(p))
-  if (ctx.defaultProfile && profiles.value.includes(ctx.defaultProfile)) {
+  if (ctx.defaultProfile && profiles.value.includes(ctx.defaultProfile) && !isBaseline(ctx.defaultProfile)) {
     selected.value = [ctx.defaultProfile]
   }
 })
@@ -149,44 +159,63 @@ async function startExport() {
 
       <!-- Step 1: pick profiles + per-profile contents -->
       <div v-if="step === 1" class="dl-card">
-        <div class="dl-card-title"><h3>{{ t('exportMulti.pickProfiles') }}</h3></div>
-        <p class="step-desc">{{ t('exportMulti.pickProfilesHint') }}</p>
+        <div class="dl-card-title">
+          <h3>
+            {{ t('exportMulti.pickProfiles') }}
+            <HintIcon :content="t('exportMulti.pickProfilesHint')" />
+          </h3>
+        </div>
         <a-empty v-if="profiles.length === 0" :description="t('exportMulti.noProfiles')" />
         <div v-for="p in profiles" :key="p" class="profile-block">
-          <div class="profile-row" @click="toggleExpand(p)">
+          <div class="profile-row" :class="{ baseline: isBaseline(p) }" @click="toggleExpand(p)">
             <a-checkbox
               :model-value="selected.includes(p)"
+              :disabled="isBaseline(p)"
               @change="(v: boolean | (string | number | boolean)[]) => setSelected(p, v)"
               @click.stop
             />
             <span class="profile-name">
               {{ p }}
-              <a-tag v-if="ctx.defaultProfile === p" color="arcoblue" size="small">
+              <a-tag v-if="isBaseline(p)" color="gray" size="small">
+                {{ t('exportMulti.baselineTag') }}
+              </a-tag>
+              <a-tag v-else-if="ctx.defaultProfile === p" color="arcoblue" size="small">
                 {{ t('instanceEdit.profileDefaultTag') }}
               </a-tag>
+              <HintIcon v-if="isBaseline(p)" :content="t('exportMulti.baselineHint')" />
             </span>
-            <span class="profile-expand">{{ expanded === p ? '▲' : '▼' }}</span>
+            <span v-if="!isBaseline(p)" class="profile-expand">{{ expanded === p ? '▲' : '▼' }}</span>
           </div>
-          <div v-if="expanded === p" class="profile-contents">
+          <div v-if="expanded === p && !isBaseline(p)" class="profile-contents">
             <div class="content-row">
-              <a-checkbox :model-value="true" disabled>{{ t('exportPack.contentManifest') }}</a-checkbox>
-              <div class="content-hint">{{ t('exportPack.contentManifestHint') }}</div>
+              <a-checkbox :model-value="true" disabled>
+                {{ t('exportPack.contentManifest') }}
+                <HintIcon :content="t('exportPack.contentManifestHint')" />
+              </a-checkbox>
             </div>
             <div class="content-row">
-              <a-checkbox v-model="contentsFor(p).patch">{{ t('exportPack.contentPatch') }}</a-checkbox>
-              <div class="content-hint">{{ t('exportPack.contentPatchHint') }}</div>
+              <a-checkbox v-model="contentsFor(p).patch">
+                {{ t('exportPack.contentPatch') }}
+                <HintIcon :content="t('exportPack.contentPatchHint')" />
+              </a-checkbox>
             </div>
             <div class="content-row">
-              <a-checkbox v-model="contentsFor(p).lockfile">{{ t('exportPack.contentLockfile') }}</a-checkbox>
-              <div class="content-hint">{{ t('exportPack.contentLockfileHint') }}</div>
+              <a-checkbox v-model="contentsFor(p).lockfile">
+                {{ t('exportPack.contentLockfile') }}
+                <HintIcon :content="t('exportPack.contentLockfileHint')" />
+              </a-checkbox>
             </div>
             <div class="content-row">
-              <a-checkbox v-model="contentsFor(p).workspace">{{ t('exportPack.contentWorkspace') }}</a-checkbox>
-              <div class="content-hint">{{ t('exportPack.contentWorkspaceHint') }}</div>
+              <a-checkbox v-model="contentsFor(p).workspace">
+                {{ t('exportPack.contentWorkspace') }}
+                <HintIcon :content="t('exportPack.contentWorkspaceHint')" />
+              </a-checkbox>
             </div>
             <div class="content-row">
-              <a-checkbox v-model="contentsFor(p).extra_files">{{ t('exportPack.contentExtra') }}</a-checkbox>
-              <div class="content-hint">{{ t('exportPack.contentExtraHint') }}</div>
+              <a-checkbox v-model="contentsFor(p).extra_files">
+                {{ t('exportPack.contentExtra') }}
+                <HintIcon :content="t('exportPack.contentExtraHint')" />
+              </a-checkbox>
             </div>
           </div>
         </div>
@@ -265,6 +294,15 @@ async function startExport() {
   font-size: 13px;
 }
 
+.profile-row.baseline {
+  cursor: default;
+  opacity: 0.75;
+}
+
+.profile-row.baseline:hover {
+  background: transparent;
+}
+
 .profile-block {
   border-bottom: 1px solid var(--color-border-1);
 }
@@ -302,12 +340,6 @@ async function startExport() {
 
 .content-row {
   padding: 6px 4px;
-}
-
-.content-hint {
-  margin: 2px 0 0 26px;
-  font-size: 12px;
-  color: var(--color-text-3);
 }
 
 .form-row {

@@ -504,7 +504,9 @@
     "stepInfo": "整合包信息",
     "pickProfiles": "选择要导出的 Profile",
     "pickProfilesHint": "勾选需要的 profile；点击行可展开并为该 profile 单独选择导出内容",
-    "noProfiles": "没有可导出的 profile",
+    "noProfiles": "没有可导出的 profile，请先在实例设置 → Profiles 中创建自定义 profile",
+    "baselineTag": "基线",
+    "baselineHint": "web/headless 是 DSH 安装自带的基线模板，dshhome 整合包规范（manifest v5 §4）不包含它们；如需导出其内容，请先在实例设置 → Profiles 中复制一份自定义 profile 再导出",
     "next": "下一步",
     "prev": "上一步",
     "defaultProfile": "默认启动 Profile"
