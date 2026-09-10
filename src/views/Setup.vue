@@ -5,6 +5,7 @@ import { useI18n } from 'vue-i18n'
 import { Message } from '@arco-design/web-vue'
 import { api } from '@/api'
 import { useLauncherStore } from '@/stores/launcher'
+import HintIcon from '@/components/HintIcon.vue'
 
 const router = useRouter()
 const { t } = useI18n()
@@ -90,8 +91,10 @@ async function recheck() {
 
       <!-- Guidance -->
       <div v-if="!nodeOk" class="guide-block">
-        <h4>{{ t('setup.installNode') }}</h4>
-        <p class="one-click-desc">{{ t('setup.oneClickNodeDesc') }}</p>
+        <h4>
+          {{ t('setup.installNode') }}
+          <HintIcon :content="t('setup.oneClickNodeDesc')" />
+        </h4>
         <a-button
           type="primary"
           size="large"
@@ -196,11 +199,6 @@ h2 {
     line-height: 1.8;
     color: var(--color-text-2);
   }
-}
-
-.one-click-desc {
-  margin: 0 0 12px;
-  color: var(--color-text-2);
 }
 
 .one-click-progress {

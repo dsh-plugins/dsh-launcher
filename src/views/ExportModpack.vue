@@ -5,6 +5,7 @@ import { useI18n } from 'vue-i18n'
 import { Message } from '@arco-design/web-vue'
 import { api } from '@/api'
 import { useLauncherStore } from '@/stores/launcher'
+import HintIcon from '@/components/HintIcon.vue'
 
 const router = useRouter()
 const { t } = useI18n()
@@ -118,28 +119,40 @@ async function startExport() {
       <div class="dl-card">
         <div class="dl-card-title"><h3>{{ t('exportPack.contents') }}</h3></div>
         <div class="content-row">
-          <a-checkbox :model-value="true" disabled>{{ t('exportPack.contentManifest') }}</a-checkbox>
-          <div class="content-hint">{{ t('exportPack.contentManifestHint') }}</div>
+          <a-checkbox :model-value="true" disabled>
+            {{ t('exportPack.contentManifest') }}
+            <HintIcon :content="t('exportPack.contentManifestHint')" />
+          </a-checkbox>
         </div>
         <div class="content-row">
-          <a-checkbox v-model="contents.patch">{{ t('exportPack.contentPatch') }}</a-checkbox>
-          <div class="content-hint">{{ t('exportPack.contentPatchHint') }}</div>
+          <a-checkbox v-model="contents.patch">
+            {{ t('exportPack.contentPatch') }}
+            <HintIcon :content="t('exportPack.contentPatchHint')" />
+          </a-checkbox>
         </div>
         <div class="content-row">
-          <a-checkbox v-model="contents.lockfile">{{ t('exportPack.contentLockfile') }}</a-checkbox>
-          <div class="content-hint">{{ t('exportPack.contentLockfileHint') }}</div>
+          <a-checkbox v-model="contents.lockfile">
+            {{ t('exportPack.contentLockfile') }}
+            <HintIcon :content="t('exportPack.contentLockfileHint')" />
+          </a-checkbox>
         </div>
         <div class="content-row">
-          <a-checkbox v-model="contents.workspace">{{ t('exportPack.contentWorkspace') }}</a-checkbox>
-          <div class="content-hint">{{ t('exportPack.contentWorkspaceHint') }}</div>
+          <a-checkbox v-model="contents.workspace">
+            {{ t('exportPack.contentWorkspace') }}
+            <HintIcon :content="t('exportPack.contentWorkspaceHint')" />
+          </a-checkbox>
         </div>
         <div class="content-row">
-          <a-checkbox v-model="contents.icon">{{ t('exportPack.contentIcon') }}</a-checkbox>
-          <div class="content-hint">{{ t('exportPack.contentIconHint') }}</div>
+          <a-checkbox v-model="contents.icon">
+            {{ t('exportPack.contentIcon') }}
+            <HintIcon :content="t('exportPack.contentIconHint')" />
+          </a-checkbox>
         </div>
         <div class="content-row">
-          <a-checkbox v-model="contents.extra_files">{{ t('exportPack.contentExtra') }}</a-checkbox>
-          <div class="content-hint">{{ t('exportPack.contentExtraHint') }}</div>
+          <a-checkbox v-model="contents.extra_files">
+            {{ t('exportPack.contentExtra') }}
+            <HintIcon :content="t('exportPack.contentExtraHint')" />
+          </a-checkbox>
         </div>
       </div>
 
@@ -186,12 +199,6 @@ async function startExport() {
 
 .content-row:last-child {
   border-bottom: none;
-}
-
-.content-hint {
-  margin: 2px 0 0 26px;
-  font-size: 12px;
-  color: var(--color-text-3);
 }
 
 .export-actions {

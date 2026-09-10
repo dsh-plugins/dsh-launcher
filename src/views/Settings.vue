@@ -7,6 +7,7 @@ import type { LauncherUpdateInfo, LogLevel, ThemeMode } from '@/api/types'
 import { SUPPORTED_LOCALES } from '@/i18n'
 import { useLauncherStore } from '@/stores/launcher'
 import ImportScanDialog from '@/components/ImportScanDialog.vue'
+import HintIcon from '@/components/HintIcon.vue'
 
 const { t } = useI18n()
 const store = useLauncherStore()
@@ -296,7 +297,7 @@ const homeColumns = computed(() => [
           <a-switch :model-value="store.settings.autostart" @change="onAutostartChange" />
           <span class="switch-label">{{ t('settings.autostart') }}</span>
         </a-form-item>
-        <a-form-item :label="t('settings.logLevel.label')">
+        <a-form-item><template #label>{{ t('settings.logLevel.label') }}<HintIcon :content="t('settings.logLevel.hint')" /></template>
           <a-select
             :model-value="store.settings.log_level"
             style="width: 220px"
@@ -306,9 +307,8 @@ const homeColumns = computed(() => [
               {{ o.label }}
             </a-option>
           </a-select>
-          <p class="news-source-hint">{{ t('settings.logLevel.hint') }}</p>
-        </a-form-item>
-        <a-form-item :label="t('settings.newsSource')">
+          </a-form-item>
+        <a-form-item><template #label>{{ t('settings.newsSource') }}<HintIcon :content="t('settings.newsSourceHint')" /></template>
           <a-input
             v-model="newsSource"
             :placeholder="t('settings.newsSourcePlaceholder')"
@@ -316,8 +316,7 @@ const homeColumns = computed(() => [
             @blur="onNewsSourceSave"
             @press-enter="onNewsSourceSave"
           />
-          <p class="news-source-hint">{{ t('settings.newsSourceHint') }}</p>
-        </a-form-item>
+          </a-form-item>
       </a-form>
     </div>
 
@@ -328,8 +327,7 @@ const homeColumns = computed(() => [
       <a-form :model="store.settings" layout="vertical" class="settings-form">
         <a-form-item>
           <a-switch :model-value="store.settings.proxy_enabled" @change="onProxyEnabledChange" />
-          <span class="switch-label">{{ t('settings.proxy.enabled') }}</span>
-          <p class="news-source-hint">{{ t('settings.proxy.enabledHint') }}</p>
+          <span class="switch-label">{{ t('settings.proxy.enabled') }}<HintIcon :content="t('settings.proxy.enabledHint')" /></span>
         </a-form-item>
         <a-form-item :label="t('settings.proxy.url')">
           <a-input
@@ -350,7 +348,7 @@ const homeColumns = computed(() => [
             @blur="onProxyFieldsSave"
           />
         </a-form-item>
-        <a-form-item :label="t('settings.proxy.noProxy')">
+        <a-form-item><template #label>{{ t('settings.proxy.noProxy') }}<HintIcon :content="t('settings.proxy.noProxyHint')" /></template>
           <a-input
             v-model="noProxy"
             :disabled="!store.settings.proxy_enabled"
@@ -358,25 +356,22 @@ const homeColumns = computed(() => [
             @blur="onProxyFieldsSave"
             @press-enter="onProxyFieldsSave"
           />
-          <p class="news-source-hint">{{ t('settings.proxy.noProxyHint') }}</p>
-        </a-form-item>
+          </a-form-item>
         <a-form-item>
           <a-switch
             :model-value="store.settings.proxy_apply_dsh"
             :disabled="!store.settings.proxy_enabled"
             @change="onProxyApplyDshChange"
           />
-          <span class="switch-label">{{ t('settings.proxy.applyDsh') }}</span>
-          <p class="news-source-hint">{{ t('settings.proxy.applyDshHint') }}</p>
+          <span class="switch-label">{{ t('settings.proxy.applyDsh') }}<HintIcon :content="t('settings.proxy.applyDshHint')" /></span>
         </a-form-item>
       </a-form>
     </div>
 
     <div class="dl-card">
       <div class="dl-card-title">
-        <h3>{{ t('settings.skillRepos.title') }}</h3>
+        <h3>{{ t('settings.skillRepos.title') }}<HintIcon :content="t('settings.skillRepos.hint')" /></h3>
       </div>
-      <p class="news-source-hint">{{ t('settings.skillRepos.hint') }}</p>
       <div class="skill-repo-add">
         <a-input
           v-model="newSkillRepo"
@@ -407,7 +402,7 @@ const homeColumns = computed(() => [
 
     <div class="dl-card">
       <div class="dl-card-title">
-        <h3>{{ t('settings.update.title') }}</h3>
+        <h3>{{ t('settings.update.title') }}<HintIcon :content="t('settings.update.channelHint')" /></h3>
       </div>
       <div class="update-row">
         <span class="update-current">v{{ launcherVersion }}</span>
@@ -428,8 +423,7 @@ const homeColumns = computed(() => [
           {{ t('settings.update.check') }}
         </a-button>
       </div>
-      <p class="news-source-hint">{{ t('settings.update.channelHint') }}</p>
-      <div v-if="updateInfo && !updateInfo.up_to_date" class="update-result">
+            <div v-if="updateInfo && !updateInfo.up_to_date" class="update-result">
         <a-alert type="info" :show-icon="true">
           {{ t('settings.update.available', { version: updateInfo.latest }) }}
           <template v-if="updateInfo.url">
@@ -446,9 +440,8 @@ const homeColumns = computed(() => [
 
     <div class="dl-card">
       <div class="dl-card-title">
-        <h3>{{ t('settings.dataDir.title') }}</h3>
+        <h3>{{ t('settings.dataDir.title') }}<HintIcon :content="t('settings.dataDir.hint')" /></h3>
       </div>
-      <p class="news-source-hint">{{ t('settings.dataDir.hint') }}</p>
       <div class="update-row">
         <span class="data-dir-path" :title="dataDir">{{ dataDir || t('settings.dataDir.unknown') }}</span>
         <a-button size="small" @click="onOpenDataDir">{{ t('settings.dataDir.open') }}</a-button>
@@ -504,12 +497,6 @@ const homeColumns = computed(() => [
 .switch-label {
   margin-left: 10px;
   color: var(--color-text-2);
-}
-
-.news-source-hint {
-  margin: 6px 0 0;
-  font-size: 12px;
-  color: var(--color-text-3);
 }
 
 .home-add-row {
