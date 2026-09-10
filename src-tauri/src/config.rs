@@ -90,6 +90,14 @@ pub struct LauncherSettings {
     /// instance's own environment variables (applies on next start).
     #[serde(default)]
     pub proxy_apply_dsh: bool,
+    /// Automatically open the instance window after a successful launch from
+    /// the Home page (waits for the web URL to become ready).
+    #[serde(default)]
+    pub auto_open_on_launch: bool,
+    /// Hide the launcher main window whenever an instance window (web GUI or
+    /// TUI terminal) is opened/focused.
+    #[serde(default)]
+    pub hide_launcher_on_window_open: bool,
 }
 
 fn default_locale() -> String {
@@ -141,6 +149,8 @@ impl Default for LauncherSettings {
             proxy_port: default_proxy_port(),
             no_proxy: default_no_proxy(),
             proxy_apply_dsh: false,
+            auto_open_on_launch: false,
+            hide_launcher_on_window_open: false,
         }
     }
 }

@@ -185,7 +185,15 @@
       "system": "Follow system"
     },
     "minimizeToTray": "Minimize to system tray when closing the main window",
+    "minimizeToTrayHint": "Closing only hides the window; the launcher keeps running in the background and can be restored from the tray",
     "autostart": "Launch at login",
+    "launchBehavior": {
+      "title": "Launch behavior",
+      "autoOpenOnLaunch": "Open the window automatically on instance launch",
+      "autoOpenOnLaunchHint": "After clicking Launch on the Home page, wait for the instance to become ready and open its window (web UI or TUI terminal); desktop shortcut launches always open the window",
+      "hideLauncherOnWindowOpen": "Hide the launcher when an instance window opens",
+      "hideLauncherOnWindowOpenHint": "Opening an instance window from Home, the tray, or the instance list hides the launcher main window (reopen it from the tray)"
+    },
     "logLevel": {
       "label": "Log level",
       "debug": "Debug",

@@ -50,6 +50,10 @@ export interface LauncherSettings {
   no_proxy: string
   /** Inject the proxy into launched dsh instances (overrides instance env; applies on next start). */
   proxy_apply_dsh: boolean
+  /** Open the instance window automatically after launching from the Home page. */
+  auto_open_on_launch: boolean
+  /** Hide the launcher main window whenever an instance window opens. */
+  hide_launcher_on_window_open: boolean
 }
 
 /** UI theme: explicit light/dark, or follow the OS color scheme. */

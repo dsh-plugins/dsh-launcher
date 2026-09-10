@@ -110,6 +110,8 @@ function seedDb(): MockDb {
       proxy_port: 7890,
       no_proxy: '127.0.0.1,localhost,::1',
       proxy_apply_dsh: false,
+      auto_open_on_launch: false,
+      hide_launcher_on_window_open: false,
     },
     running: {},
     mcp: {},
@@ -128,6 +130,8 @@ function loadDb(): MockDb {
       db.settings.proxy_port = db.settings.proxy_port ?? 7890
       db.settings.no_proxy = db.settings.no_proxy ?? '127.0.0.1,localhost,::1'
       db.settings.proxy_apply_dsh = db.settings.proxy_apply_dsh ?? false
+      db.settings.auto_open_on_launch = db.settings.auto_open_on_launch ?? false
+      db.settings.hide_launcher_on_window_open = db.settings.hide_launcher_on_window_open ?? false
       db.mcp = db.mcp ?? {}
       return db
     }

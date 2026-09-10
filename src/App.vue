@@ -135,33 +135,9 @@ async function launchFromDeepLink(u: URL) {
     }
     // start_instance returns right after spawn; the web URL (and the window
     // command's readiness check) only exist once the instance is running.
-    await openWindowWhenReady(inst.id)
+    await store.openWindowWhenReady(inst.id)
   } catch (e) {
     Message.error(String(e))
-  }
-}
-
-/** Waits for the instance to report `running` with a URL, then opens its window.
- * TUI instances (issue #31) run without a URL — the backend already opened
- * their terminal window in `start_instance`, so reaching running is done. */
-async function openWindowWhenReady(id: string) {
-  const deadline = Date.now() + 120_000
-  for (;;) {
-    const st = store.statusOf(id)
-    if (st.state === 'running' && st.url) {
-      await api.openInstanceWindow(id)
-      return
-    }
-    if (st.state === 'running' && !st.url) {
-      // TUI: running without a URL; the terminal window is already open.
-      return
-    }
-    if (st.state === 'exited' || Date.now() > deadline) {
-      // Last attempt: surface the backend's own error if it is not ready.
-      await api.openInstanceWindow(id)
-      return
-    }
-    await new Promise((r) => setTimeout(r, 500))
   }
 }
 

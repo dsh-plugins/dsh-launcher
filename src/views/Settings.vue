@@ -127,6 +127,14 @@ async function onAutostartChange(value: string | number | boolean | Record<strin
   await patchSettings({ autostart: Boolean(value) })
 }
 
+async function onAutoOpenChange(value: string | number | boolean | Record<string, unknown> | (string | number | boolean | Record<string, unknown>)[]) {
+  await patchSettings({ auto_open_on_launch: Boolean(value) })
+}
+
+async function onHideLauncherChange(value: string | number | boolean | Record<string, unknown> | (string | number | boolean | Record<string, unknown>)[]) {
+  await patchSettings({ hide_launcher_on_window_open: Boolean(value) })
+}
+
 // News source: saved on blur / Enter so typing is not interrupted.
 const newsSource = ref(store.settings.news_source ?? '')
 watch(
@@ -289,14 +297,6 @@ const homeColumns = computed(() => [
             </a-option>
           </a-select>
         </a-form-item>
-        <a-form-item>
-          <a-switch :model-value="store.settings.minimize_to_tray" @change="onTrayChange" />
-          <span class="switch-label">{{ t('settings.minimizeToTray') }}</span>
-        </a-form-item>
-        <a-form-item>
-          <a-switch :model-value="store.settings.autostart" @change="onAutostartChange" />
-          <span class="switch-label">{{ t('settings.autostart') }}</span>
-        </a-form-item>
         <a-form-item><template #label>{{ t('settings.logLevel.label') }}<HintIcon :content="t('settings.logLevel.hint')" /></template>
           <a-select
             :model-value="store.settings.log_level"
@@ -317,6 +317,42 @@ const homeColumns = computed(() => [
             @press-enter="onNewsSourceSave"
           />
           </a-form-item>
+      </a-form>
+    </div>
+
+    <div class="dl-card">
+      <div class="dl-card-title">
+        <h3>{{ t('settings.launchBehavior.title') }}</h3>
+      </div>
+      <a-form :model="store.settings" layout="vertical" class="settings-form">
+        <a-form-item>
+          <a-switch :model-value="store.settings.autostart" @change="onAutostartChange" />
+          <span class="switch-label">{{ t('settings.autostart') }}</span>
+        </a-form-item>
+        <a-form-item>
+          <a-switch :model-value="store.settings.minimize_to_tray" @change="onTrayChange" />
+          <span class="switch-label">
+            {{ t('settings.minimizeToTray') }}
+            <HintIcon :content="t('settings.minimizeToTrayHint')" />
+          </span>
+        </a-form-item>
+        <a-form-item>
+          <a-switch :model-value="store.settings.auto_open_on_launch" @change="onAutoOpenChange" />
+          <span class="switch-label">
+            {{ t('settings.launchBehavior.autoOpenOnLaunch') }}
+            <HintIcon :content="t('settings.launchBehavior.autoOpenOnLaunchHint')" />
+          </span>
+        </a-form-item>
+        <a-form-item>
+          <a-switch
+            :model-value="store.settings.hide_launcher_on_window_open"
+            @change="onHideLauncherChange"
+          />
+          <span class="switch-label">
+            {{ t('settings.launchBehavior.hideLauncherOnWindowOpen') }}
+            <HintIcon :content="t('settings.launchBehavior.hideLauncherOnWindowOpenHint')" />
+          </span>
+        </a-form-item>
       </a-form>
     </div>
 

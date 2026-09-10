@@ -10,6 +10,27 @@ fn record_focus(app: &AppHandle, instance_id: &str) {
     }
 }
 
+/// Hides the launcher main window when the user enabled
+/// "hide launcher on window open" in the launch-behavior settings.
+fn maybe_hide_main(app: &AppHandle) {
+    let hide = app
+        .try_state::<AppState>()
+        .map(|state| {
+            state
+                .config
+                .lock()
+                .unwrap()
+                .settings
+                .hide_launcher_on_window_open
+        })
+        .unwrap_or(false);
+    if hide {
+        if let Some(win) = app.get_webview_window("main") {
+            let _ = win.hide();
+        }
+    }
+}
+
 /// Opens (or focuses) the webview window hosting the instance's DSH Web GUI.
 pub fn open_instance_window(
     app: &AppHandle,
@@ -23,6 +44,7 @@ pub fn open_instance_window(
         let _ = win.unminimize();
         let _ = win.set_focus();
         record_focus(app, instance_id);
+        maybe_hide_main(app);
         return Ok(());
     }
     let parsed = WebviewUrl::External(url.parse().map_err(|e| format!("无效的 URL {url}: {e}"))?);
@@ -34,6 +56,7 @@ pub fn open_instance_window(
         .build()
         .map_err(|e| e.to_string())?;
     record_focus(app, instance_id);
+    maybe_hide_main(app);
 
     // Track focus so the tray knows which profile page the user used last.
     let handle = app.clone();
@@ -65,6 +88,7 @@ pub fn open_tui_window(app: &AppHandle, instance_id: &str) -> Result<(), String>
         let _ = win.unminimize();
         let _ = win.set_focus();
         record_focus(app, instance_id);
+        maybe_hide_main(app);
         return Ok(());
     }
     let name = app
@@ -91,6 +115,7 @@ pub fn open_tui_window(app: &AppHandle, instance_id: &str) -> Result<(), String>
         .build()
         .map_err(|e| e.to_string())?;
     record_focus(app, instance_id);
+    maybe_hide_main(app);
 
     let handle = app.clone();
     let id = instance_id.to_string();

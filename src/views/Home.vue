@@ -304,6 +304,10 @@ async function onStart() {
       Message.success(t('home.startedTui'))
     } else {
       Message.success(t('home.started'))
+      // Launch behavior: optionally open the instance window once ready.
+      if (store.settings.auto_open_on_launch) {
+        void store.openWindowWhenReady(selectedInstanceId.value).catch((e) => Message.error(String(e)))
+      }
     }
     // Dependency-tree preflight: advisory only, never blocks the launch. A
     // duplicated core copy in the profile silently breaks every tool call at

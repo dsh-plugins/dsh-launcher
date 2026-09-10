@@ -96,6 +96,8 @@ export const useLauncherStore = defineStore('launcher', {
       proxy_port: 7890,
       no_proxy: '127.0.0.1,localhost,::1',
       proxy_apply_dsh: false,
+      auto_open_on_launch: false,
+      hide_launcher_on_window_open: false,
     },
     statusById: {},
     tasks: {},
@@ -247,6 +249,30 @@ export const useLauncherStore = defineStore('launcher', {
      * navigating away (App.vue watches taskFlyTick). */
     notifyTaskQueued() {
       this.taskFlyTick += 1
+    },
+
+    /** Waits for the instance to report `running` with a URL, then opens its
+     * window. TUI instances run without a URL — the backend already opened
+     * their terminal window in `start_instance`, so reaching running is done. */
+    async openWindowWhenReady(id: string) {
+      const deadline = Date.now() + 120_000
+      for (;;) {
+        const st = this.statusOf(id)
+        if (st.state === 'running' && st.url) {
+          await api.openInstanceWindow(id)
+          return
+        }
+        if (st.state === 'running' && !st.url) {
+          // TUI: running without a URL; the terminal window is already open.
+          return
+        }
+        if (st.state === 'exited' || Date.now() > deadline) {
+          // Last attempt: surface the backend's own error if it is not ready.
+          await api.openInstanceWindow(id)
+          return
+        }
+        await new Promise((r) => setTimeout(r, 500))
+      }
     },
 
     async refreshRemoteVersions() {

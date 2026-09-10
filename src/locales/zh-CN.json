@@ -185,7 +185,15 @@
       "system": "跟随系统"
     },
     "minimizeToTray": "关闭主窗口时最小化到系统托盘",
+    "minimizeToTrayHint": "关闭按钮只隐藏窗口，启动器继续在后台运行并可从托盘恢复",
     "autostart": "开机自动启动启动器",
+    "launchBehavior": {
+      "title": "启动行为",
+      "autoOpenOnLaunch": "启动实例时自动打开窗口",
+      "autoOpenOnLaunchHint": "在首页点击「启动」后，等待实例就绪并自动打开其窗口（Web 界面或 TUI 终端）；桌面快捷方式启动始终自动打开窗口",
+      "hideLauncherOnWindowOpen": "打开实例窗口时隐藏启动器",
+      "hideLauncherOnWindowOpenHint": "从首页、托盘或实例列表打开实例窗口时，自动隐藏启动器主窗口（可从托盘重新打开）"
+    },
     "logLevel": {
       "label": "日志等级",
       "debug": "调试 (debug)",
