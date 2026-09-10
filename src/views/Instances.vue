@@ -7,6 +7,7 @@ import { api } from '@/api'
 import { useLauncherStore } from '@/stores/launcher'
 import type { DshInstance, InstanceState } from '@/api/types'
 import ModpackImportDialog from '@/components/ModpackImportDialog.vue'
+import HintIcon from '@/components/HintIcon.vue'
 
 const router = useRouter()
 const { t } = useI18n()
@@ -77,33 +78,54 @@ async function onDelete(id: string, name: string) {
 const copySource = ref<DshInstance | null>(null)
 const copyName = ref('')
 const copyNewHome = ref(false)
+const copyHomeName = ref('')
 const copying = ref(false)
 
 function openCopy(inst: DshInstance) {
   copySource.value = inst
   copyName.value = `${inst.name} 副本`
   copyNewHome.value = false
+  copyHomeName.value = `${inst.name} 副本`
 }
 
 function closeCopy() {
   copySource.value = null
   copyName.value = ''
   copyNewHome.value = false
+  copyHomeName.value = ''
 }
 
-const copyValid = computed(() => copyName.value.trim().length > 0 && !!copySource.value)
+const copyValid = computed(
+  () =>
+    copyName.value.trim().length > 0 &&
+    !!copySource.value &&
+    (!copyNewHome.value || copyHomeName.value.trim().length > 0),
+)
 
 async function confirmCopy() {
   if (!copySource.value || !copyValid.value) return
   copying.value = true
   try {
-    const created = await api.copyInstance({
-      source_id: copySource.value.id,
-      name: copyName.value.trim(),
-      new_home: copyNewHome.value,
-    })
+    if (copyNewHome.value) {
+      // Full-content copy (sessions, plugins, profiles, …) runs as a
+      // background task; stay on this page and play the fly animation.
+      await api.startCopyInstanceTask({
+        source_id: copySource.value.id,
+        name: copyName.value.trim(),
+        home_name: copyHomeName.value.trim(),
+      })
+      await store.refreshTasks()
+      store.notifyTaskQueued()
+      Message.success(t('instances.copyTaskAdded', { name: copyName.value.trim() }))
+    } else {
+      const created = await api.copyInstance({
+        source_id: copySource.value.id,
+        name: copyName.value.trim(),
+        new_home: false,
+      })
+      Message.success(t('instances.copied', { name: created.name }))
+    }
     await store.refreshInstances()
-    Message.success(t('instances.copied', { name: created.name }))
     closeCopy()
   } catch (e) {
     Message.error(String(e))
@@ -234,13 +256,19 @@ async function onOpenWindow(id: string) {
         <a-form-item :label="t('instances.copyNameLabel')" required>
           <a-input v-model="copyName" :placeholder="t('instances.copyNamePlaceholder')" />
         </a-form-item>
-        <a-form-item :label="t('instances.copyHomeLabel')">
+        <a-form-item>
+          <template #label>
+            {{ t('instances.copyHomeLabel') }}
+            <HintIcon :content="t('instances.copyHint')" />
+          </template>
           <a-radio-group v-model="copyNewHome" type="button">
             <a-radio :value="false">{{ t('instances.copyHomeReuse') }}</a-radio>
             <a-radio :value="true">{{ t('instances.copyHomeNew') }}</a-radio>
           </a-radio-group>
         </a-form-item>
-        <p class="copy-hint">{{ t('instances.copyHint') }}</p>
+        <a-form-item v-if="copyNewHome" :label="t('instances.copyHomeNameLabel')" required>
+          <a-input v-model="copyHomeName" :placeholder="t('instances.copyHomeNamePlaceholder')" />
+        </a-form-item>
       </a-form>
     </a-modal>
 
@@ -280,11 +308,5 @@ async function onOpenWindow(id: string) {
   font-size: 15px;
   font-weight: 600;
   color: var(--color-text-1);
-}
-
-.copy-hint {
-  margin: 0;
-  font-size: 12px;
-  color: var(--color-text-3);
 }
 </style>

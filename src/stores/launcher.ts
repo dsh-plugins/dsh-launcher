@@ -68,6 +68,12 @@ interface LauncherState {
   modpackExportMulti: ModpackExportMultiState | null
   /** Instances running outside the launcher (issue #31): id → info. */
   externals: Record<string, ExternalStatus>
+  /** Profile currently selected on the launch (Home) page; the plugin
+   * install wizard preselects it (session-scoped). */
+  homeProfile: string | null
+  /** Incremented whenever a background task is queued from a page that
+   * stays put; App.vue plays the fly-to-tasks animation on change. */
+  taskFlyTick: number
   loaded: boolean
 }
 
@@ -106,6 +112,8 @@ export const useLauncherStore = defineStore('launcher', {
     modpackExport: null,
     modpackExportMulti: null,
     externals: {},
+    homeProfile: null,
+    taskFlyTick: 0,
     loaded: false,
   }),
 
@@ -233,6 +241,12 @@ export const useLauncherStore = defineStore('launcher', {
 
     async checkRuntime() {
       this.runtime = await api.getRuntimeStatus()
+    },
+
+    /** Plays the fly-to-tasks animation on pages that queue a task without
+     * navigating away (App.vue watches taskFlyTick). */
+    notifyTaskQueued() {
+      this.taskFlyTick += 1
     },
 
     async refreshRemoteVersions() {

@@ -74,7 +74,10 @@
     "copyHomeLabel": "DSH_HOME",
     "copyHomeReuse": "Reuse the source DSH_HOME",
     "copyHomeNew": "Create a dedicated DSH_HOME",
-    "copyHint": "The instance is actually duplicated after you name it and save; the copy uses the same DSH version as the source.",
+    "copyHint": "Reuse mode only creates an instance record pointing at the same HOME; new mode copies the whole source HOME (conversations, plugins, all profiles, SKILLs, …) into a new dedicated HOME as a background task. The copy uses the same DSH version as the source.",
+    "copyHomeNameLabel": "New DSH_HOME name",
+    "copyHomeNamePlaceholder": "Defaults to the instance name",
+    "copyTaskAdded": "Copy task queued: {name}",
     "table": {
       "name": "Name",
       "version": "Version",
