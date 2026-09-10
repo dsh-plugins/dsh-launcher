@@ -1704,3 +1704,268 @@ mod tests {
         );
     }
 }
+
+// ---------------------------------------------------------------------------
+// Copy instance task (full HOME copy)
+// ---------------------------------------------------------------------------
+
+#[derive(Clone, Debug, serde::Deserialize)]
+pub struct CopyInstanceTaskInput {
+    /// The source instance id.
+    pub source_id: String,
+    /// Name for the copied instance.
+    pub name: String,
+    /// Custom name for the new dedicated DSH_HOME (defaults to the instance
+    /// name when absent).
+    #[serde(default)]
+    pub home_name: Option<String>,
+}
+
+/// Starts a background task duplicating an instance into a NEW dedicated
+/// DSH_HOME with the source HOME fully copied (profiles, sessions, plugins,
+/// skills, settings — junction/symlink targets dereferenced so the copy is
+/// self-contained). Reuse-home copies stay on the synchronous
+/// `copy_instance` command.
+#[tauri::command]
+pub async fn start_copy_instance_task(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    input: CopyInstanceTaskInput,
+) -> Result<String, String> {
+    let name = input.name.trim().to_string();
+    if name.is_empty() {
+        return Err("实例名称不能为空".to_string());
+    }
+    let source_name = {
+        let cfg = state.config.lock().unwrap();
+        if cfg.instances.iter().any(|i| i.name == name) {
+            return Err("同名实例已存在".to_string());
+        }
+        let source = cfg
+            .instances
+            .iter()
+            .find(|i| i.id == input.source_id)
+            .cloned()
+            .ok_or_else(|| "源实例不存在".to_string())?;
+        let home = cfg
+            .homes
+            .iter()
+            .find(|h| h.id == source.home_id)
+            .cloned()
+            .ok_or_else(|| "DSH_HOME 不存在".to_string())?;
+        if home.wsl.is_some() {
+            return Err("WSL 实例暂不支持复制到新的专属 HOME".to_string());
+        }
+        source.name
+    };
+    {
+        let tasks = state.tasks.lock().await;
+        if tasks.values().any(|t| {
+            t.state == TaskState::Running && t.instance_name.as_deref() == Some(name.as_str())
+        }) {
+            return Err("同名实例的任务已在进行中".to_string());
+        }
+    }
+    let dest = state
+        .data_dir
+        .join("homes")
+        .join(crate::config::sanitize_name(&name));
+    if dest.exists() {
+        return Err(format!("目标 DSH_HOME 目录已存在: {}", dest.display()));
+    }
+
+    let task = TaskInfo {
+        id: new_id("t"),
+        kind: "copy-instance".to_string(),
+        label: format!("复制实例「{source_name}」→「{name}」（含全部内容）"),
+        version: String::new(),
+        state: TaskState::Running,
+        percent: 0,
+        created_at: now_millis(),
+        message: None,
+        instance_id: None,
+        instance_name: Some(name.clone()),
+        dedicated_home_name: Some(dedicated_home_name_or(&name, input.home_name.clone())),
+        reserved_home_path: Some(dest.clone()),
+        logs: Vec::new(),
+        child: None,
+    };
+    let task_id = task.id.clone();
+    state.tasks.lock().await.insert(task_id.clone(), task);
+    emit_progress(&app, &task_id, TaskState::Running, 0, None, None);
+
+    let worker_app = app.clone();
+    let worker_task_id = task_id.clone();
+    tauri::async_runtime::spawn(async move {
+        let state = worker_app.state::<AppState>();
+        let result = do_copy_instance(
+            &worker_app,
+            &state,
+            &worker_task_id,
+            &input.source_id,
+            &name,
+            input.home_name.as_deref(),
+        )
+        .await;
+        let mut tasks = state.tasks.lock().await;
+        if let Some(task) = tasks.get_mut(&worker_task_id) {
+            if task.state == TaskState::Cancelled {
+                return;
+            }
+            match result {
+                Ok(instance_id) => {
+                    task.state = TaskState::Done;
+                    task.percent = 100;
+                    task.instance_id = Some(instance_id.clone());
+                    emit_progress(
+                        &worker_app,
+                        &worker_task_id,
+                        TaskState::Done,
+                        100,
+                        None,
+                        Some(instance_id),
+                    );
+                }
+                Err(msg) => {
+                    task.state = TaskState::Error;
+                    task.message = Some(msg.clone());
+                    push_log_locked(task, &format!("error: {msg}"));
+                    let pct = task.percent;
+                    drop(tasks);
+                    emit_progress(
+                        &worker_app,
+                        &worker_task_id,
+                        TaskState::Error,
+                        pct,
+                        Some(msg),
+                        None,
+                    );
+                }
+            }
+        }
+    });
+
+    Ok(task_id)
+}
+
+async fn do_copy_instance(
+    app: &AppHandle,
+    state: &State<'_, AppState>,
+    task_id: &str,
+    source_id: &str,
+    name: &str,
+    home_name: Option<&str>,
+) -> Result<String, String> {
+    let (source, src_home) = {
+        let cfg = state.config.lock().unwrap();
+        let source = cfg
+            .instances
+            .iter()
+            .find(|i| i.id == source_id)
+            .cloned()
+            .ok_or_else(|| "源实例不存在".to_string())?;
+        let home = cfg
+            .homes
+            .iter()
+            .find(|h| h.id == source.home_id)
+            .cloned()
+            .ok_or_else(|| "DSH_HOME 不存在".to_string())?;
+        (source, home)
+    };
+    let dest = state
+        .data_dir
+        .join("homes")
+        .join(crate::config::sanitize_name(name));
+
+    // Pass 1: count files for a meaningful percent.
+    push_task_log(app, state, task_id, "正在统计源 DSH_HOME 文件…").await;
+    let total = crate::commands::count_tree_files(&src_home.path).max(1);
+    push_task_log(
+        app,
+        state,
+        task_id,
+        &format!("共 {total} 个文件，开始复制（链接目标将解引用复制）…"),
+    )
+    .await;
+
+    // Pass 2: copy on a blocking thread; the worker polls the counter to
+    // emit percent/log progress.
+    let copied = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let copy_result = {
+        let src = src_home.path.clone();
+        let dst = dest.clone();
+        let counter = copied.clone();
+        tauri::async_runtime::spawn_blocking(move || {
+            crate::commands::copy_dir_recursive_progress(&src, &dst, &move || {
+                counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            })
+        })
+    };
+    let mut copy_result = copy_result;
+    loop {
+        tokio::select! {
+            res = &mut copy_result => {
+                res.map_err(|e| format!("复制线程失败: {e}"))?
+                    .map_err(|e| format!("复制 DSH_HOME 失败: {e}"))?;
+                break;
+            }
+            _ = tokio::time::sleep(std::time::Duration::from_millis(500)) => {
+                let done = copied.load(std::sync::atomic::Ordering::Relaxed);
+                let pct = ((done * 95) / total) as u32;
+                {
+                    let mut tasks = state.tasks.lock().await;
+                    if let Some(task) = tasks.get_mut(task_id) {
+                        if task.percent != pct {
+                            task.percent = pct;
+                        }
+                        if done % 1000 < 5 && done > 0 {
+                            push_log_locked(task, &format!("已复制 {done}/{total} 个文件"));
+                        }
+                    }
+                }
+                emit_progress(app, task_id, TaskState::Running, pct, None, None);
+            }
+        }
+    }
+
+    // Home + instance records; roll everything back on failure.
+    let home_name = home_name
+        .map(str::trim)
+        .filter(|n| !n.is_empty())
+        .unwrap_or(name)
+        .to_string();
+    let home = crate::config::DshHome {
+        id: new_id("h"),
+        name: home_name,
+        path: dest.clone(),
+        wsl: None,
+    };
+    let inst = {
+        let mut cfg = state.config.lock().unwrap();
+        cfg.homes.push(home.clone());
+        let inst = crate::config::DshInstance {
+            id: new_id("i"),
+            name: name.to_string(),
+            version_id: source.version_id.clone(),
+            home_id: home.id.clone(),
+            env_overrides: source.env_overrides.clone(),
+            default_profile: source.default_profile.clone(),
+            last_profile: None,
+            icon: source.icon.clone(),
+            port: source.port,
+        };
+        cfg.instances.push(inst.clone());
+        if let Err(e) = crate::commands::save_state(state, &cfg) {
+            cfg.homes.retain(|h| h.id != home.id);
+            cfg.instances.retain(|i| i.id != inst.id);
+            let _ = std::fs::remove_dir_all(&dest);
+            return Err(e);
+        }
+        inst
+    };
+    crate::log_info!(
+        "实例「{name}」已复制自「{}」（全量 HOME 复制）",
+        source.name
+    );
+    Ok(inst.id)
+}

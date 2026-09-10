@@ -369,6 +369,10 @@ pub struct CopyInstanceInput {
     /// When true, create a fresh dedicated DSH_HOME for the copy instead of
     /// reusing the source instance's DSH_HOME.
     pub new_home: bool,
+    /// Custom name for the newly created DSH_HOME (defaults to the instance
+    /// name when absent).
+    #[serde(default)]
+    pub home_name: Option<String>,
 }
 
 /// Copies an instance: creates a new instance record with a new id/name. The
@@ -411,6 +415,13 @@ pub fn copy_instance(
 
     // Resolve the DSH_HOME: reuse the source's, or create a dedicated one.
     let home_id = if input.new_home {
+        let home_name = input
+            .home_name
+            .as_deref()
+            .map(str::trim)
+            .filter(|n| !n.is_empty())
+            .unwrap_or(&name)
+            .to_string();
         let path = state
             .data_dir
             .join("homes")
@@ -429,7 +440,7 @@ pub fn copy_instance(
             std::fs::create_dir_all(&path_buf).map_err(|e| format!("创建目录失败: {e}"))?;
             let home = DshHome {
                 id: new_id("h"),
-                name: name.clone(),
+                name: home_name,
                 path: path_buf,
                 wsl: None,
             };
@@ -746,17 +757,108 @@ pub fn delete_profile(
 }
 
 /// Recursively copies a directory tree.
-fn copy_dir_recursive(src: &std::path::Path, dst: &std::path::Path) -> std::io::Result<()> {
+/// Recursive copy that dereferences symlinks/junctions: pnpm profile
+/// `node_modules/<pkg>` entries are junctions into `.pnpm`, and skipping
+/// them (the old behavior) produced copies with broken plugin installs.
+/// The link *target's content* is copied instead, so the result is
+/// self-contained even when copying across HOMEs. Missing targets are
+/// skipped with a log line; a depth cap guards against link cycles.
+pub(crate) fn copy_dir_recursive(
+    src: &std::path::Path,
+    dst: &std::path::Path,
+) -> std::io::Result<()> {
+    copy_dir_recursive_at(src, dst, 0, None)
+}
+
+/// Copy with a per-file progress callback (used by the copy-instance task).
+pub(crate) fn copy_dir_recursive_progress(
+    src: &std::path::Path,
+    dst: &std::path::Path,
+    on_file: &dyn Fn(),
+) -> std::io::Result<()> {
+    copy_dir_recursive_at(src, dst, 0, Some(on_file))
+}
+
+/// Counts files under `src` following the same dereference rules as the
+/// copy (for progress percent).
+pub(crate) fn count_tree_files(src: &std::path::Path) -> u64 {
+    count_tree_files_at(src, 0)
+}
+
+const COPY_MAX_DEPTH: u32 = 64;
+
+fn count_tree_files_at(src: &std::path::Path, depth: u32) -> u64 {
+    if depth > COPY_MAX_DEPTH {
+        return 0;
+    }
+    let Ok(entries) = std::fs::read_dir(src) else {
+        return 0;
+    };
+    let mut n = 0u64;
+    for entry in entries.flatten() {
+        let Ok(ty) = entry.file_type() else {
+            continue;
+        };
+        let from = entry.path();
+        if ty.is_symlink() {
+            let Ok(target) = std::fs::canonicalize(&from) else {
+                continue;
+            };
+            if target.is_dir() {
+                n += count_tree_files_at(&target, depth + 1);
+            } else if target.is_file() {
+                n += 1;
+            }
+        } else if ty.is_dir() {
+            n += count_tree_files_at(&from, depth + 1);
+        } else if ty.is_file() {
+            n += 1;
+        }
+    }
+    n
+}
+
+fn copy_dir_recursive_at(
+    src: &std::path::Path,
+    dst: &std::path::Path,
+    depth: u32,
+    on_file: Option<&dyn Fn()>,
+) -> std::io::Result<()> {
+    if depth > COPY_MAX_DEPTH {
+        crate::log_warn!(
+            "复制目录超过最大深度（{COPY_MAX_DEPTH}），跳过: {}",
+            src.display()
+        );
+        return Ok(());
+    }
     std::fs::create_dir_all(dst)?;
     for entry in std::fs::read_dir(src)? {
         let entry = entry?;
         let ty = entry.file_type()?;
         let from = entry.path();
         let to = dst.join(entry.file_name());
-        if ty.is_dir() {
-            copy_dir_recursive(&from, &to)?;
+        if ty.is_symlink() {
+            // Dereference: copy the target's content (dir → recurse, file →
+            // copy). Skip gracefully when the target is gone.
+            let Ok(target) = std::fs::canonicalize(&from) else {
+                crate::log_warn!("复制时跳过失效链接: {}", from.display());
+                continue;
+            };
+            if target.is_dir() {
+                copy_dir_recursive_at(&target, &to, depth + 1, on_file)?;
+            } else if target.is_file() {
+                std::fs::copy(&target, &to)?;
+                if let Some(f) = on_file {
+                    f();
+                }
+            }
+        } else if ty.is_dir() {
+            copy_dir_recursive_at(&from, &to, depth + 1, on_file)?;
         } else if ty.is_file() {
             std::fs::copy(&from, &to)?;
+            if let Some(f) = on_file {
+                f();
+            }
         }
     }
     Ok(())
@@ -1311,4 +1413,74 @@ pub(crate) fn save_state(
     cfg: &crate::config::Config,
 ) -> Result<(), String> {
     crate::config::save_config(&state.config_path, cfg)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Creates a directory link without requiring privileges: a junction on
+    /// Windows (via `mklink /J`), a symlink elsewhere. Returns false when the
+    /// platform refuses, so tests can skip gracefully.
+    fn make_dir_link(target: &std::path::Path, link: &std::path::Path) -> bool {
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            std::process::Command::new("cmd")
+                .args(["/c", "mklink", "/J"])
+                .arg(link)
+                .arg(target)
+                .creation_flags(0x0800_0000)
+                .status()
+                .map(|s| s.success())
+                .unwrap_or(false)
+        }
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(target, link).is_ok()
+        }
+    }
+
+    fn unique_temp(tag: &str) -> std::path::PathBuf {
+        std::env::temp_dir().join(format!("dsh-copy-test-{tag}-{}", uuid::Uuid::new_v4()))
+    }
+
+    #[test]
+    fn copy_dir_recursive_dereferences_links() {
+        let root = unique_temp("deref");
+        let store_pkg = root.join("store").join("pkg");
+        std::fs::create_dir_all(&store_pkg).unwrap();
+        std::fs::write(store_pkg.join("index.js"), "hello").unwrap();
+        let src = root.join("src");
+        std::fs::create_dir_all(&src).unwrap();
+        if !make_dir_link(&store_pkg, &src.join("pkg")) {
+            eprintln!("skipping: cannot create directory links on this platform");
+            return;
+        }
+
+        let dst = root.join("dst");
+        copy_dir_recursive(&src, &dst).unwrap();
+        let copied = dst.join("pkg").join("index.js");
+        assert!(copied.is_file(), "link target content must be copied");
+        assert_eq!(std::fs::read_to_string(copied).unwrap(), "hello");
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn copy_dir_recursive_skips_missing_link_targets() {
+        let root = unique_temp("dangling");
+        let src = root.join("src");
+        std::fs::create_dir_all(&src).unwrap();
+        std::fs::write(src.join("real.txt"), "x").unwrap();
+        if !make_dir_link(&root.join("does-not-exist"), &src.join("broken")) {
+            eprintln!("skipping: cannot create directory links on this platform");
+            return;
+        }
+
+        let dst = root.join("dst");
+        copy_dir_recursive(&src, &dst).unwrap();
+        assert!(dst.join("real.txt").is_file());
+        assert!(!dst.join("broken").exists());
+        std::fs::remove_dir_all(&root).ok();
+    }
 }

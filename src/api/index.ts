@@ -528,7 +528,7 @@ async function mockCall<T>(cmd: string, args?: Record<string, unknown>): Promise
         if (existing) {
           homeId = existing.id
         } else {
-          const home: DshHome = { id: `h-${uuid()}`, name: input.name, path }
+          const home: DshHome = { id: `h-${uuid()}`, name: input.home_name?.trim() || input.name, path }
           db.homes.push(home)
           homeId = home.id
         }
@@ -545,6 +545,76 @@ async function mockCall<T>(cmd: string, args?: Record<string, unknown>): Promise
       db.instances.push(inst)
       saveDb(db)
       return inst as T
+    }
+    case 'start_copy_instance_task': {
+      const input = (args?.input ?? {}) as { source_id?: string; name?: string; home_name?: string | null }
+      const name = String(input.name ?? '').trim()
+      const source = db.instances.find((i) => i.id === input.source_id)
+      if (!name) fail('实例名称不能为空')
+      if (!source) fail('源实例不存在')
+      if (db.instances.some((i) => i.name === name)) fail('同名实例已存在')
+
+      const task: TaskInfo = {
+        id: mockNewId('t'),
+        kind: 'copy-instance',
+        label: `复制实例「${source.name}」→「${name}」（含全部内容）`,
+        version: '',
+        state: 'running',
+        percent: 0,
+        created_at: Date.now(),
+        message: null,
+        instance_id: null,
+        instance_name: name,
+        logs: [],
+      }
+      mockTasks.set(task.id, task)
+      emitTaskProgress({ id: task.id, state: 'running', percent: 0, message: null, instance_id: null })
+
+      const fakeLogs = ['正在统计源 DSH_HOME 文件…', '共 1280 个文件，开始复制（链接目标将解引用复制）…', '已复制 1000/1280 个文件']
+      let step = 0
+      const timer = setInterval(() => {
+        const t = mockTasks.get(task.id)
+        if (!t || t.state !== 'running') {
+          clearInterval(timer)
+          return
+        }
+        if (step < fakeLogs.length) {
+          const line = fakeLogs[step]
+          t.logs.push(line)
+          t.percent = Math.min(95, t.percent + 30)
+          emitTaskLog({ id: task.id, line })
+          emitTaskProgress({ id: task.id, state: 'running', percent: t.percent, message: null, instance_id: null })
+          step += 1
+          return
+        }
+        clearInterval(timer)
+        const cur = loadDb()
+        const safe = name.replace(/[^\w一-龥.-]+/g, '_')
+        const home: DshHome = {
+          id: mockNewId('h'),
+          name: input.home_name?.trim() || name,
+          path: `C:\\Users\\Administrator\\AppData\\Roaming\\in.dsh-plug.dsh-launcher\\homes\\${safe}`,
+        }
+        cur.homes.push(home)
+        const inst: DshInstance = {
+          id: mockNewId('i'),
+          name,
+          version_id: source.version_id,
+          home_id: home.id,
+          env_overrides: { ...source.env_overrides },
+          default_profile: source.default_profile,
+          last_profile: null,
+          icon: source.icon ?? null,
+          port: source.port ?? null,
+        }
+        cur.instances.push(inst)
+        saveDb(cur)
+        t.state = 'done'
+        t.percent = 100
+        t.instance_id = inst.id
+        emitTaskProgress({ id: t.id, state: 'done', percent: 100, message: null, instance_id: inst.id })
+      }, 600)
+      return task.id as T
     }
     case 'list_profiles': {
       const homeId = String(args?.home_id)
@@ -1092,6 +1162,9 @@ export const api = {
     call<DshInstance>('set_instance_port', { instance_id: instanceId, port }),
   deleteInstance: (id: string) => call<void>('delete_instance', { id }),
   copyInstance: (input: CopyInstanceInput) => call<DshInstance>('copy_instance', { input }),
+  /** Full-content copy into a new dedicated HOME (background task). */
+  startCopyInstanceTask: (input: { source_id: string; name: string; home_name?: string | null }) =>
+    call<string>('start_copy_instance_task', { input }),
 
   listProfiles: (homeId: string) => call<string[]>('list_profiles', { home_id: homeId }),
   createProfile: (homeId: string, name: string) =>

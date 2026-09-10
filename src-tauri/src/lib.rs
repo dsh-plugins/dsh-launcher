@@ -190,6 +190,7 @@ pub fn run() {
             commands::remove_version,
             tasks::start_create_instance_task,
             tasks::start_create_wsl_instance_task,
+            tasks::start_copy_instance_task,
             tasks::list_tasks,
             tasks::remove_task,
             tasks::cancel_task,

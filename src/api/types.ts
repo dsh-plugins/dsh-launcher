@@ -332,6 +332,8 @@ export interface CopyInstanceInput {
   source_id: string
   name: string
   new_home: boolean
+  /** Custom name for the newly created DSH_HOME (defaults to the instance name). */
+  home_name?: string | null
 }
 
 // ---------------------------------------------------------------------------
