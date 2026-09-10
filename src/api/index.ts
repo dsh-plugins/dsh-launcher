@@ -1026,6 +1026,7 @@ async function mockCall<T>(cmd: string, args?: Record<string, unknown>): Promise
       return [
         { id: '@dsh-plugin/dsh-auxiliary', version: '^0.4.1', enabled: true, cordis_id: 'dsh-auxiliary' },
         { id: '@dsh-plugin/dsh-thought-buddy', version: '^0.3.1', enabled: false, cordis_id: 'dsh-thought-buddy' },
+        { id: 'my-git-plugin', version: 'github:owner/my-git-plugin#v1.0.0', enabled: true, cordis_id: 'my-git-plugin' },
       ] as T
     }
     case 'check_plugin_updates': {

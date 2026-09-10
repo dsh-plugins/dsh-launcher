@@ -17,6 +17,7 @@ import type {
 } from '@/api/types'
 import TerminalEmbed from './TerminalEmbed.vue'
 import SkillRepoDialog from '@/components/SkillRepoDialog.vue'
+import MigratePluginsDialog from '@/components/MigratePluginsDialog.vue'
 import HintIcon from '@/components/HintIcon.vue'
 import { shortRepoName } from '@/utils/repo'
 
@@ -921,6 +922,8 @@ const installedPlugins = ref<InstalledPlugin[]>([])
 const pluginsLoading = ref(false)
 const selectedPlugins = ref<string[]>([])
 const pluginsBusy = ref(false)
+/** Migrate-plugins dialog (move plugins from another instance's profile). */
+const migrateVisible = ref(false)
 /** Latest-version info per installed plugin id, from checkPluginUpdates (issue #27). */
 const pluginUpdates = ref<Record<string, PluginUpdateInfo>>({})
 
@@ -1444,6 +1447,13 @@ const terminalRunning = ref(false)
                 <a-button
                   size="small"
                   :disabled="!pluginProfile"
+                  @click="migrateVisible = true"
+                >
+                  {{ t('plugins.migrateOpen') }}
+                </a-button>
+                <a-button
+                  size="small"
+                  :disabled="!pluginProfile"
                   @click="importLocalPlugin"
                 >
                   {{ t('instanceEdit.pluginImportLocal') }}
@@ -1569,6 +1579,13 @@ const terminalRunning = ref(false)
             <a-alert v-else type="info">
               {{ t('instanceEdit.profilesNeedHome') }}
             </a-alert>
+
+            <MigratePluginsDialog
+              v-model:visible="migrateVisible"
+              :target-instance-id="editingId ?? ''"
+              :target-profile="pluginProfile"
+              :existing-ids="installedPlugins.map((p) => p.id)"
+            />
           </div>
 
           <!-- SKILL -->
