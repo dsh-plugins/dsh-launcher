@@ -5,6 +5,7 @@ import { useI18n } from 'vue-i18n'
 import { Message } from '@arco-design/web-vue'
 import { api } from '@/api'
 import { useLauncherStore } from '@/stores/launcher'
+import HintIcon from '@/components/HintIcon.vue'
 
 const route = useRoute()
 const router = useRouter()
@@ -110,10 +111,12 @@ async function onConfirm() {
         dedicated.value ? dedicatedName.value.trim() : null,
       )
     }
-    // Pull the task list so the task page shows the new task immediately.
+    // Pull the task list so the badge/fly animation has data, then return to
+    // the version list (kept alive) instead of jumping to the task page.
     await store.refreshTasks()
+    store.notifyTaskQueued()
     Message.success(t('download.taskAdded'))
-    router.push({ name: 'tasks' })
+    router.push({ name: 'download-create' })
   } catch (e) {
     Message.error(String(e))
   } finally {
@@ -141,7 +144,10 @@ async function onConfirm() {
     <!-- Runtime environment: Windows local or a WSL distro (issue #19) -->
     <div v-if="distros.length" class="dl-card">
       <div class="dl-card-title">
-        <h3>{{ t('download.runtimeEnv') }}</h3>
+        <h3>
+          {{ t('download.runtimeEnv') }}
+          <HintIcon v-if="wslSelected" :content="t('download.wslHomeHint', { distro: runtime })" />
+        </h3>
       </div>
       <a-radio-group v-model="runtime" type="button">
         <a-radio :value="WINDOWS">{{ t('download.runtimeWindows') }}</a-radio>
@@ -150,15 +156,15 @@ async function onConfirm() {
       <a-alert v-if="wslSelected && isSourceBuild" type="warning" class="dedicated-hint">
         {{ t('download.wslAlphaUnsupported') }}
       </a-alert>
-      <a-alert v-else-if="wslSelected" type="info" class="dedicated-hint">
-        {{ t('download.wslHomeHint', { distro: runtime }) }}
-      </a-alert>
     </div>
 
     <!-- DSH_HOME selection -->
     <div v-if="!wslSelected" class="dl-card">
       <div class="dl-card-title">
-        <h3>{{ t('download.chooseHome') }}</h3>
+        <h3>
+          {{ t('download.chooseHome') }}
+          <HintIcon v-if="dedicated" :content="t('download.dedicatedHomeHint', { path: dedicatedPath })" />
+        </h3>
       </div>
       <a-select v-model="homeId" style="width: 100%; max-width: 480px">
         <a-option :value="DEDICATED">{{ t('download.dedicatedHome') }}</a-option>
@@ -175,9 +181,6 @@ async function onConfirm() {
           @update:model-value="onDedicatedNameInput"
         />
       </div>
-      <a-alert v-if="dedicated" type="info" class="dedicated-hint">
-        {{ t('download.dedicatedHomeHint', { path: dedicatedPath }) }}
-      </a-alert>
     </div>
 
     <!-- Action -->

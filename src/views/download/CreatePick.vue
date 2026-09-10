@@ -7,6 +7,9 @@ import { api } from '@/api'
 import { useLauncherStore } from '@/stores/launcher'
 import type { RemoteVersion } from '@/api/types'
 
+// keep-alive name: the download page caches this view (list state).
+defineOptions({ name: 'CreatePickPage' })
+
 const router = useRouter()
 const { t } = useI18n()
 const store = useLauncherStore()

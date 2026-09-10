@@ -125,6 +125,7 @@ async function loadProfiles() {
     profiles.value = infos.map((p) => p.name)
     for (const p of infos) profileKinds.value[p.name] = p.kind
     selectedProfile.value =
+      (store.homeProfile && profiles.value.includes(store.homeProfile) && store.homeProfile) ||
       (inst.last_profile && profiles.value.includes(inst.last_profile) && inst.last_profile) ||
       (inst.default_profile && profiles.value.includes(inst.default_profile) && inst.default_profile) ||
       profiles.value[0] ||
@@ -138,6 +139,11 @@ async function loadProfiles() {
     profilesLoading.value = false
   }
 }
+
+// The plugin install wizard preselects the profile chosen here.
+watch(selectedProfile, (p) => {
+  store.homeProfile = p ?? null
+})
 
 watch(selectedInstanceId, () => {
   loadProfiles()

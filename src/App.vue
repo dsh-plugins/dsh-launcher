@@ -217,6 +217,44 @@ function onFabClick() {
   }
 }
 
+// --- Fly-to-tasks animation ----------------------------------------------------
+// Pages that queue a background task without navigating away bump
+// store.taskFlyTick; a small square flies from the viewport center to the
+// task FAB as visual confirmation.
+
+const taskFabRef = ref<HTMLElement | null>(null)
+
+watch(
+  () => store.taskFlyTick,
+  (tick) => {
+    if (tick <= 0) return
+    const fab = taskFabRef.value
+    if (!fab) return
+    const target = fab.getBoundingClientRect()
+    const startX = window.innerWidth / 2
+    const startY = window.innerHeight / 2
+    const endX = target.left + target.width / 2
+    const endY = target.top + target.height / 2
+
+    const square = document.createElement('div')
+    square.className = 'task-fly-square'
+    square.style.left = `${startX}px`
+    square.style.top = `${startY}px`
+    document.body.appendChild(square)
+    const anim = square.animate(
+      [
+        { transform: 'translate(-50%, -50%) scale(1)', opacity: 1 },
+        {
+          transform: `translate(calc(-50% + ${endX - startX}px), calc(-50% + ${endY - startY}px)) scale(0.3)`,
+          opacity: 0.6,
+        },
+      ],
+      { duration: 550, easing: 'cubic-bezier(0.3, 0.7, 0.4, 1)', fill: 'forwards' },
+    )
+    anim.onfinish = () => square.remove()
+  },
+)
+
 function onMenuSelect(key: string) {
   router.push({ name: key })
 }
@@ -302,8 +340,8 @@ async function onHeaderMouseDown(e: MouseEvent) {
     </a-layout-content>
 
     <!-- Floating task manager entry (bottom-right); becomes a back button on the tasks page. -->
-    <div class="task-fab" @click="onFabClick">
-      <a-badge v-if="!onTasksPage" :count="store.runningTaskCount" :dot="store.runningTaskCount > 0">
+    <div ref="taskFabRef" class="task-fab" @click="onFabClick">
+      <a-badge v-if="!onTasksPage" :count="store.runningTaskCount" :max-count="99">
         <span class="task-fab-icon">⏱</span>
       </a-badge>
       <span v-else class="task-fab-icon">←</span>
@@ -474,5 +512,19 @@ async function onHeaderMouseDown(e: MouseEvent) {
   font-size: 13px;
   font-weight: 600;
   color: var(--color-text-1);
+}
+</style>
+
+<!-- Global: the fly-to-tasks square is appended to document.body. -->
+<style>
+.task-fly-square {
+  position: fixed;
+  width: 16px;
+  height: 16px;
+  border-radius: 4px;
+  background: linear-gradient(135deg, #0fc6c2, #165dff);
+  box-shadow: 0 2px 8px rgba(22, 93, 255, 0.4);
+  z-index: 3000;
+  pointer-events: none;
 }
 </style>

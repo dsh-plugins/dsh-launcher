@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { useLauncherStore } from '@/stores/launcher'
@@ -28,9 +28,11 @@ function scrollAccessor(top: number | null): number | void {
 
 provideDownloadScroll(scrollAccessor)
 
+const PLUGIN_ROUTES = new Set(['download-plugins', 'plugin-version', 'plugin-install'])
+
 const selectedKeys = computed(() => {
   const name = route.name as string
-  if (name === 'download-plugins') return ['plugins']
+  if (PLUGIN_ROUTES.has(name)) return ['plugins']
   return ['create']
 })
 
@@ -43,6 +45,39 @@ function onMenuSelect(key: string) {
 function onRefreshVersions() {
   store.refreshRemoteVersions()
 }
+
+// --- Scroll memory -------------------------------------------------------------
+// The scrollbar wraps <router-view> (shared by all download children), so
+// keep-alive alone cannot restore each child's scroll position. Track the
+// scroller's scrollTop continuously per route and restore it on return
+// (the market page additionally persists its own offset via the composable).
+
+const scrollMem = new Map<string, number>()
+
+function scroller(): HTMLElement | null {
+  return (scrollbar.value?.$el?.querySelector('.arco-scrollbar-container') as HTMLElement) ?? null
+}
+
+function onScroll() {
+  if (typeof route.name === 'string') {
+    scrollMem.set(route.name, scroller()?.scrollTop ?? 0)
+  }
+}
+
+watch(
+  () => route.name,
+  async (name) => {
+    if (typeof name !== 'string') return
+    await nextTick()
+    const el = scroller()
+    const top = scrollMem.get(name)
+    if (el && top != null) el.scrollTop = top
+  },
+  { flush: 'post', immediate: true },
+)
+
+onMounted(() => scroller()?.addEventListener('scroll', onScroll, { passive: true }))
+onUnmounted(() => scroller()?.removeEventListener('scroll', onScroll))
 </script>
 
 <template>
@@ -75,7 +110,11 @@ function onRefreshVersions() {
         style="height: 100%; overflow-y: auto"
       >
         <div class="download-inner">
-          <router-view />
+          <router-view v-slot="{ Component }">
+            <keep-alive :include="['MarketPage', 'CreatePickPage']">
+              <component :is="Component" />
+            </keep-alive>
+          </router-view>
         </div>
       </a-scrollbar>
     </section>

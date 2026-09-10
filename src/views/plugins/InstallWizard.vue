@@ -5,6 +5,7 @@ import { useI18n } from 'vue-i18n'
 import { Message } from '@arco-design/web-vue'
 import { api } from '@/api'
 import { useLauncherStore } from '@/stores/launcher'
+import HintIcon from '@/components/HintIcon.vue'
 
 const router = useRouter()
 const { t } = useI18n()
@@ -20,7 +21,10 @@ const submitting = ref(false)
 const profiles = ref<string[]>([])
 const profilesLoading = ref(false)
 
-const instances = computed(() => store.instances)
+const instances = computed(() =>
+  // Plugin installs operate on local files; WSL instances are unsupported.
+  store.instances.filter((i) => !store.homeById(i.home_id)?.wsl),
+)
 const selectedInstance = computed(() => store.instanceById(instanceId.value))
 
 /**
@@ -43,8 +47,11 @@ watch(instanceId, async (id) => {
   profilesLoading.value = true
   try {
     profiles.value = await api.listProfiles(inst.home_id)
-    // Preselect the default profile when available.
-    if (inst.default_profile && profiles.value.includes(inst.default_profile)) {
+    // Preselect the profile currently selected on the launch page, then the
+    // instance default.
+    if (store.homeProfile && profiles.value.includes(store.homeProfile)) {
+      profile.value = store.homeProfile
+    } else if (inst.default_profile && profiles.value.includes(inst.default_profile)) {
       profile.value = inst.default_profile
     }
   } catch (e) {
@@ -60,11 +67,12 @@ onMounted(async () => {
     return
   }
   await store.refreshInstances()
-  // Preselect the first running / last used instance.
-  if (store.instances.length > 0 && !instanceId.value) {
+  // Preselect the instance currently selected on the launch page (persisted
+  // as last_instance_id), falling back to the first installable one.
+  if (instances.value.length > 0 && !instanceId.value) {
     const last = store.settings.last_instance_id
     instanceId.value =
-      (last && store.instances.some((i) => i.id === last)) ? last : store.instances[0].id
+      (last && instances.value.some((i) => i.id === last)) ? last : instances.value[0].id
   }
 })
 
@@ -87,7 +95,11 @@ async function startInstall() {
     Message.success(t('plugins.installTaskAdded'))
     Message.info(t('plugins.installRestartHint'))
     await store.refreshTasks()
-    router.push({ name: 'tasks' })
+    // Stay in the plugin flow: return to the marketplace (kept alive, so the
+    // search/scroll position is exactly where the user left it) and play the
+    // fly-to-tasks animation instead of jumping to the task list.
+    store.notifyTaskQueued()
+    router.push({ name: 'download-plugins' })
   } catch (e) {
     Message.error(String(e))
   } finally {
@@ -176,10 +188,14 @@ async function startInstall() {
 
       <!-- buildScripts -->
       <div class="dl-card">
-        <div class="dl-card-title"><h3>buildScripts</h3></div>
+        <div class="dl-card-title">
+          <h3>
+            buildScripts
+            <HintIcon :content="t('plugins.buildScriptsHint')" />
+          </h3>
+        </div>
         <div class="build-row">
           <a-switch v-model="allowBuildScripts" :disabled="true" :checked="true" />
-          <span class="build-hint">{{ t('plugins.buildScriptsHint') }}</span>
         </div>
       </div>
 
@@ -279,11 +295,6 @@ async function startInstall() {
   display: flex;
   align-items: center;
   gap: 12px;
-}
-
-.build-hint {
-  font-size: 12px;
-  color: var(--color-text-3);
 }
 
 .option-line {

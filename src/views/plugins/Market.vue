@@ -7,6 +7,9 @@ import { injectDownloadScroll } from '@/composables/download-scroll'
 import { api } from '@/api'
 import type { MarketPlugin, PluginSource } from '@/api/types'
 
+// keep-alive name: the download page caches this view (search/scroll state).
+defineOptions({ name: 'MarketPage' })
+
 const router = useRouter()
 const { t } = useI18n()
 const store = useLauncherStore()
