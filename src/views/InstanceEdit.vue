@@ -17,6 +17,7 @@ import type {
 } from '@/api/types'
 import TerminalEmbed from './TerminalEmbed.vue'
 import SkillRepoDialog from '@/components/SkillRepoDialog.vue'
+import HintIcon from '@/components/HintIcon.vue'
 import { shortRepoName } from '@/utils/repo'
 
 const route = useRoute()
@@ -52,6 +53,9 @@ const versionId = ref<string | undefined>(undefined)
 const DEDICATED = '__dedicated__'
 const homeId = ref<string | undefined>(undefined)
 const dedicatedPath = ref('')
+/** Custom name for a newly created dedicated DSH_HOME (defaults to the
+ * instance name when left blank). */
+const homeName = ref('')
 const defaultProfile = ref<string | undefined>(undefined)
 const profiles = ref<string[]>([])
 const newProfileName = ref('')
@@ -264,7 +268,7 @@ async function onSave() {
     // A dedicated DSH_HOME is created on demand for this instance.
     let resolvedHomeId = homeId.value!
     if (homeId.value === DEDICATED) {
-      const home = await api.createHome(name.value.trim(), dedicatedPath.value)
+      const home = await api.createHome(homeName.value.trim() || name.value.trim(), dedicatedPath.value)
       resolvedHomeId = home.id
       await store.refreshHomes()
     }
@@ -1168,7 +1172,11 @@ const terminalRunning = ref(false)
                 </a-space>
               </a-form-item>
 
-              <a-form-item v-if="editingId" :label="t('instanceEdit.icon')">
+              <a-form-item v-if="editingId">
+                <template #label>
+                  {{ t('instanceEdit.icon') }}
+                  <HintIcon :content="t('instanceEdit.iconHint')" />
+                </template>
                 <div class="icon-editor">
                   <img v-if="iconUrl" :src="iconUrl" class="icon-preview" alt="" />
                   <img v-else src="@/assets/launcher-icon.png" class="icon-preview" alt="" />
@@ -1190,7 +1198,6 @@ const terminalRunning = ref(false)
                         {{ t('instanceEdit.iconClear') }}
                       </a-button>
                     </a-space>
-                    <p class="icon-hint">{{ t('instanceEdit.iconHint') }}</p>
                   </div>
                 </div>
               </a-form-item>
@@ -1207,22 +1214,34 @@ const terminalRunning = ref(false)
                 </a-alert>
               </a-form-item>
 
-              <a-form-item :label="t('instanceEdit.home')" required>
+              <a-form-item required>
+                <template #label>
+                  {{ t('instanceEdit.home') }}
+                  <HintIcon v-if="isWsl" :content="t('instanceEdit.wslHomeFixed')" />
+                  <HintIcon
+                    v-else-if="homeId === DEDICATED"
+                    :content="t('instanceEdit.dedicatedHomeHint', { path: dedicatedPath })"
+                  />
+                </template>
                 <a-select v-model="homeId" style="max-width: 360px" :disabled="isWsl">
                   <a-option v-if="!isWsl" :value="DEDICATED">{{ t('instanceEdit.dedicatedHome') }}</a-option>
                   <a-option v-for="h in homeOptions" :key="h.id" :value="h.id">
                     {{ h.name }}（{{ h.path }}）
                   </a-option>
                 </a-select>
-                <a-alert v-if="isWsl" type="info" class="dedicated-hint">
-                  {{ t('instanceEdit.wslHomeFixed') }}
-                </a-alert>
-                <a-alert v-else-if="homeId === DEDICATED" type="info" class="dedicated-hint">
-                  {{ t('instanceEdit.dedicatedHomeHint', { path: dedicatedPath }) }}
-                </a-alert>
+                <a-input
+                  v-if="homeId === DEDICATED && !isWsl"
+                  v-model="homeName"
+                  :placeholder="t('instanceEdit.homeNamePlaceholder')"
+                  style="max-width: 360px; margin-top: 8px"
+                />
               </a-form-item>
 
-              <a-form-item v-if="editingId" :label="t('instanceEdit.port')">
+              <a-form-item v-if="editingId">
+                <template #label>
+                  {{ t('instanceEdit.port') }}
+                  <HintIcon :content="t('instanceEdit.portHint')" />
+                </template>
                 <a-space>
                   <a-input
                     v-model="portInput"
@@ -1235,10 +1254,13 @@ const terminalRunning = ref(false)
                     {{ t('instanceEdit.portApply') }}
                   </a-button>
                 </a-space>
-                <p class="icon-hint">{{ t('instanceEdit.portHint') }}</p>
               </a-form-item>
 
-              <a-form-item v-if="editingId" :label="t('instanceEdit.files')">
+              <a-form-item v-if="editingId">
+                <template #label>
+                  {{ t('instanceEdit.files') }}
+                  <HintIcon :content="t('instanceEdit.filesHint')" />
+                </template>
                 <a-space>
                   <a-button size="small" :loading="dirBusy" @click="onOpenDirectory">
                     {{ t('instanceEdit.openDirectory') }}
@@ -1247,7 +1269,6 @@ const terminalRunning = ref(false)
                     {{ t('instanceEdit.viewLog') }}
                   </a-button>
                 </a-space>
-                <p class="icon-hint">{{ t('instanceEdit.filesHint') }}</p>
               </a-form-item>
             </a-form>
 
@@ -1261,8 +1282,10 @@ const terminalRunning = ref(false)
 
           <!-- Environment overrides -->
           <div v-else-if="activeTab === 'env'" class="dl-card edit-card">
-            <h4 class="env-title">{{ t('instanceEdit.env') }}</h4>
-            <p class="env-desc">{{ t('instanceEdit.envDesc') }}</p>
+            <h4 class="env-title">
+              {{ t('instanceEdit.env') }}
+              <HintIcon :content="t('instanceEdit.envDesc')" />
+            </h4>
 
             <div v-for="(row, idx) in envRows" :key="idx" class="env-row">
               <a-input
@@ -1300,8 +1323,10 @@ const terminalRunning = ref(false)
 
           <!-- Profiles -->
           <div v-else-if="activeTab === 'profiles'" class="dl-card edit-card">
-            <h4 class="env-title">{{ t('instanceEdit.tabs.profiles') }}</h4>
-            <p class="env-desc">{{ t('instanceEdit.profilesDesc') }}</p>
+            <h4 class="env-title">
+              {{ t('instanceEdit.tabs.profiles') }}
+              <HintIcon :content="t('instanceEdit.profilesDesc')" />
+            </h4>
             <div class="profiles-toolbar">
               <a-button size="small" @click="startExportModpackMulti">
                 {{ t('instanceEdit.modpackExportMulti') }}
@@ -1402,8 +1427,10 @@ const terminalRunning = ref(false)
 
           <!-- Plugins -->
           <div v-else-if="activeTab === 'plugins'" class="dl-card edit-card">
-            <h4 class="env-title">{{ t('instanceEdit.tabs.plugins') }}</h4>
-            <p class="env-desc">{{ t('instanceEdit.pluginsDesc') }}</p>
+            <h4 class="env-title">
+              {{ t('instanceEdit.tabs.plugins') }}
+              <HintIcon :content="t('instanceEdit.pluginsDesc')" />
+            </h4>
 
             <template v-if="homeId && homeId !== DEDICATED">
               <div class="plugins-toolbar">
@@ -1546,8 +1573,10 @@ const terminalRunning = ref(false)
 
           <!-- SKILL -->
           <div v-else-if="activeTab === 'skills'" class="dl-card edit-card">
-            <h4 class="env-title">{{ t('instanceEdit.tabs.skills') }}</h4>
-            <p class="env-desc">{{ t('instanceEdit.skillsDesc') }}</p>
+            <h4 class="env-title">
+              {{ t('instanceEdit.tabs.skills') }}
+              <HintIcon :content="t('instanceEdit.skillsDesc')" />
+            </h4>
 
             <template v-if="homeId && editingId">
               <div class="skill-toolbar">
@@ -1635,8 +1664,10 @@ const terminalRunning = ref(false)
 
           <!-- MCP -->
           <div v-else-if="activeTab === 'mcp'" class="dl-card edit-card">
-            <h4 class="env-title">{{ t('instanceEdit.tabs.mcp') }}</h4>
-            <p class="env-desc">{{ t('instanceEdit.mcpDesc') }}</p>
+            <h4 class="env-title">
+              {{ t('instanceEdit.tabs.mcp') }}
+              <HintIcon :content="t('instanceEdit.mcpDesc')" />
+            </h4>
 
             <template v-if="homeId && homeId !== DEDICATED">
               <div class="mcp-toolbar">
@@ -1714,8 +1745,10 @@ const terminalRunning = ref(false)
 
           <!-- Terminal -->
           <div v-else class="dl-card edit-card">
-            <h4 class="env-title">{{ t('instanceEdit.tabs.terminal') }}</h4>
-            <p class="env-desc">{{ t('instanceEdit.terminalDesc') }}</p>
+            <h4 class="env-title">
+              {{ t('instanceEdit.tabs.terminal') }}
+              <HintIcon :content="t('instanceEdit.terminalDesc')" />
+            </h4>
 
             <template v-if="editingId">
               <TerminalEmbed
@@ -1963,12 +1996,6 @@ const terminalRunning = ref(false)
   gap: 8px;
 }
 
-.icon-hint {
-  margin: 0;
-  font-size: 12px;
-  color: var(--color-text-3);
-}
-
 .edit-page {
   display: flex;
   height: calc(100vh - var(--dl-header-height));
@@ -2003,11 +2030,6 @@ const terminalRunning = ref(false)
 
 .edit-form {
   width: 100%;
-}
-
-.dedicated-hint {
-  margin-top: 8px;
-  max-width: 360px;
 }
 
 .profile-item {
@@ -2051,12 +2073,6 @@ const terminalRunning = ref(false)
 .env-title {
   margin: 0 0 4px;
   font-size: 15px;
-}
-
-.env-desc {
-  margin-top: 0;
-  color: var(--color-text-3);
-  font-size: 13px;
 }
 
 .profiles-toolbar {

@@ -274,6 +274,7 @@
     "home": "DSH_HOME",
     "dedicatedHome": "✦ New dedicated DSH_HOME for this instance",
     "dedicatedHomeHint": "A dedicated directory will be created on save: {path}",
+    "homeNamePlaceholder": "Name for the new DSH_HOME (defaults to the instance name)",
     "homeRequired": "Please pick a DSH_HOME",
     "noHome": "No DSH_HOME configured yet — add one in Settings first",
     "goSettings": "Open Settings",
