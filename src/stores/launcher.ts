@@ -74,6 +74,8 @@ interface LauncherState {
   /** Incremented whenever a background task is queued from a page that
    * stays put; App.vue plays the fly-to-tasks animation on change. */
   taskFlyTick: number
+  /** Last failed launch (sync error or unexpected exit) for the error dialog. */
+  launchError: { instanceId: string; message: string; exitCode: number | null } | null
   loaded: boolean
 }
 
@@ -116,6 +118,7 @@ export const useLauncherStore = defineStore('launcher', {
     externals: {},
     homeProfile: null,
     taskFlyTick: 0,
+    launchError: null,
     loaded: false,
   }),
 
@@ -149,6 +152,15 @@ export const useLauncherStore = defineStore('launcher', {
       const applyStatus = (st: InstanceStatus) => {
         if (st.state === 'stopped' || st.state === 'exited') {
           delete this.statusById[st.id]
+          // Unexpected FAILURE exit (not a user-initiated stop): surface a
+          // dialog with the error and the log tail (issue #30). A clean exit
+          // (code 0) is a normal shutdown — e.g. typing `exit` in a TUI
+          // terminal — and must not trigger the dialog. A null exit code
+          // means the waiter could not capture it, which is still worth
+          // reporting for the launch-failure use case.
+          if (st.state === 'exited' && st.exit_code !== 0) {
+            this.reportLaunchError({ instanceId: st.id, message: '', exitCode: st.exit_code })
+          }
         } else {
           this.statusById[st.id] = st
           // The launcher is now driving this instance, so it is no longer
@@ -299,6 +311,14 @@ export const useLauncherStore = defineStore('launcher', {
       } finally {
         this.marketLoading = false
       }
+    },
+
+    /** Opens the launch-failure dialog (sync error or unexpected exit). */
+    reportLaunchError(payload: { instanceId: string; message: string; exitCode: number | null }) {
+      this.launchError = payload
+    },
+    dismissLaunchError() {
+      this.launchError = null
     },
   },
 })

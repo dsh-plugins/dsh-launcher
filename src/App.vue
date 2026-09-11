@@ -8,6 +8,7 @@ import { api } from '@/api'
 import { Message } from '@arco-design/web-vue'
 import ModpackImportDialog from '@/components/ModpackImportDialog.vue'
 import PluginFileImportDialog from '@/components/PluginFileImportDialog.vue'
+import InstanceLaunchErrorDialog from '@/components/InstanceLaunchErrorDialog.vue'
 
 const route = useRoute()
 const router = useRouter()
@@ -330,6 +331,7 @@ async function onHeaderMouseDown(e: MouseEvent) {
       :file-path="pluginFilePath"
       :initial-instance-id="dropInstanceId"
     />
+    <InstanceLaunchErrorDialog />
   </a-layout>
 </template>
 <style lang="scss" scoped>

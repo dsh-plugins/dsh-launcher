@@ -314,7 +314,14 @@ async function onStart() {
     // runtime, so surface it here instead of leaving users to dig through logs.
     void reportHealth(selectedInstanceId.value, selectedProfile.value)
   } catch (e) {
-    Message.error(String(e))
+    // Sync failure (preflight / spawn): surface the full detail in the
+    // launch-failure dialog instead of a transient toast (issue #30).
+    // (onStart early-returns without a selection, so an id always exists here.)
+    store.reportLaunchError({
+      instanceId: selectedInstanceId.value,
+      message: String(e),
+      exitCode: null,
+    })
   }
 }
 

@@ -221,6 +221,7 @@ pub fn run() {
             commands::open_launcher_directory,
             commands::open_launcher_log,
             commands::open_instance_log,
+            commands::read_instance_log_tail,
             commands::open_instance_directory,
             commands::get_launcher_directory,
             commands::create_launch_shortcut,
