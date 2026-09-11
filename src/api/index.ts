@@ -755,10 +755,10 @@ async function mockCall<T>(cmd: string, args?: Record<string, unknown>): Promise
     case 'open_instance_log':
     case 'open_instance_directory':
       // Browser preview has no file manager; the target path is reported as-is.
+      return 'C:\\Users\\Administrator\\AppData\\Roaming\\in.dsh-plug.dsh-launcher' as T
     case 'read_instance_log_tail':
       // Browser preview: the mock never writes instance logs; no tail.
       return [] as T
-      return 'C:\\Users\\Administrator\\AppData\\Roaming\\in.dsh-plug.dsh-launcher' as T
     case 'get_launcher_directory':
       return 'C:\\Users\\Administrator\\AppData\\Roaming\\in.dsh-plug.dsh-launcher' as T
     case 'export_modpack': {

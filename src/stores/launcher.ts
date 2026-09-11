@@ -152,9 +152,13 @@ export const useLauncherStore = defineStore('launcher', {
       const applyStatus = (st: InstanceStatus) => {
         if (st.state === 'stopped' || st.state === 'exited') {
           delete this.statusById[st.id]
-          // Unexpected exit (not a user-initiated stop): surface a dialog
-          // with the error and the log tail (issue #30).
-          if (st.state === 'exited') {
+          // Unexpected FAILURE exit (not a user-initiated stop): surface a
+          // dialog with the error and the log tail (issue #30). A clean exit
+          // (code 0) is a normal shutdown — e.g. typing `exit` in a TUI
+          // terminal — and must not trigger the dialog. A null exit code
+          // means the waiter could not capture it, which is still worth
+          // reporting for the launch-failure use case.
+          if (st.state === 'exited' && st.exit_code !== 0) {
             this.reportLaunchError({ instanceId: st.id, message: '', exitCode: st.exit_code })
           }
         } else {

@@ -1535,4 +1535,61 @@ mod tests {
         assert!(!dst.join("broken").exists());
         std::fs::remove_dir_all(&root).ok();
     }
+
+    #[test]
+    fn read_tail_returns_empty_for_missing_or_empty_files() {
+        let root = unique_temp("tail");
+        std::fs::create_dir_all(&root).unwrap();
+        assert!(read_tail(&root.join("missing.log"), 10).is_empty());
+        let empty = root.join("empty.log");
+        std::fs::write(&empty, "").unwrap();
+        assert!(read_tail(&empty, 10).is_empty());
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn read_tail_keeps_last_n_lines_and_drops_trailing_newline() {
+        let root = unique_temp("tail");
+        std::fs::create_dir_all(&root).unwrap();
+        let log = root.join("a.log");
+        std::fs::write(&log, "l1\nl2\nl3\nl4\n").unwrap();
+        assert_eq!(read_tail(&log, 2), vec!["l3".to_string(), "l4".to_string()]);
+        // Fewer lines than requested returns everything.
+        assert_eq!(
+            read_tail(&log, 10),
+            vec![
+                "l1".to_string(),
+                "l2".to_string(),
+                "l3".to_string(),
+                "l4".to_string()
+            ]
+        );
+        // No trailing newline still works.
+        std::fs::write(&log, "x\ny").unwrap();
+        assert_eq!(read_tail(&log, 5), vec!["x".to_string(), "y".to_string()]);
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn read_tail_bounds_large_files_to_the_last_64kib() {
+        let root = unique_temp("tail");
+        std::fs::create_dir_all(&root).unwrap();
+        let log = root.join("big.log");
+        // 3000 lines × ~40 bytes ≈ 120 KiB — beyond the 64 KiB window.
+        let body: String = (0..3000)
+            .map(|i| format!("line-{i:04}-padding-padding-pad\n"))
+            .collect();
+        std::fs::write(&log, body).unwrap();
+        let tail = read_tail(&log, 3);
+        assert_eq!(tail.len(), 3);
+        assert!(
+            tail.last().unwrap().starts_with("line-2999"),
+            "tail: {tail:?}"
+        );
+        assert!(
+            tail.first().unwrap().starts_with("line-2997"),
+            "tail: {tail:?}"
+        );
+        std::fs::remove_dir_all(&root).ok();
+    }
 }

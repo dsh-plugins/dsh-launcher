@@ -316,15 +316,12 @@ async function onStart() {
   } catch (e) {
     // Sync failure (preflight / spawn): surface the full detail in the
     // launch-failure dialog instead of a transient toast (issue #30).
-    if (selectedInstanceId.value) {
-      store.reportLaunchError({
-        instanceId: selectedInstanceId.value,
-        message: String(e),
-        exitCode: null,
-      })
-    } else {
-      Message.error(String(e))
-    }
+    // (onStart early-returns without a selection, so an id always exists here.)
+    store.reportLaunchError({
+      instanceId: selectedInstanceId.value,
+      message: String(e),
+      exitCode: null,
+    })
   }
 }
 

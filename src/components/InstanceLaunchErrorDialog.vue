@@ -28,22 +28,33 @@ const summary = computed(() => {
 const tail = ref<string[]>([])
 const tailLoading = ref(false)
 
+// Watch the error object itself (not the derived visibility): a second
+// failure while the dialog is still open must refresh summary AND tail.
 watch(
-  visible,
-  async (v) => {
-    if (!v) {
-      tail.value = []
+  () => store.launchError,
+  async (err) => {
+    tail.value = []
+    if (!err) {
+      tailLoading.value = false
       return
     }
-    const err = store.launchError
-    if (!err) return
     tailLoading.value = true
     try {
+      // Flush race: the waiter emits Exited before the stdout/stderr readers
+      // have necessarily written the final crash lines to the log file. Give
+      // them a beat before the first read, then re-read once to catch
+      // late-arriving lines. Bail out if the dialog was dismissed or a newer
+      // error replaced this one meanwhile.
+      await new Promise((r) => setTimeout(r, 350))
+      if (store.launchError !== err) return
+      tail.value = await api.readInstanceLogTail(err.instanceId, 40)
+      await new Promise((r) => setTimeout(r, 800))
+      if (store.launchError !== err) return
       tail.value = await api.readInstanceLogTail(err.instanceId, 40)
     } catch {
       tail.value = []
     } finally {
-      tailLoading.value = false
+      if (store.launchError === err) tailLoading.value = false
     }
   },
   { immediate: true },
