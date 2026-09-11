@@ -19,6 +19,7 @@ const router = createRouter({
         { path: 'plugins', name: 'download-plugins', component: () => import('@/views/plugins/Market.vue') },
         { path: 'plugins/version', name: 'plugin-version', component: () => import('@/views/plugins/VersionPick.vue') },
         { path: 'plugins/install', name: 'plugin-install', component: () => import('@/views/plugins/InstallWizard.vue') },
+        { path: 'modpacks', name: 'download-modpacks', component: () => import('@/views/download/ModpackMarket.vue') },
       ],
     },
     { path: '/settings', name: 'settings', component: () => import('@/views/Settings.vue') },

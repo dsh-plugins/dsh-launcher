@@ -93,6 +93,7 @@
   "download": {
     "createInstance": "Create instance",
     "plugins": "Plugins",
+    "modpacks": "Modpacks",
     "latest": "Latest versions",
     "latestStable": "Latest stable",
     "latestPrerelease": "Latest pre-release",
@@ -498,7 +499,24 @@
     "targetNew": "New instance",
     "targetExisting": "Existing instance",
     "existingInstance": "Select instance",
-    "existingInstanceHint": "Only instances on the same DSH version line are listed"
+    "existingInstanceHint": "Only instances on the same DSH version line are listed",
+    "marketTitle": "Modpack market",
+    "marketPublish": "How to publish a modpack?",
+    "marketSearch": "Search name / author / description",
+    "marketRefresh": "Refresh",
+    "marketRetry": "Retry",
+    "marketError": "Failed to load the modpack market",
+    "marketEmpty": "No modpacks in the market yet",
+    "marketNoMatch": "No matching modpacks",
+    "marketTypeAll": "All",
+    "marketTypeProfile": "Profile packs",
+    "marketTypeDshhome": "DSH_HOME packs",
+    "marketInstall": "Install",
+    "marketProfiles": "{count} profile(s)",
+    "marketBundles": "{count} plugin(s)",
+    "marketDeps": "{count} dep(s)",
+    "marketUpdated": "Updated {date}",
+    "marketDshVersion": "DSH {version}"
   },
   "pluginFile": {
     "importTitle": "Import local plugin",

@@ -8,6 +8,7 @@ import type {
   ExternalStatus,
   InstanceStatus,
   LauncherSettings,
+  MarketModpack,
   MarketPlugin,
   PluginChannel,
   PluginSource,
@@ -63,6 +64,12 @@ interface LauncherState {
   pluginMarketSource: PluginSource | ''
   /** Scroll offset of the plugin market page's scrollbar, in px. */
   pluginMarketScrollTop: number
+  /** PackForge modpack market index entries (issue #17). */
+  marketModpacks: MarketModpack[]
+  modpackMarketLoading: boolean
+  modpackMarketLoadedAt: number | null
+  /** Search box of the modpack market page, persisted across navigations. */
+  modpackMarketSearch: string
   pluginWizard: PluginWizardState | null
   modpackExport: ModpackExportState | null
   modpackExportMulti: ModpackExportMultiState | null
@@ -112,6 +119,10 @@ export const useLauncherStore = defineStore('launcher', {
     pluginMarketSearch: '',
     pluginMarketSource: '' as PluginSource | '',
     pluginMarketScrollTop: 0,
+    marketModpacks: [],
+    modpackMarketLoading: false,
+    modpackMarketLoadedAt: null,
+    modpackMarketSearch: '',
     pluginWizard: null,
     modpackExport: null,
     modpackExportMulti: null,
@@ -310,6 +321,20 @@ export const useLauncherStore = defineStore('launcher', {
         Message.error(String(e))
       } finally {
         this.marketLoading = false
+      }
+    },
+
+    /** Load the PackForge modpack market index (issue #17; cached until
+     * force=true). Errors propagate so the page can show its retry alert. */
+    async refreshModpackMarket(force = false) {
+      if (this.modpackMarketLoading) return
+      if (!force && this.marketModpacks.length > 0 && this.modpackMarketLoadedAt) return
+      this.modpackMarketLoading = true
+      try {
+        this.marketModpacks = await api.fetchModpackMarket()
+        this.modpackMarketLoadedAt = Date.now()
+      } finally {
+        this.modpackMarketLoading = false
       }
     },
 

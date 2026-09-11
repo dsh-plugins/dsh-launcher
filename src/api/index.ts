@@ -17,6 +17,7 @@ import type {
   LauncherSettings,
   LauncherUpdateInfo,
   MarketPlugin,
+  MarketModpack,
   McpServer,
   ModpackManifest,
   NewInstanceInput,
@@ -978,6 +979,65 @@ async function mockCall<T>(cmd: string, args?: Record<string, unknown>): Promise
         return (p.id + p.name + desc).toLowerCase().includes(q)
       }) as T
     }
+    case 'fetch_modpack_market': {
+      // Mirrors the real PackForge index: one dshhome pack, one plain-string
+      // profile pack, one locale-map profile pack with a missing sha256.
+      return [
+        {
+          id: 'hxh230802.dsh-game-skin',
+          name: 'dsh-home-pack',
+          version: '1.0.0',
+          displayName: 'dsh-game-skin',
+          description: '',
+          author: 'HXH',
+          category: 'uncategorized',
+          dshVersion: '0.1.2-alpha.5',
+          downloadUrl: 'https://github.com/hxh230802/dsh-game-skin/releases/download/v1.0.0/dsh-game-skin-1.0.0.dspack',
+          size: 9478,
+          updatedAt: '2026-09-08',
+          type: 'dshhome',
+          profileCount: 5,
+          bundleCount: 16,
+          depCount: 7,
+        },
+        {
+          id: 'hxh230802.better-sidebar',
+          name: 'better-sidebar',
+          version: '1.0.0',
+          displayName: '更好的侧边栏',
+          description: '为DSH提供更好的侧边栏',
+          author: 'HXH',
+          category: 'uncategorized',
+          downloadUrl: 'https://github.com/hxh230802/better-sidebar/releases/download/v1.0.0/better-sidebar-1.0.0.dspack',
+          size: 18067,
+          updatedAt: '2026-09-02',
+          type: 'profile',
+          profileName: 'better-sidebar',
+          bundleCount: 4,
+          depCount: 2,
+        },
+        {
+          id: 'DSH-PackForge.all-about-whales',
+          name: 'all-about-whales',
+          version: '1.0.0',
+          displayName: { 'en-US': 'All About Whales', 'zh-CN': '大肥鱼套装' },
+          description: {
+            'en-US': 'Make your DSH smell like big fat whales (beautify webUI with DeepSeek mascot theme)',
+            'zh-CN': '让你的DSH充满大肥鱼的味道（用DeepSeek吉祥物主题美化webUI）',
+          },
+          author: 'hxh230802',
+          category: 'coding',
+          dshVersion: '0.1.0-rc.8',
+          downloadUrl: 'https://github.com/DSH-PackForge/all-about-whales/releases/download/v1.0.0/all-about-whales-1.0.0.dspack',
+          size: 6670,
+          updatedAt: '2026-09-01',
+          type: 'profile',
+          profileName: 'all-about-whales',
+          bundleCount: 6,
+          depCount: 4,
+        },
+      ] as T
+    }
     case 'fetch_plugin_versions': {
       const pluginId = args?.plugin_id as string
       const channel = args?.channel as PluginChannel
@@ -1233,6 +1293,8 @@ export const api = {
     call<string>('export_dshhome_modpack', { input }),
   /** Pre-reads a modpack's manifest before installing (for the confirm dialog). */
   readModpackManifest: (source: string) => call<ModpackManifest>('read_modpack_manifest', { source }),
+  /** Fetches the PackForge modpack market index (issue #17). */
+  fetchModpackMarket: () => call<MarketModpack[]>('fetch_modpack_market'),
   /** Cold-start deep link from process argv (null when launched normally). */
   pendingDeepLink: () => call<string | null>('pending_deep_link'),
   /** Writes a Windows .url shortcut launching an instance via dsh-launcher://launch. */

@@ -29,17 +29,25 @@ function scrollAccessor(top: number | null): number | void {
 provideDownloadScroll(scrollAccessor)
 
 const PLUGIN_ROUTES = new Set(['download-plugins', 'plugin-version', 'plugin-install'])
+const MODPACK_ROUTES = new Set(['download-modpacks'])
 
 const selectedKeys = computed(() => {
   const name = route.name as string
   if (PLUGIN_ROUTES.has(name)) return ['plugins']
+  if (MODPACK_ROUTES.has(name)) return ['modpacks']
   return ['create']
 })
 
 const onCreatePage = computed(() => selectedKeys.value[0] === 'create')
 
 function onMenuSelect(key: string) {
-  router.push({ name: key === 'plugins' ? 'download-plugins' : 'download-create' })
+  const target =
+    key === 'plugins'
+      ? 'download-plugins'
+      : key === 'modpacks'
+        ? 'download-modpacks'
+        : 'download-create'
+  router.push({ name: target })
 }
 
 function onRefreshVersions() {
@@ -100,6 +108,7 @@ onUnmounted(() => scroller()?.removeEventListener('scroll', onScroll))
           </span>
         </a-menu-item>
         <a-menu-item key="plugins">{{ t('download.plugins') }}</a-menu-item>
+        <a-menu-item key="modpacks">{{ t('download.modpacks') }}</a-menu-item>
       </a-menu>
     </aside>
     <section class="download-content">
@@ -111,7 +120,7 @@ onUnmounted(() => scroller()?.removeEventListener('scroll', onScroll))
       >
         <div class="download-inner">
           <router-view v-slot="{ Component }">
-            <keep-alive :include="['MarketPage', 'CreatePickPage']">
+            <keep-alive :include="['MarketPage', 'CreatePickPage', 'ModpackMarketPage']">
               <component :is="Component" />
             </keep-alive>
           </router-view>

@@ -93,6 +93,7 @@
   "download": {
     "createInstance": "实例创建",
     "plugins": "插件下载",
+    "modpacks": "整合包",
     "latest": "最新版本",
     "latestStable": "最新正式版",
     "latestPrerelease": "最新预览版",
@@ -498,7 +499,24 @@
     "targetNew": "新建实例",
     "targetExisting": "导入到现有实例",
     "existingInstance": "选择实例",
-    "existingInstanceHint": "仅列出与整合包同一 DSH 版本线的实例"
+    "existingInstanceHint": "仅列出与整合包同一 DSH 版本线的实例",
+    "marketTitle": "整合包市场",
+    "marketPublish": "如何发布整合包？",
+    "marketSearch": "搜索名称 / 作者 / 描述",
+    "marketRefresh": "刷新",
+    "marketRetry": "重试",
+    "marketError": "获取整合包市场失败",
+    "marketEmpty": "整合包市场暂无数据",
+    "marketNoMatch": "没有匹配的整合包",
+    "marketTypeAll": "全部",
+    "marketTypeProfile": "Profile 包",
+    "marketTypeDshhome": "DSH_HOME 包",
+    "marketInstall": "安装",
+    "marketProfiles": "{count} 个 Profile",
+    "marketBundles": "{count} 个插件",
+    "marketDeps": "{count} 个依赖",
+    "marketUpdated": "更新于 {date}",
+    "marketDshVersion": "DSH {version}"
   },
   "pluginFile": {
     "importTitle": "导入本地插件",

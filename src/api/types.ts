@@ -222,6 +222,33 @@ export interface ModpackManifest {
   instructions?: string | null
 }
 
+/** One entry of the PackForge modpack market index (issue #17). Lean entries
+ * may omit every optional field; displayName/description are a string or a
+ * `{locale: text}` map. */
+export interface MarketModpack {
+  id: string
+  name: string
+  version: string
+  displayName?: string | Record<string, string> | null
+  description?: string | Record<string, string> | null
+  author?: string | null
+  category?: string | null
+  dshVersion?: string | null
+  profileName?: string | null
+  downloadUrl: string
+  sha256?: string | null
+  /** Byte size of the .dspack. */
+  size?: number | null
+  updatedAt?: string | null
+  /** "profile" (single profile) or "dshhome" (whole-DSH_HOME snapshot). */
+  type?: string | null
+  profileCount?: number | null
+  bundleCount?: number | null
+  depCount?: number | null
+  owner?: string | null
+  repo?: string | null
+}
+
 /** One profile selected for a multi-profile (dshhome) export. */
 export interface ExportProfileSpec {
   profile: string

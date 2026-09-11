@@ -843,6 +843,77 @@ pub async fn read_modpack_manifest(source: String) -> Result<ModpackManifest, St
 }
 
 // ---------------------------------------------------------------------------
+// Market (issue #17)
+// ---------------------------------------------------------------------------
+
+/// The PackForge community modpack index (issue #17).
+const MODPACK_MARKET_URL: &str = "https://dsh-packforge.github.io/dsh-pack-market/index.json";
+
+/// One entry of the PackForge modpack market index. `display_name` /
+/// `description` stay untyped: entries carry either a string or a
+/// `{locale: text}` map and both round-trip to the frontend verbatim.
+/// Everything but `id` / `name` / `version` / `download_url` is optional so a
+/// lean entry from a third-party index still parses.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MarketModpack {
+    pub id: String,
+    pub name: String,
+    pub version: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub display_name: Option<serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub author: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub category: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dsh_version: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub profile_name: Option<String>,
+    pub download_url: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sha256: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub size: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub updated_at: Option<String>,
+    /// "profile" (single profile) or "dshhome" (whole-DSH_HOME snapshot).
+    #[serde(default, rename = "type", skip_serializing_if = "Option::is_none")]
+    pub pack_type: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub profile_count: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bundle_count: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dep_count: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub owner: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub repo: Option<String>,
+}
+
+/// The index wrapper: `{ schemaVersion, generatedAt, modpacks[] }`.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct MarketModpackIndex {
+    #[serde(default)]
+    modpacks: Vec<MarketModpack>,
+}
+
+/// Fetches the PackForge modpack market index (issue #17). Unlike the plugin
+/// market this is a single-source catalog: a fetch/parse failure is reported
+/// to the UI (which shows a retry) instead of being silently skipped.
+#[tauri::command]
+pub async fn fetch_modpack_market() -> Result<Vec<MarketModpack>, String> {
+    let value = crate::plugins::fetch_json_pub(MODPACK_MARKET_URL, 4 * 1024 * 1024).await?;
+    let index: MarketModpackIndex =
+        serde_json::from_value(value).map_err(|e| format!("解析整合包市场数据失败: {e}"))?;
+    Ok(index.modpacks)
+}
+
+// ---------------------------------------------------------------------------
 // Export
 // ---------------------------------------------------------------------------
 
@@ -2646,5 +2717,77 @@ importers:
         assert!(dst.join("skills/x/SKILL.md").exists());
         assert!(!dst.join("profiles/main/cordis.patch.yml").exists());
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// The PackForge index mixes plain-string and locale-map
+    /// displayName/description, and lean entries may omit every optional
+    /// field (issue #17): both shapes must parse.
+    #[test]
+    fn market_index_parses_string_and_locale_map_entries() {
+        let raw = r#"{
+            "schemaVersion": 2,
+            "generatedAt": "2026-09-11T09:39:21.133Z",
+            "modpacks": [
+                {
+                    "manifestVersion": 5,
+                    "type": "dshhome",
+                    "name": "dsh-home-pack",
+                    "version": "1.0.0",
+                    "displayName": "dsh-game-skin",
+                    "description": "",
+                    "author": "HXH",
+                    "category": "uncategorized",
+                    "dshVersion": "0.1.2-alpha.5",
+                    "profileName": null,
+                    "downloadUrl": "https://example.com/a.dspack",
+                    "sha256": "",
+                    "size": 9478,
+                    "updatedAt": "2026-09-08",
+                    "id": "hxh230802.dsh-game-skin",
+                    "owner": "hxh230802",
+                    "repo": "dsh-game-skin",
+                    "profileCount": 5,
+                    "bundleCount": 16,
+                    "depCount": 7
+                },
+                {
+                    "manifestVersion": 4,
+                    "type": "profile",
+                    "name": "whales",
+                    "version": "1.0.0",
+                    "displayName": {"en-US": "All About Whales", "zh-CN": "大肥鱼套装"},
+                    "description": {"en-US": "Whales.", "zh-CN": "大肥鱼。"},
+                    "downloadUrl": "https://example.com/b.dspack",
+                    "id": "DSH-PackForge.whales",
+                    "bundleCount": 6,
+                    "depCount": 4
+                }
+            ]
+        }"#;
+        let index: MarketModpackIndex = serde_json::from_str(raw).unwrap();
+        assert_eq!(index.modpacks.len(), 2);
+
+        let first = &index.modpacks[0];
+        assert_eq!(first.id, "hxh230802.dsh-game-skin");
+        assert_eq!(first.pack_type.as_deref(), Some("dshhome"));
+        assert_eq!(
+            first.display_name.as_ref().unwrap().as_str(),
+            Some("dsh-game-skin")
+        );
+        assert_eq!(first.size, Some(9478));
+        assert_eq!(first.profile_count, Some(5));
+
+        let second = &index.modpacks[1];
+        assert!(second.display_name.as_ref().unwrap().is_object());
+        assert_eq!(
+            second.description.as_ref().unwrap()["zh-CN"].as_str(),
+            Some("大肥鱼。")
+        );
+        // Lean entry: everything optional defaults to None.
+        assert!(second.sha256.is_none());
+        assert!(second.size.is_none());
+        assert!(second.updated_at.is_none());
+        assert!(second.profile_count.is_none());
+        assert!(second.author.is_none());
     }
 }

@@ -257,6 +257,7 @@ pub fn run() {
             modpack::export_dshhome_modpack,
             modpack::read_modpack_manifest,
             modpack::start_import_modpack_task,
+            modpack::fetch_modpack_market,
             terminal::start_terminal_session,
             terminal::write_terminal_input,
             terminal::resize_terminal_session,
