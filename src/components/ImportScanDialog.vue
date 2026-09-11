@@ -8,7 +8,7 @@ import { computed, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { Message } from '@arco-design/web-vue'
 import { api } from '@/api'
-import type { ImportReport, ScanReport, ScannedVersion } from '@/api/types'
+import type { ImportItem, ImportReport, ScanReport, ScannedVersion } from '@/api/types'
 import { useLauncherStore } from '@/stores/launcher'
 
 const props = defineProps<{
@@ -32,6 +32,17 @@ const versions = ref<ScannedVersion[]>([])
 const newVersionDir = ref('')
 const importResult = ref<ImportReport | null>(null)
 
+/** i18n color / label per item status. */
+const itemStatusOf = (status: ImportItem['status']) => status
+const itemColor = (status: ImportItem['status']) =>
+  status === 'added' ? 'green' : status === 'failed' ? 'red' : 'gray'
+const itemLabel = (status: ImportItem['status']) =>
+  status === 'added'
+    ? t('importScan.itemAdded')
+    : status === 'failed'
+      ? t('importScan.itemFailed')
+      : t('importScan.itemSkipped')
+
 // --- scan --------------------------------------------------------------------
 
 async function runScan() {
@@ -39,10 +50,12 @@ async function runScan() {
   importResult.value = null
   try {
     report.value = await api.scanLocalDsh()
-    // Default-select web/tui profiles of unknown homes (skip known ones).
+    // Default-select web/tui profiles of every home, known or not (issue
+    // #39, problem 2: `already_known` only means the home is registered —
+    // its profiles still deserve to become instances, e.g. the launcher's
+    // own `~/.dsh`; importing is idempotent, duplicates are skipped).
     const defaults: string[] = []
     for (const home of report.value.homes) {
-      if (home.already_known) continue
       for (const p of home.profiles) {
         if (p.kind !== 'other') defaults.push(`${home.path}::${p.name}`)
       }
@@ -80,6 +93,10 @@ async function addVersion() {
   }
 }
 
+function removeVersion(dir: string) {
+  versions.value = versions.value.filter((v) => v.dir !== dir)
+}
+
 // --- import ------------------------------------------------------------------
 
 const hasSelection = computed(
@@ -88,6 +105,15 @@ const hasSelection = computed(
 
 function profileKey(homePath: string, profile: string): string {
   return `${homePath}::${profile}`
+}
+
+function versionItemLabel(item: ImportItem): string {
+  // A version alone is not an instance — surface that explicitly instead of
+  // letting the user wonder why nothing appeared in the instance list.
+  if (item.kind === 'version' && item.status === 'added') {
+    return `${itemLabel(item.status)} — ${t('importScan.versionNotInstance')}`
+  }
+  return itemLabel(item.status)
 }
 
 async function doImport() {
@@ -106,9 +132,17 @@ async function doImport() {
     const result = await api.importScanned({
       homes,
       versions: versions.value.map((v) => ({ dir: v.dir })),
+      // New instances bind to the first user-picked version directory
+      // (issue #39, R3); the backend validates it and reports mismatches.
+      preferredVersionDir: versions.value[0]?.dir ?? null,
     })
     importResult.value = result
-    Message.success(t('importScan.done', { instances: result.instances_added }))
+    const failed = result.items.filter((i) => i.status === 'failed').length
+    if (failed > 0) {
+      Message.warning(t('importScan.doneWithFailures', { failed, instances: result.instances_added }))
+    } else {
+      Message.success(t('importScan.done', { instances: result.instances_added }))
+    }
     emit('imported')
     // Reload the store so new instances appear immediately.
     await store.init()
@@ -154,7 +188,6 @@ function close() {
               v-for="p in home.profiles"
               :key="p.name"
               :value="profileKey(home.path, p.name)"
-              :disabled="home.already_known"
             >
               {{ p.name }}
               <a-tag v-if="p.kind === 'tui'" size="small" color="purple">TUI</a-tag>
@@ -177,11 +210,38 @@ function close() {
             <a-tag size="small" color="blue">v{{ v.version }}</a-tag>
             <a-tag size="small" color="gray">{{ v.layout }}</a-tag>
             <a-tag v-if="!v.ready" size="small" color="red">{{ t('importScan.needsBuild') }}</a-tag>
+            <a-button
+              size="mini"
+              type="text"
+              status="danger"
+              class="version-remove"
+              @click="removeVersion(v.dir)"
+            >
+              {{ t('importScan.removeVersion') }}
+            </a-button>
           </div>
         </div>
 
         <div v-if="importResult" class="import-result">
-          {{ t('importScan.summary', importResult) }}
+          <div class="import-result-head">
+            {{ t('importScan.summary', importResult) }}
+          </div>
+          <ul v-if="importResult.items.length" class="import-items">
+            <li
+              v-for="(item, idx) in importResult.items"
+              :key="`${item.kind}-${item.name}-${idx}`"
+              class="import-item"
+            >
+              <a-tag size="small" :color="itemColor(item.status)">
+                {{ itemLabel(item.status) }}
+              </a-tag>
+              <span class="import-item-name">{{ item.name }}</span>
+              <span v-if="item.reason" class="import-item-reason">{{ item.reason }}</span>
+              <span v-else-if="versionItemLabel(item) !== itemLabel(item.status)" class="import-item-reason">
+                {{ t('importScan.versionNotInstance') }}
+              </span>
+            </li>
+          </ul>
         </div>
 
         <div class="dialog-actions">
@@ -256,6 +316,11 @@ function close() {
   font-size: 12px;
 }
 
+.version-remove {
+  margin-left: auto;
+  flex-shrink: 0;
+}
+
 .version-dir {
   word-break: break-all;
 }
@@ -265,6 +330,39 @@ function close() {
   border-radius: 6px;
   background: var(--color-fill-2);
   font-size: 13px;
+}
+
+.import-result-head {
+  font-weight: 600;
+  margin-bottom: 6px;
+}
+
+.import-items {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-height: 200px;
+  overflow-y: auto;
+}
+
+.import-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+}
+
+.import-item-name {
+  word-break: break-all;
+  min-width: 0;
+}
+
+.import-item-reason {
+  color: var(--color-text-3);
+  word-break: break-all;
 }
 
 .dialog-actions {

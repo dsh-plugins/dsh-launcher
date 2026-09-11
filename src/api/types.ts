@@ -569,6 +569,17 @@ export interface ImportHomeInput {
 export interface ImportScannedInput {
   homes: ImportHomeInput[]
   versions: { dir: string }[]
+  /** Version directory picked as the default for newly created instances (issue #39). */
+  preferredVersionDir?: string | null
+}
+
+/** One import item's outcome; the wizard renders these line by line. */
+export interface ImportItem {
+  kind: 'home' | 'version' | 'instance'
+  name: string
+  status: 'added' | 'skipped' | 'failed'
+  /** Reason for skipped/failed items. */
+  reason?: string | null
 }
 
 export interface ImportReport {
@@ -576,6 +587,8 @@ export interface ImportReport {
   versions_added: number
   instances_added: number
   skipped_known: number
+  /** Per-item breakdown of the import. */
+  items: ImportItem[]
 }
 
 /** An instance running outside the launcher (pinned port answers, not tracked). */
