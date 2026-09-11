@@ -913,11 +913,17 @@ fn disabled_ids(raw: &str) -> Vec<String> {
             inside_config = None;
             continue;
         }
-        if let Some(rest) = t.strip_prefix("id:") {
-            current_id = Some(rest.trim().to_string());
-            current_child_indent = ind + 2;
-            inside_config = None;
-            continue;
+        // A bare `id:` key only counts at the top level: a nested `id:` (e.g.
+        // `config: { server: { id: fake } }` in an MCP-style config) must NOT
+        // reset the current entry, or a deeper `disabled: true` would be
+        // attributed to a fabricated id.
+        if ind == 0 {
+            if let Some(rest) = t.strip_prefix("id:") {
+                current_id = Some(rest.trim().to_string());
+                current_child_indent = ind + 2;
+                inside_config = None;
+                continue;
+            }
         }
 
         // A `config:` key opens a nested mapping; anything deeper is not a
@@ -926,6 +932,17 @@ fn disabled_ids(raw: &str) -> Vec<String> {
             if rest.trim().is_empty() || rest.trim() == "true" {
                 inside_config = Some(ind);
                 continue;
+            }
+        }
+
+        // A key at or above the `config:` key's own indent is a SIBLING of
+        // config (an entry-level key), not its child: close the config block.
+        // Without this, an entry-level `disabled: true` written AFTER the
+        // config mapping (legal YAML) keeps `inside_config` open forever and
+        // is misread as config-internal.
+        if let Some(cfg) = inside_config {
+            if !t.is_empty() && !t.starts_with('#') && ind <= cfg {
+                inside_config = None;
             }
         }
 
@@ -949,18 +966,6 @@ fn disabled_ids(raw: &str) -> Vec<String> {
             current_id = None;
             inside_config = None;
             continue;
-        }
-
-        // A deeper `key:` that is not config resumes at a child level; only a
-        // sibling at or above `current_child_indent` (other than config and
-        // disabled) keeps the entry alive. Lines deeper than config are
-        // ignored for id tracking but do not end the entry.
-        if ind < current_child_indent && ind > 0 && inside_config.is_some() {
-            // e.g. `disabled:` reached the same level as config (inside it is
-            // deeper); a key back at child level closes config.
-            if ind <= inside_config.unwrap_or(0) {
-                inside_config = None;
-            }
         }
     }
     out
@@ -1305,8 +1310,9 @@ fn set_disabled_row(raw: &str, cordis_id: &str, enabled: bool) -> String {
     if targets.is_empty() {
         // No row for this id in the document.
         if enabled {
-            // Nothing to clear.
-            return raw.trim_end().to_string() + "\n";
+            // Nothing to clear; still route through replace_placeholder so an
+            // empty document keeps its `[]` placeholder instead of "\n".
+            return replace_placeholder(&(raw.trim_end().to_string() + "\n"));
         }
         // Append a fresh `- id:` + `disabled: true` override for a
         // bundle-provided entry (the loader applies the bundle layer first,
@@ -1350,10 +1356,17 @@ fn set_disabled_row(raw: &str, cordis_id: &str, enabled: bool) -> String {
                 // Blank / comment / back to a shallower (non-child) level.
                 continue;
             }
+            if indent_of(line) != t.child_indent {
+                // Deeper nesting (e.g. a `disabled:` key inside the plugin's
+                // own `config:` mapping — common for MCP server options) is
+                // not an entry-level toggle: ignore it entirely. Missing this
+                // guard made disabling such a plugin a silent no-op.
+                continue;
+            }
             if let Some(value) = tl.strip_prefix("disabled:") {
                 has_disabled = true;
                 disabled_on = value.trim().eq_ignore_ascii_case("true");
-            } else if indent_of(line) == t.child_indent {
+            } else {
                 has_other = true;
             }
         }
@@ -3093,5 +3106,55 @@ mod tests {
         );
 
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Regression (review): a plugin whose own `config:` mapping carries a
+    /// nested `disabled:` key (common for MCP server options) must still be
+    /// disable-able — the nested key is not an entry-level toggle, so the
+    /// write path must not let it suppress the insert/flip.
+    #[test]
+    fn set_disabled_row_ignores_disabled_key_inside_config() {
+        let raw = "- id: my-plugin\n  config:\n    server:\n      disabled: false\n";
+        // Disabling must add the entry-level row despite the nested key.
+        let out = set_disabled_row(raw, "my-plugin", false);
+        assert!(
+            out.contains("- id: my-plugin\n  disabled: true\n"),
+            "disable must land on the entry row: {out}"
+        );
+        assert!(
+            out.contains("disabled: false"),
+            "nested key preserved: {out}"
+        );
+        // Re-enabling drops only the entry-level row; the nested key survives.
+        let back = set_disabled_row(&out, "my-plugin", true);
+        assert_eq!(back, raw, "nested config disabled key must survive: {back}");
+    }
+
+    /// Regression (review): an entry-level `disabled: true` written AFTER the
+    /// `config:` block (legal YAML, e.g. hand-edited) must be attributed to
+    /// the entry, not swallowed as config-internal.
+    #[test]
+    fn disabled_ids_reads_entry_level_disabled_after_config() {
+        let raw = "- id: my-plugin\n  config:\n    a: 1\n  disabled: true\n";
+        let out = disabled_ids(raw);
+        assert_eq!(out, vec!["my-plugin".to_string()], "out: {out:?}");
+    }
+
+    /// Regression (review): a nested `id:` inside `config:` must not reset the
+    /// current entry — otherwise a deeper `disabled: true` would fabricate an
+    /// id that never existed at the entry level.
+    #[test]
+    fn disabled_ids_ignores_nested_id_inside_config() {
+        let raw = "- id: real\n  config:\n    server:\n      id: fake\n      disabled: true\n";
+        let out = disabled_ids(raw);
+        assert!(out.is_empty(), "no fabricated ids: {out:?}");
+    }
+
+    /// Enabling an id absent from an (empty) document must keep the `[]`
+    /// placeholder the rest of the tooling relies on, not return "\n".
+    #[test]
+    fn set_disabled_row_enable_missing_keeps_placeholder() {
+        assert_eq!(set_disabled_row("", "ghost", true), "[]\n");
+        assert_eq!(set_disabled_row("[]\n", "ghost", true), "[]\n");
     }
 }
