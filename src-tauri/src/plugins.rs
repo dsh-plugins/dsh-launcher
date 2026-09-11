@@ -869,30 +869,106 @@ pub async fn list_installed_plugins(
     Ok(out)
 }
 
-/// Parse disabled cordis ids from a profile's cordis.patch.yml. We do a
-/// lightweight line scan (avoid pulling a YAML parser dependency for this).
+/// Parse disabled cordis ids from a profile's cordis.patch.yml.
+///
+/// A block-aware scan that understands the two shapes a plugin entry can
+/// take: a plain top-level `- id:` row (bundle-provided plugins that the user
+/// layer merely overrides) and an `- insert:` block whose child `- id:` rows
+/// mount first-party/out-of-tree plugins. `disabled: true` can appear on either
+/// kind of row, and we collect the id they belong to.
 fn read_disabled_ids(dir: &std::path::Path) -> std::collections::HashSet<String> {
     let mut set = std::collections::HashSet::new();
     let path = dir.join("cordis.patch.yml");
     let Ok(raw) = std::fs::read_to_string(&path) else {
         return set;
     };
+    set.extend(disabled_ids(&raw));
+    set
+}
+
+/// Extract the ids that carry a `disabled: true` row as a *direct child* of
+/// their entry.
+///
+/// Block-aware: a `disabled:` line is attributed to the entry whose `- id:` /
+/// `id:` row the scan is inside, at that entry's child indentation. A deeper
+/// `disabled:` inside the entry's own `config:` mapping is NOT an entry toggle
+/// and is ignored (it would otherwise report a plugin as disabled that the
+/// loader still runs).
+fn disabled_ids(raw: &str) -> Vec<String> {
+    let lines: Vec<&str> = raw.lines().collect();
+    let mut out = Vec::new();
+    // Current entry's id and its direct-child indentation.
     let mut current_id: Option<String> = None;
-    for line in raw.lines() {
+    let mut current_child_indent: usize = 0;
+    let mut inside_config: Option<usize> = None; // indent of the `config:` key
+
+    for line in &lines {
         let t = line.trim();
-        if t.starts_with("- id:") {
-            current_id = Some(t.trim_start_matches("- id:").trim().to_string());
-        } else if t.starts_with("id:") && !line.starts_with(' ') && !line.starts_with('\t') {
-            current_id = Some(t.trim_start_matches("id:").trim().to_string());
-        } else if t == "disabled: true" {
-            if let Some(id) = current_id.take() {
-                set.insert(id);
+        let ind = indent_of(line);
+
+        // A row whose first key is `id` starts/continues an entry.
+        if let Some(rest) = t.strip_prefix("- id:") {
+            current_id = Some(rest.trim().to_string());
+            current_child_indent = ind + 2;
+            inside_config = None;
+            continue;
+        }
+        // A bare `id:` key only counts at the top level: a nested `id:` (e.g.
+        // `config: { server: { id: fake } }` in an MCP-style config) must NOT
+        // reset the current entry, or a deeper `disabled: true` would be
+        // attributed to a fabricated id.
+        if ind == 0 {
+            if let Some(rest) = t.strip_prefix("id:") {
+                current_id = Some(rest.trim().to_string());
+                current_child_indent = ind + 2;
+                inside_config = None;
+                continue;
             }
-        } else if t.starts_with("- ") && !t.starts_with("- id:") {
+        }
+
+        // A `config:` key opens a nested mapping; anything deeper is not a
+        // direct child of the entry.
+        if let Some(rest) = t.strip_prefix("config:") {
+            if rest.trim().is_empty() || rest.trim() == "true" {
+                inside_config = Some(ind);
+                continue;
+            }
+        }
+
+        // A key at or above the `config:` key's own indent is a SIBLING of
+        // config (an entry-level key), not its child: close the config block.
+        // Without this, an entry-level `disabled: true` written AFTER the
+        // config mapping (legal YAML) keeps `inside_config` open forever and
+        // is misread as config-internal.
+        if let Some(cfg) = inside_config {
+            if !t.is_empty() && !t.starts_with('#') && ind <= cfg {
+                inside_config = None;
+            }
+        }
+
+        // A disabled row: only when it is a direct child of the entry (not
+        // nested under config) does it gate the entry.
+        if let Some(val) = t.strip_prefix("disabled:") {
+            let on = val.trim().eq_ignore_ascii_case("true");
+            if on && inside_config.is_none() && ind >= current_child_indent && current_id.is_some()
+            {
+                if let Some(id) = current_id.take() {
+                    out.push(id);
+                }
+                continue;
+            }
+            continue;
+        }
+
+        // Any other list item (a sibling entry, an `- insert:` wrapper, or a
+        // deeper nested list) ends the current association.
+        if t.starts_with("- ") && !t.starts_with("- id:") && !t.starts_with("- insert") {
             current_id = None;
+            inside_config = None;
+            continue;
         }
     }
-    set
+    out
 }
 
 /// Resolve an instance to (home_path, version_dir).
@@ -1149,133 +1225,345 @@ pub async fn uninstall_plugin(
     Ok(())
 }
 
+/// Number of leading spaces/tabs of a line.
+fn indent_of(line: &str) -> usize {
+    line.chars().take_while(|c| *c == ' ' || *c == '\t').count()
+}
+
+/// Extract the id from a raw `- id: <id>` / `id: <id>` line's trimmed text.
+fn line_id(t: &str) -> Option<&str> {
+    if let Some(rest) = t.strip_prefix("- id:") {
+        return Some(rest.trim());
+    }
+    if let Some(rest) = t.strip_prefix("id:") {
+        return Some(rest.trim());
+    }
+    None
+}
+
+/// Whether a document holds no real entry (only comments / blank / `[]`).
+fn is_doc_empty(text: &str) -> bool {
+    text.lines()
+        .map(str::trim)
+        .all(|line| line.is_empty() || line.starts_with('#') || line == "[]")
+}
+
+/// Replace the `[]` placeholder of an empty document with nothing (it would be
+/// a second YAML document next to real entries) and restore it when the body
+/// became empty — the shape ensure_cordis_insert and the toggle rely on.
+fn replace_placeholder(text: &str) -> String {
+    let mut out: Vec<&str> = Vec::new();
+    for line in text.lines() {
+        if line.trim() == "[]" {
+            continue;
+        }
+        out.push(line);
+    }
+    let joined = out.join("\n");
+    let mut result = joined.trim_end().to_string();
+    if !result.is_empty() {
+        result.push('\n');
+    }
+    if is_doc_empty(&result) {
+        result = "[]\n".to_string();
+    }
+    result
+}
+
+/// A row (line range) of one plugin entry in a cordis.patch.yml document.
+///
+/// `start`/`end` bound the entry's lines (the `- id:`/`id:` row plus its child
+/// keys such as `name:`, `config:`, `disabled:`); `child_indent` is the
+/// indentation of those child keys, so a toggled `disabled:` line can be
+/// written at the correct level whether the entry sits at the top level or
+/// inside an `- insert:` block.
+struct EntryRef {
+    start: usize,
+    end: usize,
+    child_indent: usize,
+}
+
+impl EntryRef {
+    /// Match every row whose id equals one of `ids`. A top-level `- id:` /
+    /// `id:` row maps to its whole following block; an `- insert:` block's
+    /// child `- id:` rows map to just that child row. Rows nested inside a
+    /// `config:` mapping are not top-level entries and are ignored.
+    fn find_all(lines: &[&str], ids: &[&str]) -> Vec<EntryRef> {
+        let mut out = Vec::new();
+        let n = lines.len();
+        let is_top = |idx: usize| -> bool {
+            let t = lines[idx].trim();
+            !t.is_empty() && !t.starts_with('#') && t != "[]" && indent_of(lines[idx]) == 0
+        };
+
+        let mut i = 0usize;
+        while i < n {
+            let t = lines[i].trim();
+            let ind = indent_of(lines[i]);
+            if ind == 0 && !t.is_empty() && !t.starts_with('#') && t != "[]" {
+                if t == "- insert" || t == "- insert:" {
+                    // Container end = next top-level entry or EOF.
+                    let mut end = i + 1;
+                    while end < n && !is_top(end) {
+                        end += 1;
+                    }
+                    let container_child = if i + 1 < n && indent_of(lines[i + 1]) > 0 {
+                        indent_of(lines[i + 1])
+                    } else {
+                        ind + 2
+                    };
+                    // Child rows inside the container.
+                    let mut m = i + 1;
+                    while m < end {
+                        let tm = lines[m].trim();
+                        let indm = indent_of(lines[m]);
+                        if (tm.starts_with("- id:") || tm.starts_with("id:"))
+                            && indm >= container_child
+                        {
+                            if let Some(id) = line_id(tm) {
+                                if ids.contains(&id) {
+                                    let mut child_end = m + 1;
+                                    while child_end < end {
+                                        let te = lines[child_end].trim();
+                                        let inde = indent_of(lines[child_end]);
+                                        if !te.is_empty() && !te.starts_with('#') && inde <= indm {
+                                            break;
+                                        }
+                                        child_end += 1;
+                                    }
+                                    out.push(EntryRef {
+                                        start: m,
+                                        end: child_end,
+                                        child_indent: indm + 2,
+                                    });
+                                }
+                            }
+                        }
+                        m += 1;
+                    }
+                    i = end;
+                    continue;
+                }
+                if let Some(id) = line_id(t) {
+                    if ids.contains(&id) {
+                        let mut end = i + 1;
+                        while end < n && !is_top(end) {
+                            end += 1;
+                        }
+                        out.push(EntryRef {
+                            start: i,
+                            end,
+                            child_indent: ind + 2,
+                        });
+                    }
+                }
+                // Skip past this top-level block.
+                let mut j = i + 1;
+                while j < n && !is_top(j) {
+                    j += 1;
+                }
+                i = j;
+                continue;
+            }
+            i += 1;
+        }
+        out
+    }
+
+    /// All entries whose id equals `id` (convenience wrapper).
+    fn from_id(lines: &[&str], id: &str) -> Vec<EntryRef> {
+        Self::find_all(lines, &[id])
+    }
+
+    /// A `BTreeSet` of line indices inside the given entries.
+    fn drop_mask(entries: &[EntryRef]) -> std::collections::BTreeSet<usize> {
+        let mut set = std::collections::BTreeSet::new();
+        for e in entries {
+            for idx in e.start..e.end {
+                set.insert(idx);
+            }
+        }
+        set
+    }
+}
+
 /// Strips every cordis.patch.yml block whose id equals `cordis_id` (matching
 /// plain `- id:` / `id:` rows, including `- insert:` wrappers) and restores
 /// the `[]` placeholder when the document becomes empty.
+///
+/// Block-aware: removing a top-level `- id:` entry drops its whole child block
+/// (its `config:`, `disabled: true`); removing an insert child drops just that
+/// child row. Everything else — headers, `!!js` scalars, unrelated entries,
+/// blank separators — is preserved byte-for-byte.
 fn strip_cordis_rows(raw: &str, cordis_id: &str, plugin_id: &str) -> String {
-    let mut out: Vec<String> = Vec::new();
-    let mut skip = false;
-    for line in raw.lines() {
-        let t = line.trim();
-        if t == "[]" {
-            continue;
-        }
-        // Start of a block for the target: `- id: <id>` (plain or insert row).
-        let is_target = t == format!("- id: {cordis_id}")
-            || t == format!("id: {cordis_id}")
-            || t == format!("- id: {plugin_id}")
-            || t == format!("id: {plugin_id}");
-        if is_target {
-            skip = true;
-            continue;
-        }
-        if skip {
-            // Inside a target block: drop indented child lines and blank
-            // separators; stop at the next top-level key.
-            if t.is_empty() {
-                continue;
-            }
-            let indent = line.chars().take_while(|c| *c == ' ' || *c == '\t').count();
-            if indent > 0 {
-                continue;
-            }
-            skip = false;
-        }
-        out.push(line.to_string());
-    }
-
-    let mut cleaned: Vec<String> = out;
-    while cleaned.last().map(|l| l.trim().is_empty()) == Some(true) {
-        cleaned.pop();
-    }
-    let mut result = cleaned.join("\n");
-    if !result.ends_with('\n') {
+    let lines: Vec<&str> = raw.lines().collect();
+    let targets = EntryRef::find_all(&lines, &[cordis_id, plugin_id]);
+    let drop = EntryRef::drop_mask(&targets);
+    let kept: Vec<&str> = lines
+        .iter()
+        .enumerate()
+        .filter(|(index, _)| !drop.contains(index))
+        .map(|(_, line)| *line)
+        .collect();
+    let mut result = kept.join("\n");
+    if !result.is_empty() {
         result.push('\n');
     }
-    let body: String = result
-        .lines()
-        .filter(|l| {
-            let t = l.trim();
-            !t.is_empty() && !t.starts_with('#')
-        })
-        .collect::<Vec<_>>()
-        .join("\n");
-    if body.trim().is_empty() {
-        if !result.ends_with('\n') {
-            result.push('\n');
-        }
-        result.push_str("[]\n");
+    if is_doc_empty(&result) {
+        result = "[]\n".to_string();
     }
     result
 }
 
 /// Add or remove a `disabled: true` row for a cordis id in cordis.patch.yml.
+///
+/// The edit is block-aware: `disabled: true` is set/cleared on the targeted
+/// entry's own row — both a plain top-level `- id:` entry and an `- insert:`
+/// block's child `- id:` row are recognized, and the insert wrapper itself is
+/// never touched. All other lines (comments, `!!js` scalars, unrelated blocks,
+/// blank separators) are preserved byte-for-byte, so the document keeps
+/// defeating neither the YAML parser nor the loader's `applyEntryPatches`
+/// (which must see the inserted entry before the `disabled` override).
+///
+/// For a top-level entry that exists in the document (either a plain `- id:`
+/// row or an `- insert:` child), the `disabled:` line is toggled on that row.
+/// When the id occurs nowhere in the document and `enabled` is false a fresh
+/// `- id:` + `disabled: true` override is appended (bundle-provided entries
+/// are disabled exactly this way — the loader applies bundle layers first,
+/// then this user layer). When `enabled` is true and the id is absent there is
+/// nothing to clear, so the document is returned unchanged.
 fn set_disabled_row(raw: &str, cordis_id: &str, enabled: bool) -> String {
-    // Remove any existing rows for this id (both plain and commented forms).
-    let mut out: Vec<String> = Vec::new();
-    let mut skip_block = false;
-    for line in raw.lines() {
-        let t = line.trim();
-        // A top-level `[]` placeholder is dropped when we have any real entry
-        // to write; it is kept only while the document stays empty.
-        if t == "[]" {
-            continue;
+    let lines: Vec<&str> = raw.lines().collect();
+    let targets = EntryRef::from_id(&lines, cordis_id);
+
+    if targets.is_empty() {
+        // No row for this id in the document.
+        if enabled {
+            // Nothing to clear; still route through replace_placeholder so an
+            // empty document keeps its `[]` placeholder instead of "\n".
+            return replace_placeholder(&(raw.trim_end().to_string() + "\n"));
         }
-        let is_target_id = t == format!("- id: {cordis_id}") || t == format!("id: {cordis_id}");
-        if is_target_id {
-            // Start of a block for this id; look ahead: if it is a pure
-            // `disabled: true` block we drop it entirely.
-            skip_block = true;
-            continue;
+        // Append a fresh `- id:` + `disabled: true` override for a
+        // bundle-provided entry (the loader applies the bundle layer first,
+        // then this user layer, so the override hits).
+        let mut base = raw.trim_end().to_string();
+        if !base.is_empty() {
+            base.push('\n');
         }
-        if skip_block {
-            // Inside the block: only `disabled:` and blank lines belong to it.
-            if t == "disabled: true" || t == "disabled: false" || t.is_empty() {
-                skip_block = false; // end of this small block
+        base.push_str("- id: ");
+        base.push_str(cordis_id);
+        base.push_str("\n  disabled: true\n");
+        return replace_placeholder(&base);
+    }
+
+    // Edit each matched entry. Distinguish a pure `disabled:` gate (id row +
+    // only a `disabled:` line, no other keys) from an entry with real content
+    // (it also carries `name:` / `config:` and should keep them):
+    // - disabling: ensure `disabled: true` (flip a `false`, add one if absent);
+    // - enabling a pure gate: drop the block entirely (it exists only to gate);
+    // - enabling a content entry: keep it, remove only the `disabled:` line.
+    //
+    // Edits are absolute line indices into `lines`. A `to_insert` entry anchors
+    // at `t.start` (the id row): the `disabled: true` line is emitted right
+    // after that row, at the entry's child indentation. A `to_delete` entry is
+    // a line to drop.
+    let mut to_delete: std::collections::BTreeSet<usize> = std::collections::BTreeSet::new();
+    let mut to_insert: Vec<(usize, String)> = Vec::new(); // (anchor idx, line)
+    for t in &targets {
+        // Direct children of the entry (between its id row and the next
+        // entry). `disabled:` may appear among them.
+        let start = t.start;
+        let end = t.end;
+
+        // Collect the entry's own child keys, ignoring nested `config:`.
+        let mut has_disabled = false;
+        let mut disabled_on = false;
+        let mut has_other = false;
+        for (_idx, line) in lines.iter().enumerate().take(end).skip(start + 1) {
+            let tl = line.trim();
+            if tl.is_empty() || tl.starts_with('#') || indent_of(line) < t.child_indent {
+                // Blank / comment / back to a shallower (non-child) level.
                 continue;
             }
-            // Block has other content (config etc.) — keep it, stop skipping.
-            skip_block = false;
-            out.push(line.to_string());
-            continue;
+            if indent_of(line) != t.child_indent {
+                // Deeper nesting (e.g. a `disabled:` key inside the plugin's
+                // own `config:` mapping — common for MCP server options) is
+                // not an entry-level toggle: ignore it entirely. Missing this
+                // guard made disabling such a plugin a silent no-op.
+                continue;
+            }
+            if let Some(value) = tl.strip_prefix("disabled:") {
+                has_disabled = true;
+                disabled_on = value.trim().eq_ignore_ascii_case("true");
+            } else {
+                has_other = true;
+            }
         }
+
+        if enabled {
+            if !has_disabled {
+                continue;
+            }
+            if has_other {
+                // Keep the entry, drop only its direct disable line.
+                for (idx, line) in lines.iter().enumerate().take(end).skip(start + 1) {
+                    if indent_of(line) == t.child_indent && line.trim().starts_with("disabled:") {
+                        to_delete.insert(idx);
+                    }
+                }
+            } else {
+                // Pure gate: remove the whole block.
+                for idx in start..end {
+                    to_delete.insert(idx);
+                }
+            }
+        } else if !has_disabled {
+            // Add `disabled: true` right after the id row.
+            to_insert.push((
+                start,
+                format!("{}disabled: true", " ".repeat(t.child_indent)),
+            ));
+        } else if !disabled_on {
+            // Flip `disabled: false` -> `disabled: true`: drop the old line and
+            // add a true one in its place.
+            for (idx, line) in lines.iter().enumerate().take(end).skip(start + 1) {
+                if indent_of(line) == t.child_indent && line.trim().starts_with("disabled:") {
+                    to_delete.insert(idx);
+                    to_insert.push((idx, format!("{}disabled: true", " ".repeat(t.child_indent))));
+                }
+            }
+        }
+    }
+
+    let mut out: Vec<String> = Vec::new();
+    for (index, line) in lines.iter().enumerate() {
         out.push(line.to_string());
+        // Insertions anchored at this index are emitted right after it.
+        for (anchor, text) in to_insert.iter().filter(|(anchor, _)| *anchor == index) {
+            let _ = anchor;
+            out.push(text.clone());
+        }
+        if to_delete.contains(&index) {
+            // Remove the line we just pushed.
+            out.pop();
+            // (an insertion anchored here was already emitted above the line,
+            // which matches the flip case: old line removed, true line added)
+            for (anchor, text) in to_insert.iter().filter(|(anchor, _)| *anchor == index) {
+                let _ = anchor;
+                if !out.contains(text) {
+                    out.push(text.clone());
+                }
+            }
+        }
     }
 
-    let mut cleaned: Vec<String> = out;
-    // Trim trailing blank lines.
-    while cleaned.last().map(|l| l.trim().is_empty()) == Some(true) {
-        cleaned.pop();
-    }
-
-    if !enabled {
-        // Append a fresh disable row (block sequence, never after `[]`).
-        cleaned.push(String::new());
-        cleaned.push(format!("- id: {cordis_id}"));
-        cleaned.push("  disabled: true".to_string());
-    }
-
-    let mut result = cleaned.join("\n");
-    if !result.ends_with('\n') {
+    let mut result = out.join("\n");
+    if !result.is_empty() {
         result.push('\n');
     }
-    // If the document became empty again (everything removed), restore the
-    // `[]` placeholder so the file stays a valid top-level array.
-    let body: String = result
-        .lines()
-        .filter(|l| {
-            let t = l.trim();
-            !t.is_empty() && !t.starts_with('#')
-        })
-        .collect::<Vec<_>>()
-        .join("\n");
-    if body.trim().is_empty() {
-        if !result.ends_with('\n') {
-            result.push('\n');
-        }
-        result.push_str("[]\n");
-    }
-    result
+    // A document emptied by enabling a pure gate falls back to the `[]`
+    // placeholder so it stays a valid top-level YAML array.
+    replace_placeholder(&result)
 }
 
 // ---------------------------------------------------------------------------
@@ -2661,6 +2949,154 @@ mod tests {
     }
 
     #[test]
+    fn set_disabled_row_toggles_inside_insert_block() {
+        // The issue #28 shape: a plugin mounted via an `- insert:` block must
+        // be disabled on its *own child row* — never by deleting the child's
+        // `- id:` line (which collapsed the block and broke the YAML) nor by
+        // appending an unreferenced override.
+        let raw = "# header\n- insert:\n    - id: modlens\n      name: '@liustack/modlens'\n    - id: dsh-memory-evolve\n      name: dsh-memory-evolve\n      config:\n        reviewEnabled: true\n\n- id: keep\n  config:\n    x: 1\n";
+        let off = set_disabled_row(raw, "dsh-memory-evolve", false);
+        assert!(
+            off.contains("- id: dsh-memory-evolve\n      disabled: true"),
+            "disabled must land on the child row: {off}"
+        );
+        // The insert wrapper and its other children survive untouched.
+        assert!(off.contains("- id: modlens"), "sibling child kept: {off}");
+        assert!(
+            off.contains("name: '@liustack/modlens'"),
+            "sibling name kept: {off}"
+        );
+        assert!(off.contains("reviewEnabled: true"), "config kept: {off}");
+        assert!(
+            off.contains("- id: keep"),
+            "other top-level entry kept: {off}"
+        );
+        // The block still parses and the id is reported disabled.
+        assert!(read_disabled_ids_parse(&off)
+            .iter()
+            .any(|id| id == "dsh-memory-evolve"));
+        // Re-enable restores the original content.
+        let on = set_disabled_row(&off, "dsh-memory-evolve", true);
+        assert!(!on.contains("disabled"), "disable line removed: {on}");
+        assert!(on.contains("- id: dsh-memory-evolve"), "child kept: {on}");
+        assert!(on.contains("name: dsh-memory-evolve"), "name kept: {on}");
+    }
+
+    #[test]
+    fn set_disabled_row_bundle_override_appends_and_removes() {
+        // A bundle-provided plugin (no row in this document) is disabled by
+        // appending `- id:` + `disabled: true`; re-enabling drops the override
+        // back out.
+        let raw = "# header\n- insert:\n    - id: modlens\n      name: '@liustack/modlens'\n";
+        let off = set_disabled_row(raw, "agent-teams", false);
+        assert!(
+            off.contains("- id: agent-teams\n  disabled: true"),
+            "override appended: {off}"
+        );
+        assert!(
+            off.contains("- id: modlens"),
+            "existing content kept: {off}"
+        );
+        let on = set_disabled_row(&off, "agent-teams", true);
+        assert!(!on.contains("agent-teams"), "override removed: {on}");
+        assert!(on.contains("modlens"), "existing content kept: {on}");
+    }
+
+    #[test]
+    fn set_disabled_row_real_profile_shape_round_trip() {
+        // The exact shape shipped in a real profile (dsh-tui): comment header,
+        // several insert blocks, and a plain override block, each separated by
+        // blank lines.
+        let raw = "# Your patch layer for this dsh profile, applied after every bundle layer:\n\
+# a top-level YAML array of loader patch entries (id-targeted config\n\
+# overrides, disables, and insert lists; `!!js` expressions allowed).\n\
+- insert:\n    - id: modlens\n      name: '@liustack/modlens'\n\n\
+- insert:\n    - id: dsh-memory-evolve\n      name: dsh-memory-evolve\n      config:\n        reviewEnabled: true\n        reviewInterval: 10\n\n\
+- insert:\n    - id: dsh-wsl-preset\n      name: '@deepseek-ai/dsh-wsl-preset'\n\n\
+- insert:\n    - id: llm-zen\n      name: dsh-zen\n\n\
+- id: agent-teams\n  config:\n    stateDir: .agent-teams\n    memberProvider: spawn\n    maxMembers: 20\n";
+
+        // Disabling an insert child keeps the document parseable and disables
+        // exactly that plugin.
+        let off = set_disabled_row(raw, "dsh-memory-evolve", false);
+        assert!(
+            off.contains("disabled: true"),
+            "insert child disabled: {off}"
+        );
+        assert!(
+            !off.contains("- insert: {"),
+            "insert must stay a list, not an object: {off}"
+        );
+        assert!(off.contains("modlens"), "first insert block kept: {off}");
+        assert!(
+            off.contains("dsh-wsl-preset"),
+            "second insert block kept: {off}"
+        );
+        assert!(off.contains("agent-teams"), "override block kept: {off}");
+        assert!(
+            off.contains("stateDir: .agent-teams"),
+            "override config kept: {off}"
+        );
+        assert!(
+            off.starts_with("# Your patch layer"),
+            "comment header kept: {off}"
+        );
+
+        // The disabled override block path: agent-teams exists at top level, so
+        // `disabled: true` is added into its existing block, not a new block.
+        let off2 = set_disabled_row(raw, "agent-teams", false);
+        assert!(
+            off2.contains("- id: agent-teams\n  disabled: true\n  config:"),
+            "override toggled in place: {off2}"
+        );
+        assert!(
+            off2.contains("stateDir: .agent-teams"),
+            "config kept: {off2}"
+        );
+
+        // Re-enabling a pure override restores the original command for that id.
+        let on2 = set_disabled_row(&off2, "agent-teams", true);
+        assert!(!on2.contains("disabled: true"), "re-enabled: {on2}");
+        assert!(
+            on2.contains("- id: agent-teams\n  config:"),
+            "override block restored: {on2}"
+        );
+    }
+
+    #[test]
+    fn read_disabled_ids_ignores_insert_children_unless_disabled() {
+        // Only entries that actually carry `disabled: true` are reported; an
+        // insert child with a config (even a `disabled`-looking config key) is
+        // not, and a child whose name merely contains the id is not either.
+        let dir = std::env::temp_dir().join(format!("dsh-plugins-test-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("cordis.patch.yml"),
+            "# header\n- insert:\n    - id: enabled-one\n      name: '@x/enabled-one'\n\n- insert:\n    - id: disabled-in-insert\n      disabled: true\n      name: '@x/disabled-in-insert'\n\n- id: disabled-top\n  disabled: true\n\n- id: not-disabled\n  config:\n    disabled: true\n",
+        )
+        .unwrap();
+        let set = read_disabled_ids(&dir);
+        assert!(
+            set.contains("disabled-in-insert"),
+            "insert child reported: {set:?}"
+        );
+        assert!(set.contains("disabled-top"), "top-level reported: {set:?}");
+        assert!(
+            !set.contains("enabled-one"),
+            "enabled child not reported: {set:?}"
+        );
+        assert!(
+            !set.contains("not-disabled"),
+            "config key not reported: {set:?}"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    fn read_disabled_ids_parse(raw: &str) -> Vec<String> {
+        disabled_ids(raw)
+    }
+
+    #[test]
     fn relationship_type_alias_roundtrip() {
         // The market JSON uses `type`, the frontend expects `kind`.
         let raw = r#"{"type":"dependency","id":"@dsh-plugin/dsh-loader","versions":">=1.3.0"}"#;
@@ -2824,5 +3260,55 @@ mod tests {
         );
 
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Regression (review): a plugin whose own `config:` mapping carries a
+    /// nested `disabled:` key (common for MCP server options) must still be
+    /// disable-able — the nested key is not an entry-level toggle, so the
+    /// write path must not let it suppress the insert/flip.
+    #[test]
+    fn set_disabled_row_ignores_disabled_key_inside_config() {
+        let raw = "- id: my-plugin\n  config:\n    server:\n      disabled: false\n";
+        // Disabling must add the entry-level row despite the nested key.
+        let out = set_disabled_row(raw, "my-plugin", false);
+        assert!(
+            out.contains("- id: my-plugin\n  disabled: true\n"),
+            "disable must land on the entry row: {out}"
+        );
+        assert!(
+            out.contains("disabled: false"),
+            "nested key preserved: {out}"
+        );
+        // Re-enabling drops only the entry-level row; the nested key survives.
+        let back = set_disabled_row(&out, "my-plugin", true);
+        assert_eq!(back, raw, "nested config disabled key must survive: {back}");
+    }
+
+    /// Regression (review): an entry-level `disabled: true` written AFTER the
+    /// `config:` block (legal YAML, e.g. hand-edited) must be attributed to
+    /// the entry, not swallowed as config-internal.
+    #[test]
+    fn disabled_ids_reads_entry_level_disabled_after_config() {
+        let raw = "- id: my-plugin\n  config:\n    a: 1\n  disabled: true\n";
+        let out = disabled_ids(raw);
+        assert_eq!(out, vec!["my-plugin".to_string()], "out: {out:?}");
+    }
+
+    /// Regression (review): a nested `id:` inside `config:` must not reset the
+    /// current entry — otherwise a deeper `disabled: true` would fabricate an
+    /// id that never existed at the entry level.
+    #[test]
+    fn disabled_ids_ignores_nested_id_inside_config() {
+        let raw = "- id: real\n  config:\n    server:\n      id: fake\n      disabled: true\n";
+        let out = disabled_ids(raw);
+        assert!(out.is_empty(), "no fabricated ids: {out:?}");
+    }
+
+    /// Enabling an id absent from an (empty) document must keep the `[]`
+    /// placeholder the rest of the tooling relies on, not return "\n".
+    #[test]
+    fn set_disabled_row_enable_missing_keeps_placeholder() {
+        assert_eq!(set_disabled_row("", "ghost", true), "[]\n");
+        assert_eq!(set_disabled_row("[]\n", "ghost", true), "[]\n");
     }
 }
