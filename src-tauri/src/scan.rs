@@ -327,6 +327,14 @@ pub fn validate_local_version(dir: String) -> Result<ScannedVersion, String> {
 pub struct ImportScannedInput {
     pub homes: Vec<ImportHomeInput>,
     pub versions: Vec<ImportVersionInput>,
+    /// Version directory the user picked as the default for newly created
+    /// instances (issue #39, R3). Matched by directory (the frontend only
+    /// knows dirs, ids are generated at import time); `None` falls back to
+    /// the first known version. When set but not found, the affected
+    /// instances are skipped with a reason instead of silently binding the
+    /// wrong version.
+    #[serde(default)]
+    pub preferred_version_dir: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -346,48 +354,111 @@ pub struct ImportVersionInput {
     pub dir: String,
 }
 
-/// Import result: what was created vs skipped (already known).
+/// One import item's outcome: what was added / skipped / failed and why.
+/// The wizard renders these line by line so a "success" toast is never a
+/// lie about what happened to each chosen home / version / profile.
+#[derive(Clone, Debug, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub struct ImportItem {
+    /// "home" | "version" | "instance".
+    pub kind: String,
+    /// Home path, version dir, or instance name.
+    pub name: String,
+    /// "added" | "skipped" | "failed".
+    pub status: String,
+    /// Human-readable reason for skipped/failed items.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+}
+
+/// Import result: aggregate counters (kept for compatibility) plus a
+/// per-item breakdown so the frontend can render exactly what happened.
 #[derive(Clone, Debug, Default, serde::Serialize)]
 pub struct ImportReport {
     pub homes_added: usize,
     pub versions_added: usize,
     pub instances_added: usize,
     pub skipped_known: usize,
+    /// Per-item outcomes, one per processed home / version / profile.
+    #[serde(default)]
+    pub items: Vec<ImportItem>,
 }
 
-/// Imports the user's selection: registers homes / versions and creates one
-/// instance per (home, profile). Idempotent — entries whose path (or
-/// instance name) already exists are skipped and counted.
-#[tauri::command(rename_all = "snake_case")]
-pub async fn import_scanned(
-    state: State<'_, AppState>,
-    input: ImportScannedInput,
-) -> Result<ImportReport, String> {
-    let mut cfg = state.config.lock().unwrap().clone();
+/// Imports the user's selection into `cfg`: registers homes / versions and
+/// creates one instance per (home, profile). Idempotent — entries whose path
+/// (or instance name) already exists are skipped and counted. Every entry is
+/// reported per-item (`ImportReport.items`); whole-operation failures (e.g.
+/// save_state) are surfaced by the caller as `Err`.
+fn apply_import(cfg: &mut crate::config::Config, input: &ImportScannedInput) -> ImportReport {
     let mut report = ImportReport::default();
+
+    // Resolve the user-picked default version dir, if any.
+    let preferred_dir = input.preferred_version_dir.as_deref().map(PathBuf::from);
 
     for dir in &input.versions {
         let path = PathBuf::from(&dir.dir);
         if !path.is_dir() {
+            report.items.push(ImportItem {
+                kind: "version".to_string(),
+                status: "failed".to_string(),
+                name: dir.dir.clone(),
+                reason: Some("目录不存在".to_string()),
+            });
             continue;
         }
         if cfg.versions.iter().any(|v| paths_equal(&v.dir, &path)) {
             report.skipped_known += 1;
+            report.items.push(ImportItem {
+                kind: "version".to_string(),
+                status: "skipped".to_string(),
+                name: dir.dir.clone(),
+                reason: Some("已登记".to_string()),
+            });
             continue;
         }
         let version = read_local_version(&path);
         cfg.versions.push(DshVersion {
             id: crate::config::new_id("ver"),
             version,
-            dir: path,
+            dir: path.clone(),
             wsl: None,
         });
         report.versions_added += 1;
+        // A version alone is not an instance (issue #39, problem 1): register
+        // it but say so explicitly so the user knows why no instance appeared.
+        report.items.push(ImportItem {
+            kind: "version".to_string(),
+            status: "added".to_string(),
+            name: dir.dir.clone(),
+            reason: None,
+        });
     }
+
+    // The version newly created instances should bind to (issue #39, R3):
+    // - user explicitly picked one (`preferred_version_dir`) and it is now in
+    //   the config -> that version (strict: when picked but NOT found, the
+    //   instance is not created and the item is failed instead of silently
+    //   binding the wrong version);
+    // - no pick -> first known version if any, else none (instance is
+    //   created but cannot launch until a version is chosen in the editor).
+    let preferred_version_id = preferred_dir.as_ref().and_then(|dir| {
+        cfg.versions
+            .iter()
+            .find(|v| paths_equal(&v.dir, dir))
+            .map(|v| v.id.clone())
+    });
+    let picked_but_missing = preferred_dir.is_some() && preferred_version_id.is_none();
+    let fallback_version_id = cfg.versions.first().map(|v| v.id.clone());
 
     for home in &input.homes {
         let path = PathBuf::from(&home.path);
         if !path.is_dir() && home.wsl.is_none() {
+            report.items.push(ImportItem {
+                kind: "home".to_string(),
+                status: "failed".to_string(),
+                name: home.path.clone(),
+                reason: Some("目录不存在".to_string()),
+            });
             continue;
         }
         let home_id = match cfg
@@ -397,6 +468,12 @@ pub async fn import_scanned(
         {
             Some(existing) => {
                 report.skipped_known += 1;
+                report.items.push(ImportItem {
+                    kind: "home".to_string(),
+                    status: "skipped".to_string(),
+                    name: home.path.clone(),
+                    reason: Some("已登记".to_string()),
+                });
                 existing.id.clone()
             }
             None => {
@@ -408,8 +485,27 @@ pub async fn import_scanned(
                     wsl: home.wsl.clone(),
                 });
                 report.homes_added += 1;
+                report.items.push(ImportItem {
+                    kind: "home".to_string(),
+                    status: "added".to_string(),
+                    name: home.path.clone(),
+                    reason: None,
+                });
                 id
             }
+        };
+        let version_bound = match preferred_version_id.clone() {
+            Some(id) => Some(id),
+            None if !picked_but_missing => fallback_version_id.clone(),
+            // Picked version dir was provided but did not end up in the
+            // config (e.g. its registration failed): do not silently bind
+            // another version — fail the instance instead.
+            None => None,
+        };
+        let no_version_reason = if picked_but_missing {
+            Some("所选版本不可用，实例未创建".to_string())
+        } else {
+            None
         };
         for profile in &home.profiles {
             // One instance per (home, profile); skip names that exist. The
@@ -422,24 +518,62 @@ pub async fn import_scanned(
                 home_display_name(&path, home.wsl.as_deref()),
                 profile
             );
-            if cfg
+            let exists = cfg
                 .instances
                 .iter()
-                .any(|i| i.home_id == home_id && i.name == inst_name)
-            {
+                .any(|i| i.home_id == home_id && i.name == inst_name);
+            if exists {
                 report.skipped_known += 1;
+                report.items.push(ImportItem {
+                    kind: "instance".to_string(),
+                    status: "skipped".to_string(),
+                    name: inst_name.clone(),
+                    reason: Some("同名实例已存在".to_string()),
+                });
                 continue;
             }
+            // The user picked a version that could not be registered: skip
+            // creating the instance and report the failure per-item.
+            if let Some(reason) = &no_version_reason {
+                report.items.push(ImportItem {
+                    kind: "instance".to_string(),
+                    status: "failed".to_string(),
+                    name: inst_name.clone(),
+                    reason: Some(reason.clone()),
+                });
+                continue;
+            }
+            let version_id = match &version_bound {
+                Some(id) => id.clone(),
+                None => {
+                    // No version at all was provided/known — create the
+                    // instance anyway (user can pick a version in the
+                    // editor) but tell them clearly.
+                    report.items.push(ImportItem {
+                        kind: "instance".to_string(),
+                        status: "added".to_string(),
+                        name: inst_name.clone(),
+                        reason: Some("未绑定版本，请在实例编辑器中指定".to_string()),
+                    });
+                    cfg.instances.push(DshInstance {
+                        id: crate::config::new_id("inst"),
+                        name: inst_name.clone(),
+                        version_id: String::new(),
+                        home_id: home_id.clone(),
+                        env_overrides: Default::default(),
+                        default_profile: Some(profile.clone()),
+                        last_profile: None,
+                        icon: None,
+                        port: None,
+                    });
+                    report.instances_added += 1;
+                    continue;
+                }
+            };
             cfg.instances.push(DshInstance {
                 id: crate::config::new_id("inst"),
-                name: inst_name,
-                // Prefer an imported/known version; the instance editor can
-                // repoint it. `None` versions cannot launch until chosen.
-                version_id: cfg
-                    .versions
-                    .first()
-                    .map(|v| v.id.clone())
-                    .unwrap_or_default(),
+                name: inst_name.clone(),
+                version_id,
                 home_id: home_id.clone(),
                 env_overrides: Default::default(),
                 default_profile: Some(profile.clone()),
@@ -448,9 +582,27 @@ pub async fn import_scanned(
                 port: None,
             });
             report.instances_added += 1;
+            report.items.push(ImportItem {
+                kind: "instance".to_string(),
+                status: "added".to_string(),
+                name: inst_name.clone(),
+                reason: None,
+            });
         }
     }
 
+    report
+}
+
+/// Tauri command wrapper around [`apply_import`]: clones the config, applies
+/// the import, persists it, and returns the per-item report.
+#[tauri::command(rename_all = "snake_case")]
+pub async fn import_scanned(
+    state: State<'_, AppState>,
+    input: ImportScannedInput,
+) -> Result<ImportReport, String> {
+    let mut cfg = state.config.lock().unwrap().clone();
+    let report = apply_import(&mut cfg, &input);
     crate::commands::save_state(&state, &cfg)?;
     Ok(report)
 }
@@ -566,5 +718,190 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         assert!(super::validate_local_version(dir.to_string_lossy().to_string()).is_err());
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    // --- apply_import (issue #39) ------------------------------------------
+
+    fn temp_dir(tag: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("dsh-imp-{tag}-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn import_versions_only_never_creates_instances_and_reports_items() {
+        let mut cfg = crate::config::Config::default();
+        let vdir = temp_dir("ver");
+        let input = ImportScannedInput {
+            homes: vec![],
+            versions: vec![ImportVersionInput {
+                dir: vdir.to_string_lossy().to_string(),
+            }],
+            preferred_version_dir: None,
+        };
+        let report = apply_import(&mut cfg, &input);
+        // A version alone is not an instance (issue #39, problem 1).
+        assert_eq!(report.instances_added, 0);
+        assert_eq!(report.versions_added, 1);
+        assert_eq!(cfg.versions.len(), 1);
+        let version_item = report
+            .items
+            .iter()
+            .find(|i| i.kind == "version")
+            .expect("version item reported");
+        assert_eq!(version_item.status, "added");
+        std::fs::remove_dir_all(&vdir).ok();
+    }
+
+    #[test]
+    fn import_missing_dirs_fail_per_item_instead_of_silently_skipping() {
+        let mut cfg = crate::config::Config::default();
+        let missing_version =
+            std::env::temp_dir().join(format!("dsh-imp-nope-{}", uuid::Uuid::new_v4()));
+        let missing_home =
+            std::env::temp_dir().join(format!("dsh-imp-nohome-{}", uuid::Uuid::new_v4()));
+        let input = ImportScannedInput {
+            homes: vec![ImportHomeInput {
+                path: missing_home.to_string_lossy().to_string(),
+                wsl: None,
+                profiles: vec!["web".to_string()],
+            }],
+            versions: vec![ImportVersionInput {
+                dir: missing_version.to_string_lossy().to_string(),
+            }],
+            preferred_version_dir: None,
+        };
+        let report = apply_import(&mut cfg, &input);
+        assert_eq!(report.versions_added, 0);
+        assert_eq!(report.homes_added, 0);
+        assert_eq!(report.instances_added, 0);
+        assert!(report
+            .items
+            .iter()
+            .any(|i| i.kind == "version" && i.status == "failed" && i.reason.is_some()));
+        assert!(report
+            .items
+            .iter()
+            .any(|i| i.kind == "home" && i.status == "failed" && i.reason.is_some()));
+    }
+
+    #[test]
+    fn import_creates_instances_and_binds_preferred_version() {
+        let mut cfg = crate::config::Config::default();
+        let vdir = temp_dir("ver");
+        let hdir = temp_dir("home");
+        let input = ImportScannedInput {
+            homes: vec![ImportHomeInput {
+                path: hdir.to_string_lossy().to_string(),
+                wsl: None,
+                profiles: vec!["web".to_string(), "tui".to_string()],
+            }],
+            versions: vec![ImportVersionInput {
+                dir: vdir.to_string_lossy().to_string(),
+            }],
+            preferred_version_dir: Some(vdir.to_string_lossy().to_string()),
+        };
+        let report = apply_import(&mut cfg, &input);
+        assert_eq!(report.homes_added, 1);
+        assert_eq!(report.versions_added, 1);
+        assert_eq!(report.instances_added, 2);
+        let version_id = cfg.versions[0].id.clone();
+        assert_eq!(cfg.instances.len(), 2);
+        assert!(cfg.instances.iter().all(|i| i.version_id == version_id));
+        // Every created instance is reported.
+        let inst_items: Vec<_> = report
+            .items
+            .iter()
+            .filter(|i| i.kind == "instance")
+            .collect();
+        assert_eq!(inst_items.len(), 2);
+        assert!(inst_items.iter().all(|i| i.status == "added"));
+        std::fs::remove_dir_all(&vdir).ok();
+        std::fs::remove_dir_all(&hdir).ok();
+    }
+
+    #[test]
+    fn import_preferred_version_missing_fails_instances() {
+        let mut cfg = crate::config::Config::default();
+        let hdir = temp_dir("home");
+        let picked_that_never_registered =
+            std::env::temp_dir().join(format!("dsh-imp-missing-{}", uuid::Uuid::new_v4()));
+        let input = ImportScannedInput {
+            homes: vec![ImportHomeInput {
+                path: hdir.to_string_lossy().to_string(),
+                wsl: None,
+                profiles: vec!["web".to_string()],
+            }],
+            versions: vec![],
+            // The user picked a version dir that is not among the imported
+            // versions and not in the config: no silent wrong binding.
+            preferred_version_dir: Some(picked_that_never_registered.to_string_lossy().to_string()),
+        };
+        let report = apply_import(&mut cfg, &input);
+        assert_eq!(report.instances_added, 0);
+        assert!(report
+            .items
+            .iter()
+            .any(|i| i.kind == "instance" && i.status == "failed"));
+    }
+
+    #[test]
+    fn import_is_idempotent_and_counts_skips() {
+        let mut cfg = crate::config::Config::default();
+        let vdir = temp_dir("ver");
+        let hdir = temp_dir("home");
+        let make_input = || ImportScannedInput {
+            homes: vec![ImportHomeInput {
+                path: hdir.to_string_lossy().to_string(),
+                wsl: None,
+                profiles: vec!["web".to_string()],
+            }],
+            versions: vec![ImportVersionInput {
+                dir: vdir.to_string_lossy().to_string(),
+            }],
+            preferred_version_dir: Some(vdir.to_string_lossy().to_string()),
+        };
+        let first = apply_import(&mut cfg, &make_input());
+        assert_eq!(first.instances_added, 1);
+        assert_eq!(cfg.instances.len(), 1);
+        // Second run: everything already known -> skipped, no duplicates.
+        let second = apply_import(&mut cfg, &make_input());
+        assert_eq!(second.homes_added, 0);
+        assert_eq!(second.versions_added, 0);
+        assert_eq!(second.instances_added, 0);
+        assert_eq!(cfg.instances.len(), 1);
+        assert_eq!(second.skipped_known, 3);
+        assert!(second
+            .items
+            .iter()
+            .all(|i| i.status == "skipped" || i.status == "added"));
+        std::fs::remove_dir_all(&vdir).ok();
+        std::fs::remove_dir_all(&hdir).ok();
+    }
+
+    #[test]
+    fn import_without_any_version_creates_instance_with_warning() {
+        let mut cfg = crate::config::Config::default();
+        let hdir = temp_dir("home");
+        let input = ImportScannedInput {
+            homes: vec![ImportHomeInput {
+                path: hdir.to_string_lossy().to_string(),
+                wsl: None,
+                profiles: vec!["web".to_string()],
+            }],
+            versions: vec![],
+            preferred_version_dir: None,
+        };
+        let report = apply_import(&mut cfg, &input);
+        assert_eq!(report.instances_added, 1);
+        assert!(cfg.instances[0].version_id.is_empty());
+        let item = report
+            .items
+            .iter()
+            .find(|i| i.kind == "instance")
+            .expect("instance item");
+        assert_eq!(item.status, "added");
+        assert!(item.reason.is_some(), "warns that no version was bound");
+        std::fs::remove_dir_all(&hdir).ok();
     }
 }
