@@ -281,7 +281,16 @@
       "hint": "The launcher's data directory (config, logs, versions and HOME directories)",
       "open": "Open directory",
       "viewLog": "View log",
-      "unknown": "Unknown"
+      "unknown": "Unknown",
+      "moveTo": "Change location",
+      "restartHint": "The change takes effect after a restart. On the next launch the launcher migrates your existing data to the new location automatically.",
+      "migrating": "Migrating data directory…",
+      "migratedToast": "Data directory migrated to {0}",
+      "sourceEnv": "Data directory is set by the DSH_LAUNCHER_DATA_HOME environment variable",
+      "sourcePointer": "Data directory relocated to a custom location",
+      "sourceDefault": "Using the default data directory",
+      "rollback": "Restore previous data directory",
+      "confirmMove": "Set the data directory to:\n{0}\n\nThe change takes effect after a restart, when your data is migrated automatically."
     },
     "logOpened": "Log revealed in file manager: {path}"
   },

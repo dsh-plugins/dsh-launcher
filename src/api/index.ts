@@ -47,6 +47,7 @@ import type {
   ImportScannedInput,
   ImportReport,
   ExternalStatus,
+  DataDirInfo,
 } from './types'
 
 const isTauri = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window
@@ -762,6 +763,14 @@ async function mockCall<T>(cmd: string, args?: Record<string, unknown>): Promise
       return [] as T
     case 'get_launcher_directory':
       return 'C:\\Users\\Administrator\\AppData\\Roaming\\in.dsh-plug.dsh-launcher' as T
+    case 'pick_data_dir':
+      // Browser preview: no real folder dialog; report the default path so
+      // the flow (validate -> pointer file -> restart hint) stays testable.
+      return 'C:\\Users\\Administrator\\AppData\\Roaming\\in.dsh-plug.dsh-launcher' as T
+    case 'commit_data_dir':
+      return String(args?.path ?? '') as T
+    case 'get_data_dir_source':
+      return { path: 'C:\\Users\\Administrator\\AppData\\Roaming\\in.dsh-plug.dsh-launcher', source: 'default', notice: null } as T
     case 'export_modpack': {
       const input = args?.input as { out_file?: string } | undefined
       return String(input?.out_file ?? './profile-1.0.0.dspack') as T
@@ -1324,6 +1333,12 @@ export const api = {
     call<LauncherUpdateInfo>('check_launcher_update', { channel }),
   /** The launcher's own data directory (shown next to the open button). */
   getLauncherDirectory: () => call<string>('get_launcher_directory'),
+  /** Opens a folder picker for relocating the data dir (issue #43). */
+  pickDataDir: () => call<string>('pick_data_dir'),
+  /** Validates the chosen directory and writes the pending pointer file. */
+  commitDataDir: (path: string) => call<string>('commit_data_dir', { path }),
+  /** Where the data dir came from: \"env\" | \"pointer\" | \"default\". */
+  getDataDirSource: () => call<DataDirInfo>('get_data_dir_source'),
   /** Opens the launcher data directory in the system file manager. */
   openLauncherDirectory: () => call<string>('open_launcher_directory'),
   /** Reveals the launcher runtime log (latest.log) with the file selected. */

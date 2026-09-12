@@ -281,7 +281,16 @@
       "hint": "启动器的数据目录（配置、日志、版本与 HOME 目录等）",
       "open": "打开目录",
       "viewLog": "查看日志",
-      "unknown": "未知"
+      "unknown": "未知",
+      "moveTo": "更改位置",
+      "restartHint": "更改将在重启后生效。重启后启动器会自动把现有数据迁移到新位置，无需手动复制。",
+      "migrating": "正在迁移数据目录…",
+      "migratedToast": "数据目录已迁移到 {0}",
+      "sourceEnv": "数据目录由环境变量 DSH_LAUNCHER_DATA_HOME 指定",
+      "sourcePointer": "数据目录已迁移到自定义位置",
+      "sourceDefault": "使用默认数据目录",
+      "rollback": "恢复上一数据目录",
+      "confirmMove": "确认将数据目录更改为：\n{0}\n\n更改将在重启后生效，重启时自动迁移现有数据。"
     },
     "logOpened": "已在文件管理器中定位日志：{path}"
   },

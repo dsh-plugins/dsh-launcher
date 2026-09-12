@@ -240,9 +240,9 @@ settings.dataDir.rollback         恢复上一数据目录
 
 - 目标:设置页完成「更改位置」交互
 - 任务:
-  - [ ] `Settings.vue` 数据目录卡片增加「更改位置」按钮 + 重启提示 Modal
-  - [ ] 迁移进行中的进度展示(轮询任务或事件)
-  - [ ] zh-CN / en-US 双语文案
+  - [x] `Settings.vue` 数据目录卡片增加「更改位置」按钮 + 重启提示 Modal
+  - [x] 迁移进行中的进度展示(来源标识 + 成功/失败提示;设计裁定为启动时一次性迁移,无长任务轮询)
+  - [x] zh-CN / en-US 双语文案
 - 交付:UI 改动;验收人:reviewer(检查 i18n 完整性)
 
 ### 阶段 4:环境变量支持(1 轮 worker,可选拆分)
@@ -298,3 +298,4 @@ settings.dataDir.rollback         恢复上一数据目录
 | 0 | 现状确认 | scout(主 agent) | 基线 3a802ae 无数据目录改动;行号修正;dialog 插件已在 | ✅ 完成 |
 | 1 | 设计定稿 | oracle/reviewer(主 agent 替代) | 命令签名、迁移状态机终稿、i18n 键位、UI 裁定 | ✅ 完成 |
 | 2 | 迁移引擎 | worker(主 agent) | migrate.rs + bootstrap + 3 命令;cargo check 零告警、4 测试通过 | ✅ 完成 |
+| 3 | UI 与 i18n | worker(主 agent) | Settings.vue 更改位置交互 + 来源标识 + Modal;api 3 命令;tsc/pnpm build 零错 | ✅ 完成 |
