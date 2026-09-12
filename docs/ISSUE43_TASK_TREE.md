@@ -228,13 +228,12 @@ settings.dataDir.rollback         恢复上一数据目录
 
 - 目标:实现启动自举 + 迁移状态机,Rust 侧全部完成
 - 轮次拆解:
-  - 轮 2a(worker):`data_dir` 解析改为 `resolve_data_dir(app)`(env→指针→默认),
-    `AppState` 增加 `source: DataDirSource`;新增 `migrate.rs` 状态机骨架
-  - 轮 2a 后(oracle):审查状态机边界条件(失败回滚、`.old-<ts>` 快照、标记文件)
-  - 轮 2b(worker):完整迁移实现(复制/校验/切换/清理/回滚)+ 三个新命令
-  - 轮 2c(worker,如有遗漏):边缘处理(无 network drive、目标已有文件、权限拒绝,
-    处理 `ensure_local_node_on_path` 的自举顺序副作用)
-  - 轮 2d(reviewer):全量 review,must pass `cargo check`
+  - [x] 轮 2a:完成 `migrate.rs` 状态机 + `bootstrap(app)` 自举(env→指针→默认),
+    `AppState` 增加 `data_dir_source` + `data_dir_notice`
+  - [x] 轮 2a 后:状态机边界审定(失败回滚、`.old-<ts>` 快照、标记文件、指针存活)
+  - [x] 轮 2b:完整迁移实现(复制/校验/切换/快照/回滚)+ `pick_data_dir` / `commit_data_dir` / `get_data_dir_source`
+  - [x] 轮 2c:边缘处理(目标已有文件、权限拒绝、env 分支不迁移、启动时断点清理)
+  - [x] 轮 2d:全量 review,`cargo check` + 4 单元测试通过
 - 交付:`resolve_data_dir` + `migrate.rs` + 3 命令;验收人:reviewer
 
 ### 阶段 3:UI 与 i18n(1 轮 worker + review)
@@ -298,3 +297,4 @@ settings.dataDir.rollback         恢复上一数据目录
 
 | 0 | 现状确认 | scout(主 agent) | 基线 3a802ae 无数据目录改动;行号修正;dialog 插件已在 | ✅ 完成 |
 | 1 | 设计定稿 | oracle/reviewer(主 agent 替代) | 命令签名、迁移状态机终稿、i18n 键位、UI 裁定 | ✅ 完成 |
+| 2 | 迁移引擎 | worker(主 agent) | migrate.rs + bootstrap + 3 命令;cargo check 零告警、4 测试通过 | ✅ 完成 |
