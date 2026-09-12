@@ -250,6 +250,10 @@ settings.dataDir.rollback         恢复上一数据目录
 - 目标:`DSH_LAUNCHER_DATA_HOME` 生效 + 设置页来源标识
 - 说明:若阶段 2 的 `resolve_data_dir` 已内置 env 分支,本阶段仅剩 UI 标识,
   可并入阶段 3(视阶段 1 定稿结果)
+- **裁定结果:并入阶段 2/3 完成**(bootstrap 内置 env 分支且不迁移;设置页来源标识)
+- 任务:
+  - [x] `bootstrap` env 分支:env 优先、不可用时回退默认并提示(migrate.rs:107)
+  - [x] 设置页显示当前生效来源(env / pointer / default)
 
 ### 阶段 5:回归与打包(1 轮 worker + 1 轮 review)
 
@@ -299,3 +303,4 @@ settings.dataDir.rollback         恢复上一数据目录
 | 1 | 设计定稿 | oracle/reviewer(主 agent 替代) | 命令签名、迁移状态机终稿、i18n 键位、UI 裁定 | ✅ 完成 |
 | 2 | 迁移引擎 | worker(主 agent) | migrate.rs + bootstrap + 3 命令;cargo check 零告警、4 测试通过 | ✅ 完成 |
 | 3 | UI 与 i18n | worker(主 agent) | Settings.vue 更改位置交互 + 来源标识 + Modal;api 3 命令;tsc/pnpm build 零错 | ✅ 完成 |
+| 4 | 环境变量 | (并入阶段 2/3) | bootstrap env 分支 + UI 来源标识,已交付 | ✅ 完成(并入) |
