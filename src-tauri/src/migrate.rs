@@ -113,7 +113,9 @@ pub fn bootstrap(app: &tauri::App) -> Bootstrap {
                 return Bootstrap {
                     data_dir: default_dir,
                     source: DataDirSource::Default,
-                    notice: Some(format!("环境变量 DSH_LAUNCHER_DATA_HOME 指向的目录不可用: {e}")),
+                    notice: Some(format!(
+                        "环境变量 DSH_LAUNCHER_DATA_HOME 指向的目录不可用: {e}"
+                    )),
                 };
             }
             return Bootstrap {
@@ -194,10 +196,7 @@ fn snapshot_default_dir(default_dir: &Path, new_dir: &Path) {
     // previous snapshot; recreate it and restore the pointer file.
     let _ = fs::create_dir_all(default_dir);
     if !pointer_content.trim().is_empty() {
-        let _ = fs::write(
-            default_dir.join(POINTER_FILE),
-            pointer_content.trim().to_string(),
-        );
+        let _ = fs::write(default_dir.join(POINTER_FILE), pointer_content.trim());
     }
     let _ = new_dir;
 }
@@ -338,7 +337,9 @@ pub fn snapshot_old_dir(old: &Path) {
 #[allow(dead_code)]
 pub fn list_snapshots(data_dir: &Path) -> Vec<PathBuf> {
     let parent = data_dir.parent().unwrap_or(Path::new("."));
-    let name = data_dir.file_name().map(|s| s.to_string_lossy().to_string());
+    let name = data_dir
+        .file_name()
+        .map(|s| s.to_string_lossy().to_string());
     let Ok(entries) = fs::read_dir(parent) else {
         return vec![];
     };
@@ -441,7 +442,11 @@ pub fn get_data_dir_source(state: State<'_, AppState>) -> Result<DataDirInfo, St
         DataDirSource::Default => "default".to_string(),
     };
     let notice = state.data_dir_notice.lock().unwrap().clone();
-    Ok(DataDirInfo { path, source, notice })
+    Ok(DataDirInfo {
+        path,
+        source,
+        notice,
+    })
 }
 
 #[cfg(test)]
@@ -538,5 +543,4 @@ mod tests {
         assert!(migrate_data_dir(&from, &to).is_err());
         std::fs::remove_dir_all(&tmp).unwrap();
     }
-
 }
