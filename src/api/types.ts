@@ -585,3 +585,12 @@ export interface ExternalStatus {
   port: number
   profile: string | null
 }
+
+/** Data-directory resolution info (issue #43). */
+export interface DataDirInfo {
+  path: string
+  /** "env" | "pointer" | "default" */
+  source: string
+  /** Non-empty when the launcher fell back to the default directory. */
+  notice: string | null
+}

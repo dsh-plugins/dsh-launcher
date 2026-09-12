@@ -71,6 +71,7 @@ onMounted(async () => {
   } catch {
     dataDir.value = ''
   }
+  refreshDataDirSource()
 })
 
 async function onCheckUpdate() {
@@ -93,9 +94,56 @@ async function onUpdateChannelChange(value: string | number | boolean | Record<s
   updateInfo.value = null
 }
 
-// --- Data directory ---------------------------------------------------------
+// --- Data directory (issue #43) ---------------------------------------------
 
 const dataDir = ref('')
+const dataDirSource = ref<'env' | 'pointer' | 'default'>('default')
+const moveTarget = ref('')
+const moveModalVisible = ref(false)
+const moveBusy = ref(false)
+
+async function refreshDataDirSource() {
+  try {
+    const info = await api.getDataDirSource()
+    dataDir.value = info.path
+    dataDirSource.value = info.source as 'env' | 'pointer' | 'default'
+    if (info.notice) Message.warning(info.notice)
+  } catch {
+    /* source 未知时保持默认展示 */
+  }
+}
+
+async function onMoveDataDir() {
+  try {
+    const dir = await api.pickDataDir()
+    if (!dir) return
+    moveTarget.value = dir
+    moveModalVisible.value = true
+  } catch (e) {
+    Message.error(String(e))
+  }
+}
+
+async function onConfirmMove() {
+  moveBusy.value = true
+  try {
+    const committed = await api.commitDataDir(moveTarget.value)
+    moveModalVisible.value = false
+    Message.success(t('settings.dataDir.migratedToast', [committed]))
+    // 指针已写入:迁移在下次启动时发生
+    refreshDataDirSource()
+  } catch (e) {
+    Message.error(String(e))
+  } finally {
+    moveBusy.value = false
+  }
+}
+
+const dataDirSourceTip = computed(() => {
+  if (dataDirSource.value === 'env') return t('settings.dataDir.sourceEnv')
+  if (dataDirSource.value === 'pointer') return t('settings.dataDir.sourcePointer')
+  return t('settings.dataDir.sourceDefault')
+})
 
 async function onOpenDataDir() {
   try {
@@ -482,7 +530,22 @@ const homeColumns = computed(() => [
         <span class="data-dir-path" :title="dataDir">{{ dataDir || t('settings.dataDir.unknown') }}</span>
         <a-button size="small" @click="onOpenDataDir">{{ t('settings.dataDir.open') }}</a-button>
         <a-button size="small" @click="onOpenLauncherLog">{{ t('settings.dataDir.viewLog') }}</a-button>
+        <a-button size="small" type="primary" @click="onMoveDataDir">{{ t('settings.dataDir.moveTo') }}</a-button>
       </div>
+      <div class="data-dir-source" :class="`source-${dataDirSource}`">
+        {{ dataDirSourceTip }}
+      </div>
+      <a-modal
+        v-model:visible="moveModalVisible"
+        :title="t('settings.dataDir.moveTo')"
+        :ok-text="t('common.confirm')"
+        :cancel-text="t('common.cancel')"
+        :confirm-loading="moveBusy"
+        @ok="onConfirmMove"
+      >
+        <p class="move-target">{{ moveTarget }}</p>
+        <p class="move-hint">{{ t('settings.dataDir.restartHint') }}</p>
+      </a-modal>
     </div>
 
     <div class="dl-card">
@@ -565,6 +628,25 @@ const homeColumns = computed(() => [
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.data-dir-source {
+  font-size: 12px;
+  color: var(--color-text-3);
+  margin-top: 4px;
+}
+
+.move-target {
+  font-family: monospace;
+  word-break: break-all;
+  background: var(--color-fill-2);
+  padding: 8px;
+  border-radius: 4px;
+}
+
+.move-hint {
+  color: var(--color-text-3);
+  font-size: 13px;
 }
 
 .update-current {
