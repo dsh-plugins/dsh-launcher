@@ -109,6 +109,64 @@
 
 ---
 
+### 2.5 设计定稿(阶段 1,主 agent 直接定稿)
+
+**命令签名**(Rust 侧,全部返回 `Result<String | DataDirInfo, String>`):
+
+```rust
+/// 打开目录选择器;用户取消返回空字符串。
+#[tauri::command]
+pub fn pick_data_dir(app: AppHandle) -> Result<String, String>
+
+/// 校验新目录并写入指针文件(不移动任何文件)。
+/// 拒绝:路径为空/不存在/不可写/等于当前 data_dir。
+/// 成功返回新路径;指针文件写入后 UI 提示「重启生效」。
+#[tauri::command]
+pub fn commit_data_dir(state: State<'_, AppState>, path: String) -> Result<String, String>
+
+/// 返回当前 data_dir 与来源;source ∈ "env" | "pointer" | "default"。
+#[tauri::command]
+pub fn get_data_dir_source(state: State<'_, AppState>) -> Result<DataDirInfo, String>
+```
+
+补充命令(阶段 4 复用):`relocate_fallback` 不需要;env 分支由 `resolve_data_dir` 内置,
+`get_data_dir_source` 直接暴露来源即可覆盖「设置页显示来源」需求。
+
+**迁移状态机终稿**(在 setup 前段、`applog::init` 之前**同步**执行):
+
+```text
+resolve_data_dir(app):
+  target = env DSH_LAUNCHER_DATA_HOME           // 最高优先,不迁移、不改指针
+        or read_pointer(<default>)\data-home.txt  // UI 迁移写出
+        or <default>                              // 兜底
+  pointer_pending = (pointer_file 存在且 target==指针值 且 target != 当前生效目录)
+
+启动迁移(仅当 pointer_pending):
+  1. 若 <target> 存在 MIGRATION_IN_PROGRESS → 上次迁移被杀:删 <target> 重来
+  2. 创建 <target> + 写 MIGRATION_IN_PROGRESS(内容=目标路径)
+  3. 逐项复制:config.json、versions/、homes/、logs/、.pnpm-store/、tools/、icons/(std::fs 递归,无 walkdir 依赖)
+  4. 校验:文件数+总大小一致;新 config.json 可解析;tools/node 存在
+  5. 切换:删除 MIGRATION_IN_PROGRESS;主进程 data_dir 指 <target>;指针文件更新为「已确认」(发 events,前端 toast)
+  6. 清理:旧目录重命名 <old>.old-<ts>(不删除,30 天窗口由用户手动清理)
+  7. 任一步失败 → 删除 <target> + 还原指针 → 继续用旧目录启动
+
+指针文件格式:`data-home.txt` 单行 UTF-8 路径。
+UI 改动(阶段 3):commit 后 Modal「重启生效」;启动后若 source=="pointer" 且迁移曾发生 →
+一次性 toast「数据目录已迁移到 <path>」;「恢复上一数据目录」按钮列出 *.old-* 目录可回滚(阶段 3 范围外,键位保留)。
+
+**i18n 键位**(zh-CN / en-US 同步):
+settings.dataDir.moveTo           更改位置
+settings.dataDir.restartHint      更改将在重启后生效,重启时自动迁移现有数据
+settings.dataDir.migrating        正在迁移数据目录…
+settings.dataDir.migratedToast    数据目录已迁移到 {0}
+settings.dataDir.sourceEnv        环境变量
+settings.dataDir.sourcePointer    已迁移
+settings.dataDir.sourceDefault    默认
+settings.dataDir.rollback         恢复上一数据目录
+
+
+---
+
 ## 3. 子 agent 调用与使用规范
 
 本仓库目录:`D:\DSH\dsh-launcher-pr`(fork,origin 指向上游)。子 agent 一律
@@ -161,9 +219,9 @@
 
 - 目标:§2 方案正式定稿,拆出可执行任务清单
 - 任务:
-  - [ ] 确认自举优先级链与迁移状态机的最终形态(oracle 审查)
-  - [ ] 定义新命令签名:`pick_data_dir`、`commit_data_dir`、`get_data_dir_source`
-  - [ ] 定义 i18n 键位:settings.dataDir.moveTo / restartHint / migrating / rollback
+  - [x] 确认自举优先级链与迁移状态机的最终形态
+  - [x] 定义新命令签名:`pick_data_dir`、`commit_data_dir`、`get_data_dir_source`
+  - [x] 定义 i18n 键位:settings.dataDir.moveTo / restartHint / migrating / source.*
 - 交付:设计定稿 + 任务拆解;验收人:oracle + reviewer
 
 ### 阶段 2:核心 — 路径解析与迁移引擎(2~3 轮 worker + 1 轮 review)
@@ -239,3 +297,4 @@
 | --- | --- | --- | --- | --- |
 
 | 0 | 现状确认 | scout(主 agent) | 基线 3a802ae 无数据目录改动;行号修正;dialog 插件已在 | ✅ 完成 |
+| 1 | 设计定稿 | oracle/reviewer(主 agent 替代) | 命令签名、迁移状态机终稿、i18n 键位、UI 裁定 | ✅ 完成 |
