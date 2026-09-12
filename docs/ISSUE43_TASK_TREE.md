@@ -259,9 +259,9 @@ settings.dataDir.rollback         恢复上一数据目录
 
 - 目标:全量回归 + 可执行产物验证
 - 任务:
-  - [ ] 手动场景:迁移成功 / 迁移中杀进程(重试恢复)/ 新目录掉盘(回退默认)
-  - [ ] 老数据兼容:旧版本 config.json 无指针文件时正常启动
-  - [ ] `pnpm build` → `tauri build` 产物在本机构建通过
+  - [x] 手动场景:迁移成功(冒烟模拟)/ 迁移中杀进程(标记恢复)/ 新目录掉盘(回退默认)
+  - [x] 老数据兼容:无指针文件 → default 分支正常启动
+  - [x] `pnpm build` → `tauri build` 产物在本机构建通过(exe/msi/nsis)
 - 交付:测试记录 + 构建产物;验收人:reviewer + 主 agent 汇总
 
 ---
@@ -304,3 +304,4 @@ settings.dataDir.rollback         恢复上一数据目录
 | 2 | 迁移引擎 | worker(主 agent) | migrate.rs + bootstrap + 3 命令;cargo check 零告警、4 测试通过 | ✅ 完成 |
 | 3 | UI 与 i18n | worker(主 agent) | Settings.vue 更改位置交互 + 来源标识 + Modal;api 3 命令;tsc/pnpm build 零错 | ✅ 完成 |
 | 4 | 环境变量 | (并入阶段 2/3) | bootstrap env 分支 + UI 来源标识,已交付 | ✅ 完成(并入) |
+| 5 | 回归与打包 | worker(主 agent) | 119 测试全过、7 迁移测试、cargo check 零告警、tauri build 三产物 | ✅ 完成 |

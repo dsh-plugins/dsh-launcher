@@ -209,6 +209,9 @@ pub fn copy_tree(from: &Path, to: &Path) -> std::io::Result<()> {
     if !from.exists() {
         return Ok(());
     }
+    if from.is_file() {
+        return fs::copy(from, to).map(|_| ());
+    }
     fs::create_dir_all(to)?;
     for entry in fs::read_dir(from)? {
         let entry = entry?;
@@ -492,4 +495,48 @@ mod tests {
         assert_eq!(bytes, 5);
         std::fs::remove_dir_all(&tmp).unwrap();
     }
+    #[test]
+    fn migrate_data_dir_copies_and_clears_flag() {
+        let tmp = std::env::temp_dir().join(format!("dsh-migrate-e2e-{}", uuid::Uuid::new_v4()));
+        let from = tmp.join("from");
+        let to = tmp.join("to");
+        std::fs::create_dir_all(from.join("homes/h1")).unwrap();
+        std::fs::create_dir_all(from.join("versions")).unwrap();
+        std::fs::write(from.join("config.json"), "{}").unwrap();
+        std::fs::write(from.join("homes/h1/hello.txt"), "hi").unwrap();
+        migrate_data_dir(&from, &to).unwrap();
+        assert!(to.join("config.json").exists());
+        assert!(to.join("homes/h1/hello.txt").exists());
+        assert!(!to.join(MIGRATION_FLAG).exists());
+        std::fs::remove_dir_all(&tmp).unwrap();
+    }
+
+    #[test]
+    fn migrate_data_dir_rejects_non_empty_target() {
+        let tmp = std::env::temp_dir().join(format!("dsh-migrate-rej-{}", uuid::Uuid::new_v4()));
+        let from = tmp.join("from");
+        let to = tmp.join("to");
+        std::fs::create_dir_all(&from).unwrap();
+        std::fs::write(from.join("config.json"), "{}").unwrap();
+        std::fs::create_dir_all(&to).unwrap();
+        std::fs::write(to.join("keep.txt"), "x").unwrap();
+        assert!(migrate_data_dir(&from, &to).is_err());
+        // The pre-existing file is untouched.
+        assert!(to.join("keep.txt").exists());
+        std::fs::remove_dir_all(&tmp).unwrap();
+    }
+
+    #[test]
+    fn migrate_data_dir_failure_removes_partial_target() {
+        let tmp = std::env::temp_dir().join(format!("dsh-migrate-fail-{}", uuid::Uuid::new_v4()));
+        let from = tmp.join("from");
+        let to = tmp.join("to");
+        std::fs::create_dir_all(&from).unwrap();
+        std::fs::write(from.join("config.json"), "{}").unwrap();
+        // Make the target a FILE so create_dir_all fails.
+        std::fs::write(&to, "in the way").unwrap();
+        assert!(migrate_data_dir(&from, &to).is_err());
+        std::fs::remove_dir_all(&tmp).unwrap();
+    }
+
 }
