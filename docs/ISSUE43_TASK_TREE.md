@@ -304,4 +304,4 @@ settings.dataDir.rollback         恢复上一数据目录
 | 2 | 迁移引擎 | worker(主 agent) | migrate.rs + bootstrap + 3 命令;cargo check 零告警、4 测试通过 | ✅ 完成 |
 | 3 | UI 与 i18n | worker(主 agent) | Settings.vue 更改位置交互 + 来源标识 + Modal;api 3 命令;tsc/pnpm build 零错 | ✅ 完成 |
 | 4 | 环境变量 | (并入阶段 2/3) | bootstrap env 分支 + UI 来源标识,已交付 | ✅ 完成(并入) |
-| 5 | 回归与打包 | worker(主 agent) | 119 测试全过、7 迁移测试、cargo check 零告警、tauri build 三产物 | ✅ 完成 |
+| 5 | 回归与打包 | worker(主 agent) | 119 测试全过、7 迁移测试、cargo check 零告警、tauri build 三产物;env 冒烟:启动日志确认数据目录解析到 DSH_LAUNCHER_DATA_HOME | ✅ 完成 |
