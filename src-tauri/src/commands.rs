@@ -4,7 +4,7 @@ use crate::config::{
 };
 use crate::{process, AppState};
 use std::collections::BTreeMap;
-use tauri::{AppHandle, State};
+use tauri::{AppHandle, Manager, State};
 
 // ---------------------------------------------------------------------------
 // DSH_HOME
@@ -351,6 +351,9 @@ pub async fn delete_instance(
     if state.running.lock().await.contains_key(&id) {
         let _ = process::stop_instance_process(&app, &state, &id).await;
     }
+    // Drop the instance's WebView2 store: it holds a browser-session cookie
+    // signed by this process only, so nothing can reuse it afterwards.
+    crate::windows::clear_instance_webview_data(&state, &id);
     let mut cfg = state.config.lock().unwrap();
     cfg.instances.retain(|i| i.id != id);
     if cfg.settings.last_instance_id.as_deref() == Some(id.as_str()) {
@@ -994,10 +997,18 @@ pub async fn open_instance_window(
     if state.tui_sessions.lock().await.contains_key(&id) {
         return crate::windows::open_tui_window(&app, &id);
     }
-    let entry = state.running.lock().await.get(&id).map(|r| r.url.clone());
-    let Some(url) = entry.flatten() else {
+    let url = state
+        .running
+        .lock()
+        .await
+        .get(&id)
+        .and_then(|r| r.url.clone());
+    // A window can outlive the URL record: the registry entry is removed the
+    // moment the child process exits. An open window stays authoritative for
+    // its own page, so re-navigating it does not need a fresh URL.
+    if url.is_none() && app.get_webview_window(&format!("instance-{id}")).is_none() {
         return Err("实例未在运行或尚未就绪".to_string());
-    };
+    }
     let name = state
         .config
         .lock()
@@ -1007,7 +1018,7 @@ pub async fn open_instance_window(
         .find(|i| i.id == id)
         .map(|i| i.name.clone())
         .unwrap_or_else(|| id.clone());
-    crate::windows::open_instance_window(&app, &id, &name, &url)
+    crate::windows::open_instance_window(&app, &id, &name, url.as_deref().unwrap_or_default())
 }
 
 // ---------------------------------------------------------------------------
