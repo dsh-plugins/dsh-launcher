@@ -43,6 +43,11 @@ pub struct AppState {
     /// from `terminals` (the settings-page shell): different lifecycle,
     /// different status wiring.
     pub tui_sessions: tokio::sync::Mutex<HashMap<String, tui::TuiSession>>,
+    /// URL of each open instance window's page. DSH mints a fresh launch
+    /// token per process, so every restart invalidates the token a window was
+    /// created with; keeping the last printed URL here lets an already-open
+    /// window re-authenticate instead of rendering the 401 page forever.
+    pub window_urls: StdMutex<HashMap<String, String>>,
 }
 
 /// Extracts a `dsh-launcher://…` deep link from process arguments (Windows
@@ -151,6 +156,7 @@ pub fn run() {
                 last_focused_instance: StdMutex::new(None),
                 terminals: tokio::sync::Mutex::new(HashMap::new()),
                 tui_sessions: tokio::sync::Mutex::new(HashMap::new()),
+                window_urls: StdMutex::new(HashMap::new()),
             });
 
             // System tray with dynamic menu.
