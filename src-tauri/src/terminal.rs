@@ -251,7 +251,7 @@ fn spawn_session(
             .and_then(|h| h.wsl.clone())
     };
     let shell: String = match &wsl_distro {
-        Some(d) => "wsl.exe".to_string(),
+        Some(_) => "wsl.exe".to_string(),
         None => shell_program(),
     };
     let shim_dir = if wsl_distro.is_some() {
