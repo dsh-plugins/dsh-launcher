@@ -103,7 +103,7 @@ pub fn kill_all(state: &AppState) {
 fn terminal_env(
     state: &State<'_, AppState>,
     instance_id: &str,
-    shim_dir: &std::path::Path,
+    shim_dir: Option<&std::path::Path>,
 ) -> Result<Vec<(String, String)>, String> {
     let cfg = state.config.lock().unwrap();
     let inst = cfg
@@ -134,12 +134,16 @@ fn terminal_env(
         crate::proxy::override_env(&mut env, &cfg.settings);
     }
 
-    let existing = std::env::var_os("PATH").unwrap_or_default();
-    let mut entries = vec![shim_dir.to_path_buf()];
-    entries.extend(std::env::split_paths(&existing));
-    match std::env::join_paths(entries) {
-        Ok(joined) => env.push(("PATH".to_string(), joined.to_string_lossy().to_string())),
-        Err(e) => crate::log_warn!("拼接 PATH 失败，沿用系统 PATH: {e}"),
+    // WSL terminals (issue #19 follow-up): the Windows `dsh` shim cannot run
+    // inside bash, so PATH is left to the distro.
+    if let Some(shim_dir) = shim_dir {
+        let existing = std::env::var_os("PATH").unwrap_or_default();
+        let mut entries = vec![shim_dir.to_path_buf()];
+        entries.extend(std::env::split_paths(&existing));
+        match std::env::join_paths(entries) {
+            Ok(joined) => env.push(("PATH".to_string(), joined.to_string_lossy().to_string())),
+            Err(e) => crate::log_warn!("拼接 PATH 失败，沿用系统 PATH: {e}"),
+        }
     }
     Ok(env)
 }
@@ -230,8 +234,32 @@ fn spawn_session(
     rows: u16,
 ) -> Result<(TerminalSession, PathBuf), String> {
     let (home_path, version_dir) = crate::plugins::resolve_instance(state, instance_id)?;
-    let shim_dir = prepare_shim(&state.data_dir, &version_dir)?;
-    let env = terminal_env(state, instance_id, &shim_dir)?;
+    // WSL instances (issue #19 follow-up): the terminal shell is the distro's
+    // bash through wsl.exe. The Windows `dsh` shim cannot run inside bash, so
+    // PATH is left to the distro; DSH_HOME is already the Linux path and the
+    // session starts in the Linux HOME.
+    let wsl_distro = {
+        let cfg = state.config.lock().unwrap();
+        let inst = cfg
+            .instances
+            .iter()
+            .find(|i| i.id == instance_id)
+            .ok_or_else(|| "实例不存在".to_string())?;
+        cfg.homes
+            .iter()
+            .find(|h| h.id == inst.home_id)
+            .and_then(|h| h.wsl.clone())
+    };
+    let shell: String = match &wsl_distro {
+        Some(d) => "wsl.exe".to_string(),
+        None => shell_program(),
+    };
+    let shim_dir = if wsl_distro.is_some() {
+        None
+    } else {
+        Some(prepare_shim(&state.data_dir, &version_dir)?)
+    };
+    let env = terminal_env(state, instance_id, shim_dir.as_deref())?;
 
     let pty_system = native_pty_system();
     let pair = pty_system
@@ -243,8 +271,16 @@ fn spawn_session(
         })
         .map_err(|e| format!("创建 PTY 失败: {e}"))?;
 
-    let mut cmd = CommandBuilder::new(shell_program());
-    cmd.cwd(home_path.as_os_str());
+    let mut cmd = CommandBuilder::new(&shell);
+    if let Some(d) = &wsl_distro {
+        // UNC paths are not valid Windows process working directories; start
+        // wsl.exe from a neutral dir and let bash land in the Linux HOME
+        // (wsl.exe -- bash -i already starts in $HOME by default).
+        cmd.args(["-d", d, "--", "bash", "-i"]);
+        cmd.cwd(std::env::temp_dir().as_os_str());
+    } else {
+        cmd.cwd(home_path.as_os_str());
+    }
     for (k, v) in &env {
         cmd.env(k, v);
     }

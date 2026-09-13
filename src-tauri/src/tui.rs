@@ -112,8 +112,21 @@ pub async fn start_tui_session(
 
     let (home_path, version_dir) = crate::plugins::resolve_instance(&state, instance_id)?;
     let cfg = state.config.lock().unwrap().clone();
-    if !cfg.instances.iter().any(|i| i.id == instance_id) {
-        return Err("实例不存在".to_string());
+    let inst = cfg
+        .instances
+        .iter()
+        .find(|i| i.id == instance_id)
+        .cloned()
+        .ok_or_else(|| "实例不存在".to_string())?;
+    let wsl_distro = cfg
+        .homes
+        .iter()
+        .find(|h| h.id == inst.home_id)
+        .and_then(|h| h.wsl.clone());
+    // WSL (issue #19 follow-up): profile-kind probing reads through \\wsl$\,
+    // so ensure the distro is running before classifying.
+    if let Some(d) = &wsl_distro {
+        crate::wsl::ensure_distro_running(&state, d).await?;
     }
     let Some(profile) = crate::process::tui_active_profile(&cfg, instance_id) else {
         return Err("实例没有可用的 profile".to_string());
@@ -124,7 +137,37 @@ pub async fn start_tui_session(
         return Err("该实例的 profile 不是 TUI 类型".to_string());
     }
 
-    if !crate::process::version_bin_ready(&version_dir) {
+    // WSL (issue #19 follow-up): the TUI runs inside the distro. The bin.js
+    // exists check and the spawn go through wsl.exe; the version dir is the
+    // Linux path.
+    let (linux_version, linux_home) = {
+        let cfg2 = state.config.lock().unwrap();
+        let home = cfg2
+            .homes
+            .iter()
+            .find(|h| h.id == inst.home_id)
+            .ok_or_else(|| "DSH_HOME 不存在".to_string())?;
+        let ver = cfg2
+            .versions
+            .iter()
+            .find(|v| v.id == inst.version_id)
+            .ok_or_else(|| "版本不存在".to_string())?;
+        (ver.dir.clone(), home.path.clone())
+    };
+    if let Some(distro) = &wsl_distro {
+        let bin = crate::process::version_bin(&linux_version);
+        if !crate::wsl::wsl_test(distro, "-s", &bin.to_string_lossy()).await {
+            return Err(format!(
+                "版本 {} 安装不完整（缺少 {}），请重新安装",
+                cfg.versions
+                    .iter()
+                    .find(|v| v.dir == linux_version)
+                    .map(|v| v.version.clone())
+                    .unwrap_or_default(),
+                bin.display()
+            ));
+        }
+    } else if !crate::process::version_bin_ready(&version_dir) {
         let bin = crate::process::version_bin(&version_dir);
         return Err(format!(
             "版本 {} 安装不完整（缺少 {}），请重新安装",
@@ -149,11 +192,33 @@ pub async fn start_tui_session(
         })
         .map_err(|e| format!("创建 PTY 失败: {e}"))?;
 
-    let mut cmd = CommandBuilder::new(crate::process::node());
-    cmd.arg(crate::process::version_bin(&version_dir));
-    cmd.arg("--profile");
-    cmd.arg(&profile);
-    cmd.cwd(home_path.as_os_str());
+    let mut cmd = CommandBuilder::new(if wsl_distro.is_some() {
+        "wsl.exe"
+    } else {
+        crate::process::node()
+    });
+    if let Some(distro) = &wsl_distro {
+        // WSL (issue #19 follow-up): run the distro's node + version bin.js
+        // through bash; DSH_HOME is the Linux path (build_env already used
+        // the Linux home path from config).
+        let bin = crate::process::version_bin(&linux_version);
+        let root = crate::wsl::WslRoot::resolve(distro).await?;
+        let script = format!(
+            "export PATH={0}:\"$PATH\"; cd {1} && exec {2} {3} --profile {4}",
+            crate::wsl::sh_quote(&root.node_bin_dir()),
+            crate::wsl::sh_quote(&linux_home.to_string_lossy()),
+            crate::wsl::sh_quote(&root.node_exe()),
+            crate::wsl::sh_quote(&bin.to_string_lossy()),
+            crate::wsl::sh_quote(&profile),
+        );
+        cmd.args(["-d", distro, "--", "bash", "-lc", &script]);
+        cmd.cwd(std::env::temp_dir().as_os_str());
+    } else {
+        cmd.arg(crate::process::version_bin(&version_dir));
+        cmd.arg("--profile");
+        cmd.arg(&profile);
+        cmd.cwd(home_path.as_os_str());
+    }
     for (k, v) in &env {
         cmd.env(k, v);
     }

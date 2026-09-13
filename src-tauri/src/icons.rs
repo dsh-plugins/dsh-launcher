@@ -102,7 +102,7 @@ fn instance_home(state: &AppState, instance_id: &str) -> Result<PathBuf, String>
     cfg.homes
         .iter()
         .find(|h| h.id == inst.home_id)
-        .map(|h| h.path.clone())
+        .map(crate::wsl::home_fs_path)
         .ok_or_else(|| "DSH_HOME 不存在".to_string())
 }
 

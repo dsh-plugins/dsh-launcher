@@ -1769,15 +1769,6 @@ pub async fn start_copy_instance_task(
             .find(|i| i.id == input.source_id)
             .cloned()
             .ok_or_else(|| "源实例不存在".to_string())?;
-        let home = cfg
-            .homes
-            .iter()
-            .find(|h| h.id == source.home_id)
-            .cloned()
-            .ok_or_else(|| "DSH_HOME 不存在".to_string())?;
-        if home.wsl.is_some() {
-            return Err("WSL 实例暂不支持复制到新的专属 HOME".to_string());
-        }
         source.name
     };
     {
@@ -1894,6 +1885,16 @@ async fn do_copy_instance(
             .ok_or_else(|| "DSH_HOME 不存在".to_string())?;
         (source, home)
     };
+    // WSL source (issue #19 follow-up): the Linux path is not directly
+    // readable on Windows — read through the \\wsl$\ UNC share (distro must
+    // be running). The copy target stays a local Windows HOME.
+    let src_fs = match &src_home.wsl {
+        Some(distro) => {
+            crate::wsl::ensure_distro_running(state, distro).await?;
+            crate::wsl::unc_path(distro, &src_home.path.to_string_lossy())
+        }
+        None => src_home.path.clone(),
+    };
     let dest = state
         .data_dir
         .join("homes")
@@ -1906,7 +1907,7 @@ async fn do_copy_instance(
     push_task_log(app, state, task_id, "正在统计源 DSH_HOME 文件…").await;
     let scanned = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
     let count_handle = {
-        let src = src_home.path.clone();
+        let src = src_fs.clone();
         let counter = scanned.clone();
         tauri::async_runtime::spawn_blocking(move || {
             crate::commands::count_tree_entries(&src, &move || {
@@ -1938,7 +1939,7 @@ async fn do_copy_instance(
     // emit percent/log progress.
     let copied = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
     let copy_result = {
-        let src = src_home.path.clone();
+        let src = src_fs.clone();
         let dst = dest.clone();
         let counter = copied.clone();
         tauri::async_runtime::spawn_blocking(move || {
