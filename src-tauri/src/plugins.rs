@@ -971,7 +971,12 @@ fn disabled_ids(raw: &str) -> Vec<String> {
     out
 }
 
-/// Resolve an instance to (home_path, version_dir).
+/// Resolve an instance to (home_path, version_dir) as Windows-fs-accessible
+/// paths: local homes pass through, WSL homes map to their `\\wsl$\` UNC
+/// share (distro must be running — callers doing UNC work should ensure it
+/// via `wsl::ensure_distro_running` first). In-distro commands (plugin
+/// install/remove, which run pnpm inside the distro) need the *Linux* paths
+/// instead: use `resolve_instance_linux` for those.
 pub(crate) fn resolve_instance(
     state: &State<'_, AppState>,
     instance_id: &str,
@@ -992,7 +997,37 @@ pub(crate) fn resolve_instance(
         .iter()
         .find(|v| v.id == inst.version_id)
         .ok_or_else(|| "版本不存在".to_string())?;
-    Ok((home.path.clone(), version.dir.clone()))
+    Ok((
+        crate::wsl::home_fs_path(home),
+        crate::wsl::version_fs_path(version),
+    ))
+}
+
+/// Resolve an instance to its *Linux* (in-distro) paths plus the distro
+/// name, for commands that must execute inside the WSL distro (pnpm installs
+/// pull Linux platform binaries). The distro is `None` for local Windows
+/// instances, where callers keep using `resolve_instance`.
+pub(crate) fn resolve_instance_linux(
+    state: &State<'_, AppState>,
+    instance_id: &str,
+) -> Result<(std::path::PathBuf, std::path::PathBuf, Option<String>), String> {
+    let cfg = state.config.lock().unwrap();
+    let inst: &DshInstance = cfg
+        .instances
+        .iter()
+        .find(|i| i.id == instance_id)
+        .ok_or_else(|| "实例不存在".to_string())?;
+    let home = cfg
+        .homes
+        .iter()
+        .find(|h| h.id == inst.home_id)
+        .ok_or_else(|| "DSH_HOME 不存在".to_string())?;
+    let version = cfg
+        .versions
+        .iter()
+        .find(|v| v.id == inst.version_id)
+        .ok_or_else(|| "版本不存在".to_string())?;
+    Ok((home.path.clone(), version.dir.clone(), home.wsl.clone()))
 }
 
 // ---------------------------------------------------------------------------
@@ -1175,8 +1210,15 @@ pub async fn uninstall_plugin(
     state: State<'_, AppState>,
     input: UninstallPluginInput,
 ) -> Result<(), String> {
-    let (home_path, version_dir) = resolve_instance(&state, &input.instance_id)?;
-    let dir = profile_dir(&home_path, &input.profile);
+    let (home_path, version_dir, wsl) = resolve_instance_linux(&state, &input.instance_id)?;
+    let fs_home = match &wsl {
+        Some(distro) => {
+            crate::wsl::ensure_distro_running(&state, distro).await?;
+            crate::wsl::unc_path(distro, &home_path.to_string_lossy())
+        }
+        None => home_path.clone(),
+    };
+    let dir = profile_dir(&fs_home, &input.profile);
     if !dir.exists() {
         return Err(format!("Profile「{}」不存在", input.profile));
     }
@@ -1198,6 +1240,7 @@ pub async fn uninstall_plugin(
             version_dir: &version_dir,
             home_path: &home_path,
             profile: &input.profile,
+            wsl: wsl.as_deref(),
         },
         &PluginCliOp {
             subcommand: "remove",
@@ -1663,8 +1706,29 @@ pub async fn start_install_plugin_file_task(
     if !std::path::Path::new(&path).is_file() {
         return Err(format!("插件包不存在: {path}"));
     }
-    // pnpm treats Windows paths more reliably with forward slashes.
-    let spec_path = path.replace('\\', "/");
+    // WSL (issue #19 follow-up): pnpm inside the distro cannot read a Windows
+    // path. Copy the tarball into the distro's managed temp dir through the
+    // \\wsl$\ UNC share, then reference the Linux path in the spec.
+    let spec_path = if let Ok((_, _, Some(distro))) = resolve_instance_linux(&state, &instance_id) {
+        crate::wsl::ensure_distro_running(&state, &distro).await?;
+        let root = crate::wsl::WslRoot::resolve(&distro).await?;
+        let tmp_dir = format!("{}/tmp", root.0);
+        crate::wsl::wsl_output(&distro, &["mkdir".into(), "-p".into(), tmp_dir.clone()]).await?;
+        let base = std::path::Path::new(&path)
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_else(|| "plugin.tgz".to_string());
+        // A unique suffix avoids colliding with a concurrent install of a
+        // same-named tarball; the file stays in the launcher's managed tmp
+        // scratch dir inside the distro (recreated on demand).
+        let linux_target = format!("{tmp_dir}/{0}-{1}", base, uuid::Uuid::new_v4());
+        let unc_target = crate::wsl::unc_path(&distro, &linux_target);
+        std::fs::copy(&path, &unc_target).map_err(|e| format!("复制插件包到 WSL 失败: {e}"))?;
+        linux_target
+    } else {
+        // pnpm treats Windows paths more reliably with forward slashes.
+        path.replace('\\', "/")
+    };
     let input = InstallPluginInput {
         plugin_id: format!("tgz:{spec_path}"),
         version: "local".to_string(),
@@ -1725,8 +1789,18 @@ async fn do_install_plugin(
     task_id: &str,
     input: &InstallPluginInput,
 ) -> Result<(), String> {
-    let (home_path, version_dir) = resolve_instance(state, &input.instance_id)?;
-    let dir = profile_dir(&home_path, &input.profile);
+    let (home_path, version_dir, wsl) = resolve_instance_linux(state, &input.instance_id)?;
+    // Post-install reads (package.json, bundles, cordis rows) run through the
+    // Windows-visible path: \\wsl$\ for WSL instances, the path itself for
+    // local ones.
+    let fs_home = match &wsl {
+        Some(distro) => {
+            crate::wsl::ensure_distro_running(state, distro).await?;
+            crate::wsl::unc_path(distro, &home_path.to_string_lossy())
+        }
+        None => home_path.clone(),
+    };
+    let dir = profile_dir(&fs_home, &input.profile);
 
     // Spec: tarball ids (`tgz:`) install the URL/path verbatim; npm packages
     // use <pkg>@<version>; git-hosted (github:) plugins install the repo at a
@@ -1801,6 +1875,7 @@ async fn do_install_plugin(
             version_dir: &version_dir,
             home_path: &home_path,
             profile: &input.profile,
+            wsl: wsl.as_deref(),
         },
         &PluginCliOp {
             subcommand: "add",
@@ -1998,11 +2073,17 @@ async fn task_cancelled(state: &State<'_, AppState>, task_id: &str) -> bool {
         .unwrap_or(false)
 }
 
-/// Which instance/profile a `dsh plugin` invocation targets.
+/// Which instance/profile a `dsh plugin` invocation targets. Paths are the
+/// instance's *Linux* (in-distro) paths; for local Windows instances they
+/// equal the Windows paths. `wsl` carries the distro when the instance runs
+/// inside one (issue #19 follow-up): the CLI then executes through wsl.exe
+/// with the distro's managed node/pnpm, and the pre/post file preparation
+/// runs against the `\\wsl$\` UNC share.
 struct PluginCliTarget<'a> {
     version_dir: &'a std::path::Path,
     home_path: &'a std::path::Path,
     profile: &'a str,
+    wsl: Option<&'a str>,
 }
 
 /// What the invocation does: a pnpm subcommand (`add` / `remove`), its
@@ -2033,13 +2114,43 @@ async fn run_dsh_plugin(
 ) -> Result<(), String> {
     let (version_dir, home_path, profile) = (target.version_dir, target.home_path, target.profile);
     let (subcommand, spec, loglevel) = (op.subcommand, op.spec, op.loglevel);
-    let dir = profile_dir(home_path, profile);
+
+    // WSL (issue #19 follow-up): file preparation runs against the distro's
+    // \\wsl$\ UNC share, the CLI runs inside the distro with the distro's
+    // managed node/pnpm, and pnpm uses the distro-side store.
+    let fs_home = match target.wsl {
+        Some(distro) => {
+            crate::wsl::ensure_distro_running(state, distro).await?;
+            crate::wsl::unc_path(distro, &home_path.to_string_lossy())
+        }
+        None => home_path.to_path_buf(),
+    };
+    let dir = profile_dir(&fs_home, profile);
     std::fs::create_dir_all(&dir).map_err(|e| format!("创建 profile 目录失败: {e}"))?;
     ensure_build_scripts_allowed(&dir)?;
     // Never let a plugin's peers pull a second copy of a core package in.
     ensure_profile_npmrc(&dir)?;
 
-    let pnpm_prog = ensure_pnpm_for_plugins(app, state, task_id).await?;
+    // Resolve the CLI's node + pnpm: local uses the launcher-managed Windows
+    // pnpm; WSL ensures the distro's node/pnpm are installed first.
+    let (node_exe, pnpm_prog, linux_store) = match target.wsl {
+        Some(distro) => {
+            let root = crate::wsl::WslRoot::resolve(distro).await?;
+            crate::wsl::ensure_node(app, state, task_id, distro, &root).await?;
+            let pnpm = crate::wsl::ensure_pnpm(app, state, task_id, distro, &root).await?;
+            let node = std::path::PathBuf::from(root.node_exe());
+            (node, std::path::PathBuf::from(pnpm), root.pnpm_store())
+        }
+        None => (
+            std::path::PathBuf::from(crate::process::node()),
+            ensure_pnpm_for_plugins(app, state, task_id).await?,
+            state
+                .data_dir
+                .join(".pnpm-store")
+                .to_string_lossy()
+                .to_string(),
+        ),
+    };
     let what = format!("dsh plugin {subcommand}");
 
     // A node_modules tree linked from a *different* pnpm store (e.g. the
@@ -2048,9 +2159,8 @@ async fn run_dsh_plugin(
     // ERR_PNPM_UNEXPECTED_STORE. Detect the mismatch up front — with
     // `--loglevel=warn` (removals) pnpm prints nothing the log matcher could
     // catch, so the log-based retry below would never fire — and relink.
-    let store_dir = state.data_dir.join(".pnpm-store");
     if let Some(linked) = linked_store_dir(&dir) {
-        if !store_paths_match(&linked, &store_dir.to_string_lossy()) {
+        if !store_paths_match(&linked, &linux_store) {
             crate::tasks::push_task_log_pub(
                 app,
                 state,
@@ -2060,14 +2170,23 @@ async fn run_dsh_plugin(
                 ),
             )
             .await;
-            relink_profile_store(app, state, task_id, target, &pnpm_prog).await?;
+            relink_profile_store(app, state, task_id, target, &node_exe, &pnpm_prog).await?;
         }
     }
 
     for attempt in 1..=2 {
         let mut args: Vec<String> = vec![subcommand.to_string(), spec.to_string()];
-        args.extend(forwarded_pnpm_flags(state, loglevel, subcommand));
-        let cmd = dsh_plugin_command(version_dir, home_path, profile, &args, &pnpm_prog)?;
+        args.extend(forwarded_pnpm_flags(loglevel, subcommand, &linux_store));
+        let cmd = dsh_plugin_command(
+            target.wsl,
+            version_dir,
+            home_path,
+            profile,
+            &args,
+            &node_exe,
+            &pnpm_prog,
+        )
+        .await?;
 
         match crate::tasks::run_streamed_command(app, state, task_id, cmd, &what).await {
             Ok(()) => return Ok(()),
@@ -2089,7 +2208,7 @@ async fn run_dsh_plugin(
                     "pnpm 报告 store 位置不一致，正在重新链接 node_modules 后重试…",
                 )
                 .await;
-                relink_profile_store(app, state, task_id, target, &pnpm_prog).await?;
+                relink_profile_store(app, state, task_id, target, &node_exe, &pnpm_prog).await?;
             }
             Err(e) => return Err(e),
         }
@@ -2157,17 +2276,29 @@ async fn relink_profile_store(
     state: &State<'_, AppState>,
     task_id: &str,
     target: &PluginCliTarget<'_>,
+    node_exe: &std::path::Path,
     pnpm_prog: &std::path::Path,
 ) -> Result<(), String> {
+    let linux_store = match target.wsl {
+        Some(distro) => crate::wsl::WslRoot::resolve(distro).await?.pnpm_store(),
+        None => state
+            .data_dir
+            .join(".pnpm-store")
+            .to_string_lossy()
+            .to_string(),
+    };
     let mut args: Vec<String> = vec!["install".to_string()];
-    args.extend(forwarded_pnpm_flags(state, "warn", "install"));
+    args.extend(forwarded_pnpm_flags("warn", "install", &linux_store));
     let cmd = dsh_plugin_command(
+        target.wsl,
         target.version_dir,
         target.home_path,
         target.profile,
         &args,
+        node_exe,
         pnpm_prog,
-    )?;
+    )
+    .await?;
     crate::tasks::run_streamed_command(
         app,
         state,
@@ -2209,19 +2340,57 @@ fn task_log_mentions_ignored_builds(state: &State<'_, AppState>, task_id: &str) 
 /// The CLI resolves pnpm from PATH, so the launcher's pinned pnpm
 /// (`REQUIRED_PNPM_MAJOR`) is prepended to PATH: the pin then also applies
 /// inside the CLI's own pnpm invocation.
-fn dsh_plugin_command(
+async fn dsh_plugin_command(
+    distro: Option<&str>,
     version_dir: &std::path::Path,
     home_path: &std::path::Path,
     profile: &str,
     pnpm_args: &[String],
+    node_exe: &std::path::Path,
     pnpm_prog: &std::path::Path,
 ) -> Result<tokio::process::Command, String> {
     let bin = crate::process::version_bin(version_dir);
-    if !crate::process::version_bin_ready(version_dir) {
+    let bin_ready = match distro {
+        // WSL: the file lives inside the distro; probe through wsl.exe.
+        Some(d) => crate::wsl::wsl_test(d, "-s", &bin.to_string_lossy()).await,
+        None => crate::process::version_bin_ready(version_dir),
+    };
+    if !bin_ready {
         return Err(format!(
             "版本安装不完整（缺少 {}），请重新安装该 DSH 版本",
             bin.display()
         ));
+    }
+
+    // WSL instances run the CLI through wsl.exe with the distro's managed
+    // node/pnpm and Linux paths (issue #19 follow-up).
+    if let Some(distro) = distro {
+        let node_dir = node_exe
+            .parent()
+            .map(|p| p.to_string_lossy().to_string())
+            .unwrap_or_default();
+        let pnpm_dir = pnpm_prog
+            .parent()
+            .map(|p| p.to_string_lossy().to_string())
+            .unwrap_or_default();
+        // {0}=node_dir {1}=pnpm_dir {2}=home {3}=node {4}=bin {5}=profile
+        let mut script = format!(
+            "export PATH={0}:{1}:\"$PATH\"; export CI=true; DSH_HOME={2} {3} {4} plugin --profile {5}",
+            crate::wsl::sh_quote(&node_dir),
+            crate::wsl::sh_quote(&pnpm_dir),
+            crate::wsl::sh_quote(&home_path.to_string_lossy()),
+            crate::wsl::sh_quote(&node_exe.to_string_lossy()),
+            crate::wsl::sh_quote(&bin.to_string_lossy()),
+            crate::wsl::sh_quote(profile),
+        );
+        for a in pnpm_args {
+            script.push(' ');
+            script.push_str(&crate::wsl::sh_quote(a));
+        }
+        let mut cmd = crate::wsl::wsl_bash(distro, &script);
+        cmd.stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped());
+        return Ok(cmd);
     }
 
     let mut cmd = tokio::process::Command::new(crate::process::node());
@@ -2269,15 +2438,10 @@ fn dsh_plugin_command(
 /// The fetch/network flags only exist on download commands (`add` /
 /// `install`): `pnpm remove` rejects them outright ("Unknown options:
 /// 'fetch-timeout', …") and would fail before touching anything.
-fn forwarded_pnpm_flags(
-    state: &State<'_, AppState>,
-    loglevel: &str,
-    subcommand: &str,
-) -> Vec<String> {
-    let store_dir = state.data_dir.join(".pnpm-store");
+fn forwarded_pnpm_flags(loglevel: &str, subcommand: &str, store_dir: &str) -> Vec<String> {
     let mut args: Vec<String> = vec![
         "--store-dir".to_string(),
-        store_dir.to_string_lossy().to_string(),
+        store_dir.to_string(),
         format!("--loglevel={loglevel}"),
     ];
     if subcommand != "remove" {
