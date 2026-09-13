@@ -43,6 +43,9 @@ pub struct AppState {
     /// from `terminals` (the settings-page shell): different lifecycle,
     /// different status wiring.
     pub tui_sessions: tokio::sync::Mutex<HashMap<String, tui::TuiSession>>,
+    /// WSL distros recently verified running (`wsl.rs::ensure_distro_running`
+    /// TTL cache): distro → last successful boot/probe timestamp.
+    pub distro_ready: tokio::sync::Mutex<HashMap<String, std::time::Instant>>,
 }
 
 /// Extracts a `dsh-launcher://…` deep link from process arguments (Windows
@@ -151,6 +154,7 @@ pub fn run() {
                 last_focused_instance: StdMutex::new(None),
                 terminals: tokio::sync::Mutex::new(HashMap::new()),
                 tui_sessions: tokio::sync::Mutex::new(HashMap::new()),
+                distro_ready: tokio::sync::Mutex::new(HashMap::new()),
             });
 
             // System tray with dynamic menu.

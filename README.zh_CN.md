@@ -38,6 +38,7 @@ Tauri 2 + Vue 3 + TypeScript + Sass + vue-router + vue-i18n + Arco Design Vue。
 - **关闭最小化到托盘**（可在设置关闭）。
 - **开机自启**（设置页开关，经 autostart 插件真正注册）。
 - **i18n**：简体中文 / English，JSON 语言文件由 `@intlify/unplugin-vue-i18n` 经 Vite 发现、热重载并预编译。
+- **WSL2 实例（实验性）**：在 WSL2 发行版内创建 DSH 实例——自动安装发行版内 Node.js / pnpm / 指定版本，实例的 DSH_HOME 位于发行版 `~/.dsh-launcher/homes` 下；创建后可像本地实例一样操作 HOME（Profile 增删改、插件安装/启停/卸载、Skills、MCP、图标、日志、整合包导入导出、内置终端），文件访问经 `\\wsl$\` UNC 共享，发行版未运行时自动启动。
 
 ## 界面
 
@@ -46,6 +47,8 @@ Tauri 2 + Vue 3 + TypeScript + Sass + vue-router + vue-i18n + Arco Design Vue。
 - **实例列表**：名称、版本、DSH_HOME、Profile、运行状态与 URL、设置/删除。
 - **实例设置 → 插件页**：筛选 Profile 查看插件、启用/禁用、多选批量启用/禁用（`@deepseek-ai/*` 核心插件不显示）。
 - **设置页**：语言、关闭到托盘、开机自启、DSH_HOME 管理。
+
+> WSL 实例的插件安装/整合包依赖安装会在发行版内执行 pnpm（拉取 Linux 平台二进制）；从 Windows 侧经 UNC 读写文件要求发行版处于运行状态，启动器会自动拉起。
 
 ## 开发
 

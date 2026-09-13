@@ -359,7 +359,6 @@
     "viewLog": "查看日志",
     "filesHint": "打开该实例的 DSH_HOME 目录，或在文件管理器中定位该实例的运行日志",
     "wslHomeFixed": "WSL 实例的 HOME 位于发行版内（打开目录可访问），暂不支持更换",
-    "wslTabUnsupported": "「{tab}」涉及 HOME 内文件操作，WSL 实例暂不支持",
     "dirOpened": "已在文件管理器中打开目录：{path}",
     "logOpened": "已在文件管理器中定位日志：{path}",
     "createShortcut": "创建快捷方式",

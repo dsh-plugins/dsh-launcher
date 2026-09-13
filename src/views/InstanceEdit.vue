@@ -1314,16 +1314,6 @@ const terminalRunning = ref(false)
             </div>
           </div>
 
-          <!-- WSL instances (issue #19): file-based tabs are not supported yet -->
-          <div
-            v-else-if="isWsl && ['profiles', 'plugins', 'skills', 'mcp', 'terminal'].includes(activeTab)"
-            class="dl-card edit-card"
-          >
-            <a-alert type="info">
-              {{ t('instanceEdit.wslTabUnsupported', { tab: t(`instanceEdit.tabs.${activeTab}`) }) }}
-            </a-alert>
-          </div>
-
           <!-- Profiles -->
           <div v-else-if="activeTab === 'profiles'" class="dl-card edit-card">
             <h4 class="env-title">

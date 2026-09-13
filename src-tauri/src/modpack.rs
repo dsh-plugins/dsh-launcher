@@ -224,7 +224,7 @@ fn home_path_of(state: &AppState, home_id: &str) -> Result<PathBuf, String> {
         .homes
         .iter()
         .find(|h| h.id == home_id)
-        .map(|h| h.path.clone())
+        .map(crate::wsl::home_fs_path)
         .ok_or_else(|| "DSH_HOME 不存在".to_string())
 }
 
@@ -1538,6 +1538,83 @@ async fn pnpm_install_profile(
     Ok(())
 }
 
+/// WSL variant of `pnpm_install_profile` (issue #19 follow-up): the profile
+/// files live inside the distro (written through the `\\wsl$\` UNC share by
+/// the caller), so pnpm must run inside the distro with the distro's managed
+/// node/pnpm and the distro-side store — Windows pnpm would build a tree the
+/// Linux runtime cannot use.
+async fn pnpm_install_profile_wsl(
+    app: &AppHandle,
+    state: &State<'_, AppState>,
+    task_id: &str,
+    distro: &str,
+    dest_linux: &Path,
+    has_lock: bool,
+) -> Result<(), String> {
+    crate::wsl::ensure_distro_running(state, distro).await?;
+    let root = crate::wsl::WslRoot::resolve(distro).await?;
+    crate::wsl::ensure_node(app, state, task_id, distro, &root).await?;
+    let pnpm = crate::wsl::ensure_pnpm(app, state, task_id, distro, &root).await?;
+
+    let attempts: &[&[&str]] = if has_lock {
+        &[&["--frozen-lockfile"], &["--no-frozen-lockfile"]]
+    } else {
+        &[&["--no-frozen-lockfile"]]
+    };
+    let mut last_err = String::new();
+    for (i, extra) in attempts.iter().enumerate() {
+        if i > 0 {
+            crate::tasks::push_task_log_pub(
+                app,
+                state,
+                task_id,
+                "锁定文件与依赖清单不完全匹配，改用普通安装（锁定版本仍会被优先采用）…",
+            )
+            .await;
+        }
+        let mut script = format!(
+            "export PATH={0}:\"$PATH\"; export CI=true; cd {1} && {2} install",
+            crate::wsl::sh_quote(&root.node_bin_dir()),
+            crate::wsl::sh_quote(&dest_linux.to_string_lossy()),
+            crate::wsl::sh_quote(&pnpm),
+        );
+        for e in extra.iter() {
+            script.push(' ');
+            script.push_str(e);
+        }
+        script.push_str(" --store-dir ");
+        script.push_str(&crate::wsl::sh_quote(&root.pnpm_store()));
+        script.push_str(" --loglevel=http --fetch-timeout 300000 --fetch-retries 5 --fetch-retry-maxtimeout 120000 --network-concurrency 4");
+        if let Ok(registry) = std::env::var("DSH_NPM_REGISTRY") {
+            let registry = registry.trim().to_string();
+            if !registry.is_empty() {
+                script.push_str(" --registry ");
+                script.push_str(&crate::wsl::sh_quote(&registry));
+            }
+        }
+        let cmd = crate::wsl::wsl_bash(distro, &script);
+        match crate::tasks::run_streamed_command(
+            app,
+            state,
+            task_id,
+            cmd,
+            "pnpm install（整合包，WSL）",
+        )
+        .await
+        {
+            Ok(()) => {
+                last_err.clear();
+                break;
+            }
+            Err(e) => last_err = e,
+        }
+    }
+    if !last_err.is_empty() {
+        return Err(last_err);
+    }
+    Ok(())
+}
+
 /// Converts manifest dependency coordinates into package.json deps: github
 /// coords become install specs keyed by a derived package name, everything
 /// else passes through.
@@ -1805,7 +1882,7 @@ async fn do_import_modpack(
         None => None,
     };
 
-    let (version_record, home, target_instance_id) = match existing_target {
+    let (version_record, home_linux, distro, target_instance_id) = match existing_target {
         Some((inst, home, ver)) => {
             crate::tasks::push_task_log_pub(
                 app,
@@ -1814,7 +1891,7 @@ async fn do_import_modpack(
                 &format!("导入到现有实例「{}」（DSH {}）", inst.name, ver.version),
             )
             .await;
-            (ver, home.path, Some(inst.id))
+            (ver, home.path.clone(), home.wsl.clone(), Some(inst.id))
         }
         None => {
             // Fresh instance: resolve the pinned version (exact), falling
@@ -1883,12 +1960,22 @@ async fn do_import_modpack(
                 &version_record,
             )
             .await?;
-            (version_record, home.path, None)
+            (version_record, home.path.clone(), None, None)
         }
     };
 
     // 4. Materialize the pack profile directory inside the HOME.
-    let dest = crate::plugins::profile_dir_pub(&home, &profile_name);
+    // WSL (issue #19 follow-up): ensure the distro is running first so UNC
+    // file writes work, then go through the \\wsl$\ share; pnpm install runs
+    // inside the distro on the Linux path.
+    if let Some(d) = &distro {
+        crate::wsl::ensure_distro_running(state, d).await?;
+    }
+    let fs_home = match &distro {
+        Some(d) => crate::wsl::unc_path(d, &home_linux.to_string_lossy()),
+        None => home_linux.clone(),
+    };
+    let dest = crate::plugins::profile_dir_pub(&fs_home, &profile_name);
     if dest.exists() {
         if !input.force {
             return Err(format!("Profile「{profile_name}」已存在，勾选覆盖后重试"));
@@ -1923,7 +2010,21 @@ async fn do_import_modpack(
     }
 
     // 4. Install dependencies (frozen when the pack ships a lockfile).
-    if let Err(e) = pnpm_install_profile(app, state, task_id, &dest, has_lock).await {
+    let install_result = match &distro {
+        Some(d) => {
+            pnpm_install_profile_wsl(
+                app,
+                state,
+                task_id,
+                d,
+                &home_linux.join("profiles").join(&profile_name),
+                has_lock,
+            )
+            .await
+        }
+        None => pnpm_install_profile(app, state, task_id, &dest, has_lock).await,
+    };
+    if let Err(e) = install_result {
         let _ = std::fs::remove_dir_all(&dest);
         return Err(e);
     }
@@ -1946,7 +2047,7 @@ async fn do_import_modpack(
         // copied onto the $DSH_HOME root with the same overwrite semantics.
         let home_dir = unpacked.join("home");
         if home_dir.is_dir() {
-            let count = copy_tree(&home_dir, &home, None)?;
+            let count = copy_tree(&home_dir, &fs_home, None)?;
             if count > 0 {
                 crate::tasks::push_task_log_pub(
                     app,
@@ -1986,7 +2087,8 @@ async fn do_import_modpack(
             id: new_id("i"),
             name: instance_name.clone(),
             version_id: version_record.id.clone(),
-            home_id: home_id_of_path(&cfg, &home).ok_or_else(|| "DSH_HOME 记录缺失".to_string())?,
+            home_id: home_id_of_path(&cfg, &home_linux)
+                .ok_or_else(|| "DSH_HOME 记录缺失".to_string())?,
             env_overrides: Default::default(),
             default_profile: Some(profile_name.clone()),
             last_profile: None,
@@ -2002,7 +2104,7 @@ async fn do_import_modpack(
     //    local icon; an http(s) manifest icon stays a remote reference. An
     //    existing instance keeps an icon it already has.
     let imported_icon: Option<String> = if unpacked.join("icon.png").exists() {
-        let dest = crate::icons::local_icon_path(&home, &instance_id);
+        let dest = crate::icons::local_icon_path(&fs_home, &instance_id);
         if let Some(parent) = dest.parent() {
             std::fs::create_dir_all(parent).ok();
         }
