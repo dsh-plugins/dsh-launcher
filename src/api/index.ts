@@ -1153,7 +1153,26 @@ async function mockCall<T>(cmd: string, args?: Record<string, unknown>): Promise
         already_known: false,
       } as T
     case 'import_scanned':
-      return { homes_added: 1, versions_added: 0, instances_added: 2, skipped_known: 0 } as T
+      // Per-item breakdown mirrors the real command (issue #39): a mix of
+      // added / skipped so the wizard's result detail list is exercisable.
+      return {
+        homes_added: 1,
+        versions_added: 1,
+        instances_added: 2,
+        skipped_known: 1,
+        items: [
+          { kind: 'version', name: 'C:\\dsh\\versions\\0.1.2-alpha.1', status: 'added' },
+          { kind: 'home', name: 'C:\\Users\\Administrator\\.dsh', status: 'added' },
+          { kind: 'instance', name: '.dsh — web', status: 'added' },
+          { kind: 'instance', name: '.dsh — tui', status: 'added' },
+          {
+            kind: 'instance',
+            name: 'existing — web',
+            status: 'skipped',
+            reason: '同名实例已存在',
+          },
+        ],
+      } as T
     case 'detect_external_running':
       return [] as T
     case 'start_install_plugin_file_task':

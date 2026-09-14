@@ -15,6 +15,17 @@ const store = useLauncherStore()
 
 const modpackImportVisible = ref(false)
 
+/**
+ * Homes that exist in the config but have no instances at all (issue #39,
+ * problem 2): the auto-registered `~/.dsh` (and any home registered through
+ * the import wizard without picking profiles) would otherwise be invisible
+ * in instance management. Shown as a hint above the table.
+ */
+const homesWithoutInstances = computed(() => {
+  const usedHomeIds = new Set(store.instances.map((i) => i.home_id))
+  return store.homes.filter((h) => !usedHomeIds.has(h.id))
+})
+
 const columns = computed(() => [
   { title: t('instances.table.name'), slotName: 'name', width: 220 },
   { title: t('instances.table.version'), slotName: 'version', width: 140 },
@@ -240,6 +251,16 @@ async function onOpenWindow(id: string) {
           </a-empty>
         </template>
       </a-table>
+
+      <div v-if="homesWithoutInstances.length > 0" class="homes-without-instances">
+        <span class="homes-without-instances-title">{{ t('instances.homesWithoutInstancesTitle') }}</span>
+        <span v-for="h in homesWithoutInstances" :key="h.id" class="homes-without-instances-item">
+          <a-tag size="small" color="arcoblue">{{ h.name }}</a-tag>
+        </span>
+        <a-link @click="router.push({ name: 'settings' })">
+          {{ t('instances.homesWithoutInstancesAction') }}
+        </a-link>
+      </div>
     </div>
 
     <!-- Copy instance dialog: name it first, then duplicate on save -->
@@ -308,5 +329,25 @@ async function onOpenWindow(id: string) {
   font-size: 15px;
   font-weight: 600;
   color: var(--color-text-1);
+}
+
+.homes-without-instances {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 12px;
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: var(--color-fill-2);
+  font-size: 13px;
+}
+
+.homes-without-instances-title {
+  color: var(--color-text-2);
+}
+
+.homes-without-instances-item {
+  display: inline-flex;
 }
 </style>
