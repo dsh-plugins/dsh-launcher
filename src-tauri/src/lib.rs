@@ -270,6 +270,7 @@ pub fn run() {
             commands::fetch_news,
             update::check_launcher_update,
             plugins::fetch_plugin_market,
+            plugins::list_plugin_sources,
             plugins::fetch_plugin_versions,
             plugins::list_installed_plugins,
             plugins::check_plugin_updates,

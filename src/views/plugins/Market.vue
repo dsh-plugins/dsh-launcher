@@ -5,13 +5,13 @@ import { useI18n } from 'vue-i18n'
 import { useLauncherStore } from '@/stores/launcher'
 import { injectDownloadScroll } from '@/composables/download-scroll'
 import { api } from '@/api'
-import type { MarketPlugin, PluginSource } from '@/api/types'
+import type { Confidence, MarketPlugin, PluginSource } from '@/api/types'
 
 // keep-alive name: the download page caches this view (search/scroll state).
 defineOptions({ name: 'MarketPage' })
 
 const router = useRouter()
-const { t } = useI18n()
+const { t, te } = useI18n()
 const store = useLauncherStore()
 const scrollAccessor = injectDownloadScroll()
 
@@ -27,6 +27,19 @@ watch([search, sourceFilter], ([q, src]) => {
   store.pluginMarketSource = src
 })
 
+/**
+ * A persisted filter id may point at a source that was deleted or disabled in
+ * Settings; drop it so the market does not silently show an empty list. Only
+ * validate once the source list has actually loaded.
+ */
+function validateSourceFilter() {
+  if (!sourceFilter.value || !store.pluginSourcesLoadedAt) return
+  const ok = store.pluginSources.some((s) => s.id === sourceFilter.value && s.enabled)
+  if (!ok) sourceFilter.value = ''
+}
+
+watch(() => store.pluginSources, validateSourceFilter)
+
 function pickDescription(p: MarketPlugin): string {
   const d = p.description
   if (!d) return ''
@@ -39,6 +52,27 @@ function pickDescription(p: MarketPlugin): string {
 function sourceOf(p: MarketPlugin): PluginSource {
   return p.source ?? 'dsh-plugins'
 }
+
+/** Display name for a source id (known ids are translated, custom ids as-is). */
+function sourceLabel(id: string): string {
+  const key = `plugins.source.${id}`
+  return te(key) ? t(key) : id
+}
+
+const CONFIDENCE_COLORS: Record<Confidence, string> = {
+  official: 'green',
+  curated: 'purple',
+  aggregated: 'blue',
+  unverified: 'orangered',
+}
+
+/** A missing confidence is unknown and must be shown as unverified. */
+function confidenceOf(p: MarketPlugin): Confidence {
+  return p.confidence ?? 'unverified'
+}
+
+/** Only enabled sources are selectable; a disabled one would empty the list. */
+const enabledSources = computed(() => store.pluginSources.filter((s) => s.enabled))
 
 const filtered = computed(() => {
   let list = store.marketPlugins
@@ -84,6 +118,7 @@ async function load() {
 }
 
 onMounted(() => {
+  store.refreshPluginSources().then(validateSourceFilter)
   if (store.marketPlugins.length === 0) load()
   // Restore the saved scroll offset once the list has re-rendered.
   nextTick(() => {
@@ -108,8 +143,9 @@ onBeforeUnmount(() => {
         <a-space>
           <a-select v-model="sourceFilter" class="source-select" size="small">
             <a-option value="">{{ t('plugins.sourceAll') }}</a-option>
-            <a-option value="dsh-plugins">dsh-plugins</a-option>
-            <a-option value="awesome-dsh-plugin">awesome-dsh-plugin</a-option>
+            <a-option v-for="s in enabledSources" :key="s.id" :value="s.id">
+              {{ sourceLabel(s.id) }}
+            </a-option>
           </a-select>
           <a-input
             v-model="search"
@@ -150,8 +186,14 @@ onBeforeUnmount(() => {
             <div class="plugin-name">
               {{ p.name }}
               <span class="plugin-id">{{ p.id }}</span>
-              <a-tag v-if="sourceOf(p) === 'awesome-dsh-plugin'" size="small" color="purple">
-                awesome
+              <a-tag v-if="sourceOf(p) !== 'dsh-plugins'" size="small">
+                {{ sourceLabel(sourceOf(p)) }}
+              </a-tag>
+              <a-tag
+                size="small"
+                :color="CONFIDENCE_COLORS[confidenceOf(p)]"
+              >
+                {{ t(`plugins.confidence.${confidenceOf(p)}`) }}
               </a-tag>
             </div>
             <div class="plugin-desc">{{ pickDescription(p) }}</div>

@@ -40,6 +40,8 @@ export interface LauncherSettings {
   log_level: LogLevel
   /** SKILL source repos: https://[user:password@]github.com/user/repo[.git][#/path/to/skill] */
   skill_repos: string[]
+  /** Plugin marketplace catalog sources. */
+  plugin_sources: PluginSourceConfig[]
   /** Route the launcher's own HTTP requests through a proxy. */
   proxy_enabled: boolean
   /** Proxy URL without port (PROXY_URL), e.g. http://127.0.0.1 */
@@ -389,7 +391,23 @@ export interface MarketPluginRelationship {
 }
 
 /** Which catalog a market entry came from (serialised kebab-case). */
-export type PluginSource = 'dsh-plugins' | 'awesome-dsh-plugin'
+export type PluginSource = string
+
+/** How a marketplace source is maintained. */
+export type SourceKind = 'primary' | 'awesome' | 'dsh-get' | 'github-topic'
+
+/** Trust tier of a marketplace entry: official > curated > aggregated > unverified. */
+export type Confidence = 'official' | 'curated' | 'aggregated' | 'unverified'
+
+/** One configurable plugin catalog source (issue #plugin-sources). */
+export interface PluginSourceConfig {
+  id: string
+  url: string
+  kind: SourceKind
+  enabled: boolean
+  confidence: Confidence
+  order: number
+}
 
 export interface MarketPlugin {
   id: string
@@ -400,6 +418,14 @@ export interface MarketPlugin {
   relationship?: MarketPluginRelationship[]
   /** Absent on old payloads: treated as the primary dsh-plugins catalog. */
   source?: PluginSource
+  /** Credibility tier of this entry; absent = unknown. */
+  confidence?: Confidence
+  /** Source ids this entry was found in. */
+  sources?: string[]
+  /** GitHub "owner/repo" hint used by the alpha channel. */
+  repo?: string | null
+  /** Free-form verification note (e.g. reviewer / date). */
+  verification?: string | null
   /** Community-catalog extras. */
   category?: string
   stars?: number
@@ -446,6 +472,8 @@ export interface InstallPluginInput {
   channel: PluginChannel
   instanceId: string
   profile: string
+  /** GitHub repo hint for sources not in the static catalog (live/unverified). */
+  repo?: string | null
 }
 
 export interface SetPluginsEnabledInput {

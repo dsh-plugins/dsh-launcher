@@ -25,6 +25,7 @@ import type {
   SkillInfo,
   SkillUpdateInfo,
   PluginChannel,
+  PluginSourceConfig,
   PluginUpdateInfo,
   PluginVersionPage,
   ProfileInfo,
@@ -107,6 +108,12 @@ function seedDb(): MockDb {
       theme: 'system',
       log_level: 'info',
       skill_repos: ['https://github.com/Gu-ZT/skills'],
+      plugin_sources: [
+        { id: 'dsh-plugins', url: 'https://github.com/dsh-plugins/registry', kind: 'primary', enabled: true, confidence: 'official', order: 0 },
+        { id: 'awesome-dsh-plugin', url: 'https://github.com/awesome-dsh-plugin/awesome-dsh-plugin', kind: 'awesome', enabled: true, confidence: 'curated', order: 1 },
+        { id: 'dshget', url: 'https://github.com/dshget/plugins', kind: 'dsh-get', enabled: true, confidence: 'aggregated', order: 2 },
+        { id: 'github-topic', url: '', kind: 'github-topic', enabled: false, confidence: 'unverified', order: 3 },
+      ],
       proxy_enabled: false,
       proxy_url: 'http://127.0.0.1',
       proxy_port: 7890,
@@ -134,6 +141,7 @@ function loadDb(): MockDb {
       db.settings.proxy_apply_dsh = db.settings.proxy_apply_dsh ?? false
       db.settings.auto_open_on_launch = db.settings.auto_open_on_launch ?? true
       db.settings.hide_launcher_on_window_open = db.settings.hide_launcher_on_window_open ?? false
+      db.settings.plugin_sources = db.settings.plugin_sources ?? seedDb().settings.plugin_sources
       db.mcp = db.mcp ?? {}
       return db
     }
@@ -922,6 +930,10 @@ async function mockCall<T>(cmd: string, args?: Record<string, unknown>): Promise
       } as T
     }
     // ---- Plugin marketplace mocks (browser preview) ----
+    case 'list_plugin_sources': {
+      const sources = db.settings.plugin_sources
+      return (sources && sources.length > 0 ? sources : seedDb().settings.plugin_sources) as T
+    }
     case 'fetch_plugin_market': {
       const q = ((args?.query as string) ?? '').trim().toLowerCase()
       const all: MarketPlugin[] = [
@@ -929,6 +941,9 @@ async function mockCall<T>(cmd: string, args?: Record<string, unknown>): Promise
           id: '@dsh-plugin/dsh-approve-for-me',
           name: 'DSH Approve For Me',
           source: 'dsh-plugins',
+          confidence: 'official',
+          sources: ['dsh-plugins'],
+          repo: 'dsh-plugins/dsh-approve-for-me',
           description: [{ language: 'zh-CN', content: '审查并自动批准命令执行，新增「替我同意」沙箱权限选项' }],
           urls: {
             homepage: 'https://github.com/dsh-plugins/dsh-approve-for-me',
@@ -941,6 +956,9 @@ async function mockCall<T>(cmd: string, args?: Record<string, unknown>): Promise
           id: '@dsh-plugin/dsh-auxiliary',
           name: 'DSH Auxiliary',
           source: 'dsh-plugins',
+          confidence: 'official',
+          sources: ['dsh-plugins'],
+          repo: 'dsh-plugins/dsh-auxiliary',
           description: [{ language: 'zh-CN', content: '辅助工具集：图像描述、任务看板等' }],
           urls: {
             repository: 'https://github.com/dsh-plugins/dsh-auxiliary',
@@ -952,6 +970,9 @@ async function mockCall<T>(cmd: string, args?: Record<string, unknown>): Promise
           id: '@dsh-plugin/dsh-loader',
           name: 'DSH Loader',
           source: 'dsh-plugins',
+          confidence: 'official',
+          sources: ['dsh-plugins'],
+          repo: 'dsh-plugins/dsh-loader',
           description: [{ language: 'zh-CN', content: 'DSH 插件加载器，所有插件的基础' }],
           urls: { repository: 'https://github.com/dsh-plugins/dsh-loader' },
         },
@@ -959,6 +980,9 @@ async function mockCall<T>(cmd: string, args?: Record<string, unknown>): Promise
           id: '@furongjun1999/dsh-memory',
           name: 'dsh-memory',
           source: 'awesome-dsh-plugin',
+          confidence: 'curated',
+          sources: ['awesome-dsh-plugin'],
+          repo: 'FuRongJun-1999/dsh-memory',
           category: 'agi',
           stars: 35,
           downloads: 1856,
@@ -972,12 +996,43 @@ async function mockCall<T>(cmd: string, args?: Record<string, unknown>): Promise
           id: 'github:0imzero/dsh-workspace-menu',
           name: 'dsh-workspace-menu',
           source: 'awesome-dsh-plugin',
+          confidence: 'curated',
+          sources: ['awesome-dsh-plugin'],
+          repo: '0imzero/dsh-workspace-menu',
           category: 'ui',
           description: [
             { language: 'en', content: 'Workspace/chat context menu for the DSH home page.' },
             { language: 'zh', content: 'DSH 主页工作区/会话增强菜单。' },
           ],
           urls: { repository: 'https://github.com/0imzero/dsh-workspace-menu' },
+        },
+        {
+          id: '@dshget/theme-switcher',
+          name: 'dshget-theme-switcher',
+          source: 'dshget',
+          confidence: 'aggregated',
+          sources: ['dshget'],
+          repo: 'dshget/theme-switcher',
+          category: 'ui',
+          description: [
+            { language: 'en', content: 'Aggregated from the dshget registry: theme switcher plugin.' },
+            { language: 'zh', content: '来自 dshget 聚合源：主题切换插件。' },
+          ],
+          urls: { repository: 'https://github.com/dshget/theme-switcher' },
+        },
+        {
+          id: 'github:some-user/dsh-live-notifier',
+          name: 'dsh-live-notifier',
+          source: 'github-topic',
+          confidence: 'unverified',
+          sources: ['github-topic'],
+          repo: 'some-user/dsh-live-notifier',
+          category: 'live',
+          description: [
+            { language: 'en', content: 'Found via the GitHub topic channel; not reviewed by anyone.' },
+            { language: 'zh', content: '通过 GitHub topic 频道发现，尚未经过任何审核。' },
+          ],
+          urls: { repository: 'https://github.com/some-user/dsh-live-notifier' },
         },
       ]
       if (!q) return all as T
@@ -1381,8 +1436,10 @@ export const api = {
 
   // Plugin marketplace
   fetchPluginMarket: (query?: string) => call<MarketPlugin[]>('fetch_plugin_market', { query: query ?? null }),
-  fetchPluginVersions: (pluginId: string, channel: PluginChannel, page = 1) =>
-    call<PluginVersionPage>('fetch_plugin_versions', { plugin_id: pluginId, channel, page }),
+  /** The configurable plugin source registry (issue #plugin-sources). */
+  listPluginSources: () => call<PluginSourceConfig[]>('list_plugin_sources'),
+  fetchPluginVersions: (pluginId: string, channel: PluginChannel, page = 1, repo?: string) =>
+    call<PluginVersionPage>('fetch_plugin_versions', { plugin_id: pluginId, channel, page, repo: repo ?? null }),
   listInstalledPlugins: (instanceId: string, profile: string) =>
     call<InstalledPlugin[]>('list_installed_plugins', { instance_id: instanceId, profile }),
   /** Checks each installed npm plugin against the registry's latest dist-tag (issue #27). */

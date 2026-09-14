@@ -1,6 +1,6 @@
 use crate::config::{
-    new_id, sanitize_name, DshHome, DshInstance, DshVersion, LauncherSettings, NewInstanceInput,
-    RemoteVersion, SettingsPatch,
+    new_id, sanitize_name, sanitize_plugin_sources, DshHome, DshInstance, DshVersion,
+    LauncherSettings, NewInstanceInput, RemoteVersion, SettingsPatch,
 };
 use crate::{process, AppState};
 use std::collections::BTreeMap;
@@ -1092,6 +1092,9 @@ pub fn update_settings(
             .map(|u| u.trim().to_string())
             .filter(|u| !u.is_empty())
             .collect();
+    }
+    if let Some(v) = settings.plugin_sources {
+        cfg.settings.plugin_sources = sanitize_plugin_sources(v);
     }
     if let Some(v) = settings.proxy_enabled {
         cfg.settings.proxy_enabled = v;
