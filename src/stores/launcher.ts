@@ -12,6 +12,7 @@ import type {
   MarketPlugin,
   PluginChannel,
   PluginSource,
+  PluginSourceConfig,
   PluginVersionInfo,
   RemoteVersion,
   RuntimeStatus,
@@ -58,9 +59,12 @@ interface LauncherState {
   marketPlugins: MarketPlugin[]
   marketLoading: boolean
   marketLoadedAt: number | null
+  /** Configurable plugin catalog sources (issue #plugin-sources). */
+  pluginSources: PluginSourceConfig[]
+  pluginSourcesLoadedAt: number | null
   /** Search box of the plugin market page, persisted across navigations. */
   pluginMarketSearch: string
-  /** Source filter ('' | 'dsh-plugins' | 'awesome-dsh-plugin') of the market page. */
+  /** Source filter ('' = all, else a source id) of the market page. */
   pluginMarketSource: PluginSource | ''
   /** Scroll offset of the plugin market page's scrollbar, in px. */
   pluginMarketScrollTop: number
@@ -100,6 +104,7 @@ export const useLauncherStore = defineStore('launcher', {
       theme: 'system',
       log_level: 'info',
       skill_repos: [],
+      plugin_sources: [],
       proxy_enabled: false,
       proxy_url: 'http://127.0.0.1',
       proxy_port: 7890,
@@ -116,6 +121,8 @@ export const useLauncherStore = defineStore('launcher', {
     marketPlugins: [],
     marketLoading: false,
     marketLoadedAt: null,
+    pluginSources: [],
+    pluginSourcesLoadedAt: null,
     pluginMarketSearch: '',
     pluginMarketSource: '' as PluginSource | '',
     pluginMarketScrollTop: 0,
@@ -321,6 +328,17 @@ export const useLauncherStore = defineStore('launcher', {
         Message.error(String(e))
       } finally {
         this.marketLoading = false
+      }
+    },
+
+    /** Load the configurable plugin source registry (cached until force=true). */
+    async refreshPluginSources(force = false) {
+      if (!force && this.pluginSources.length > 0 && this.pluginSourcesLoadedAt) return
+      try {
+        this.pluginSources = await api.listPluginSources()
+        this.pluginSourcesLoadedAt = Date.now()
+      } catch (e) {
+        Message.error(String(e))
       }
     },
 

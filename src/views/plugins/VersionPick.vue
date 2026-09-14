@@ -12,6 +12,11 @@ const store = useLauncherStore()
 
 const plugin = computed<MarketPlugin | null>(() => store.pluginWizard?.plugin ?? null)
 
+/** GitHub repo hint for sources (live/unverified) absent from the static catalog. */
+function repoHint(): string | undefined {
+  return plugin.value?.repo ?? plugin.value?.urls?.repository ?? undefined
+}
+
 const channelMeta: Record<PluginChannel, { letter: string; color: string }> = {
   stable: { letter: 'R', color: 'green' },
   beta: { letter: 'B', color: 'orange' },
@@ -48,7 +53,7 @@ async function loadChannel(ch: PluginChannel) {
   loadingChannel.value = ch
   error.value = null
   try {
-    const page = await api.fetchPluginVersions(plugin.value.id, ch, pagesLoaded.value[ch])
+    const page = await api.fetchPluginVersions(plugin.value.id, ch, pagesLoaded.value[ch], repoHint())
     versionsByChannel.value[ch] = page.versions
     hasMore.value[ch] = page.has_more
   } catch (e) {
@@ -72,7 +77,7 @@ async function loadMore(ch: PluginChannel) {
   loadingMore.value[ch] = true
   try {
     const nextPage = pagesLoaded.value[ch] + 1
-    const page = await api.fetchPluginVersions(plugin.value.id, ch, nextPage)
+    const page = await api.fetchPluginVersions(plugin.value.id, ch, nextPage, repoHint())
     versionsByChannel.value[ch] = [...versionsByChannel.value[ch], ...page.versions]
     pagesLoaded.value[ch] = nextPage
     hasMore.value[ch] = page.has_more

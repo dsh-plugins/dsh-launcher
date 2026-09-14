@@ -17,6 +17,21 @@ const instanceId = ref<string>('')
 const profile = ref<string>('')
 const allowBuildScripts = ref(true)
 const submitting = ref(false)
+/** Unverified sources must be explicitly acknowledged before installing. */
+const unverifiedAck = ref(false)
+
+const needsUnverifiedAck = computed(() => {
+  const c = state.value?.plugin.confidence
+  return c === undefined || c === 'unverified'
+})
+
+// A different plugin means a fresh acknowledgement.
+watch(
+  () => state.value?.plugin.id,
+  () => {
+    unverifiedAck.value = false
+  },
+)
 
 const profiles = ref<string[]>([])
 const profilesLoading = ref(false)
@@ -77,7 +92,12 @@ onMounted(async () => {
 })
 
 const canSubmit = computed(
-  () => !!state.value && !!instanceId.value && !!profile.value && !submitting.value,
+  () =>
+    !!state.value &&
+    !!instanceId.value &&
+    !!profile.value &&
+    !submitting.value &&
+    (!needsUnverifiedAck.value || unverifiedAck.value),
 )
 
 async function startInstall() {
@@ -91,6 +111,7 @@ async function startInstall() {
       channel: s.channel,
       instanceId: instanceId.value,
       profile: profile.value,
+      repo: s.plugin.repo ?? s.plugin.urls?.repository ?? null,
     })
     Message.success(t('plugins.installTaskAdded'))
     Message.info(t('plugins.installRestartHint'))
@@ -134,6 +155,14 @@ async function startInstall() {
             {{ displayVersion(state.version.version) }}
           </span>
         </div>
+      </div>
+
+      <!-- Unverified source: explicit acknowledgement required -->
+      <div v-if="needsUnverifiedAck" class="unverified-block">
+        <a-alert type="warning" :show-icon="true">{{ t('plugins.unverifiedConfirm') }}</a-alert>
+        <a-checkbox v-model="unverifiedAck" class="unverified-ack">
+          {{ t('plugins.unverifiedAck') }}
+        </a-checkbox>
       </div>
 
       <!-- Instance + profile -->
@@ -269,6 +298,16 @@ async function startInstall() {
   color: #fff;
   font-size: 12px;
   font-weight: 700;
+}
+
+.unverified-block {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.unverified-ack {
+  align-self: flex-start;
 }
 
 .no-instance {

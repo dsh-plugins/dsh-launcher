@@ -52,6 +52,128 @@ pub struct DshInstance {
     pub port: Option<u16>,
 }
 
+// ---------------------------------------------------------------------------
+// Plugin catalog sources (issue #46)
+// ---------------------------------------------------------------------------
+
+/// How a configured plugin source is fetched/parsed. The launcher dispatches
+/// to one adapter per kind.
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum SourceKind {
+    /// dsh-plug.in's native schema (array of MarketPlugin).
+    Primary,
+    /// awesome-dsh-plugin.com's schema (plugins[] with an `install` line).
+    Awesome,
+    /// DSH Get's aggregated catalog (plugins[] with an `install` line).
+    DshGet,
+    /// GitHub `topic:dsh-plugin` search (live discovery, no static URL).
+    GithubTopic,
+}
+
+/// How trustworthy a source is. Ordered from least to most trustworthy so
+/// duplicate ids can keep the highest tier.
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
+#[serde(rename_all = "lowercase")]
+pub enum Confidence {
+    /// Live/community discovery; the code has not been reviewed.
+    #[default]
+    Unverified,
+    /// Third-party directory that aggregates other catalogs.
+    Aggregated,
+    /// Curated community directory (PR gate + CI validation).
+    Curated,
+    /// The official dsh-plug.in catalog.
+    Official,
+}
+
+/// One configured plugin catalog source. Persisted in launcher settings so the
+/// user can enable/disable, reorder, and add mirrors or private catalogs.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct PluginSourceConfig {
+    /// Stable id; also stamped onto every entry as `MarketPlugin.source`.
+    pub id: String,
+    /// Catalog JSON URL (http/https). Empty for live-only kinds.
+    pub url: String,
+    pub kind: SourceKind,
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    #[serde(default)]
+    pub confidence: Confidence,
+    #[serde(default)]
+    pub order: u32,
+}
+
+/// The built-in catalog sources, in display/dedup priority order. The live
+/// GitHub topic channel ships disabled: it is rate-limited and unverified, so
+/// the user opts in from Settings.
+pub fn default_plugin_sources() -> Vec<PluginSourceConfig> {
+    vec![
+        PluginSourceConfig {
+            id: "dsh-plugins".to_string(),
+            url: "https://dsh-plug.in/api/plugins.json".to_string(),
+            kind: SourceKind::Primary,
+            enabled: true,
+            confidence: Confidence::Official,
+            order: 0,
+        },
+        PluginSourceConfig {
+            id: "awesome-dsh-plugin".to_string(),
+            url: "https://awesome-dsh-plugin.com/plugins.json".to_string(),
+            kind: SourceKind::Awesome,
+            enabled: true,
+            confidence: Confidence::Curated,
+            order: 1,
+        },
+        PluginSourceConfig {
+            id: "dshget".to_string(),
+            // Served through the jsDelivr CDN: raw.githubusercontent.com is
+            // unreachable on some networks (observed in CN), while the CDN
+            // mirror serves the identical snapshot. Users can point this at
+            // raw.githubusercontent.com or another mirror in Settings.
+            url: "https://cdn.jsdelivr.net/gh/bobby-sheng/dshget-data@main/catalog.json"
+                .to_string(),
+            kind: SourceKind::DshGet,
+            enabled: true,
+            confidence: Confidence::Aggregated,
+            order: 2,
+        },
+        PluginSourceConfig {
+            id: "github-topic".to_string(),
+            url: String::new(),
+            kind: SourceKind::GithubTopic,
+            enabled: false,
+            confidence: Confidence::Unverified,
+            order: 3,
+        },
+    ]
+}
+
+/// Drops user-supplied source entries that cannot be driven (empty id, or a
+/// non-http(s) URL for a static kind), de-duplicates ids, and renumbers `order`
+/// to the list index so the persisted list is always a coherent priority order.
+pub fn sanitize_plugin_sources(list: Vec<PluginSourceConfig>) -> Vec<PluginSourceConfig> {
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    list.into_iter()
+        .filter(|s| {
+            let id = s.id.trim().to_string();
+            let url = s.url.trim();
+            !id.is_empty()
+                && (s.kind == SourceKind::GithubTopic
+                    || url.starts_with("https://")
+                    || url.starts_with("http://"))
+                && seen.insert(id)
+        })
+        .enumerate()
+        .map(|(i, mut s)| {
+            s.id = s.id.trim().to_string();
+            s.url = s.url.trim().to_string();
+            s.order = i as u32;
+            s
+        })
+        .collect()
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct LauncherSettings {
     #[serde(default = "default_locale")]
@@ -98,6 +220,10 @@ pub struct LauncherSettings {
     /// TUI terminal) is opened/focused.
     #[serde(default)]
     pub hide_launcher_on_window_open: bool,
+    /// Plugin marketplace catalog sources (issue #46). Defaults to the built-in
+    /// three catalogs plus the (disabled) live GitHub topic channel.
+    #[serde(default = "default_plugin_sources")]
+    pub plugin_sources: Vec<PluginSourceConfig>,
 }
 
 fn default_locale() -> String {
@@ -151,6 +277,7 @@ impl Default for LauncherSettings {
             proxy_apply_dsh: false,
             auto_open_on_launch: true,
             hide_launcher_on_window_open: false,
+            plugin_sources: default_plugin_sources(),
         }
     }
 }
@@ -222,6 +349,8 @@ pub struct SettingsPatch {
     pub no_proxy: Option<String>,
     #[serde(default)]
     pub proxy_apply_dsh: Option<bool>,
+    #[serde(default)]
+    pub plugin_sources: Option<Vec<PluginSourceConfig>>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]

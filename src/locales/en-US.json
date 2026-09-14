@@ -200,7 +200,21 @@
     "issues": "Issues",
     "viewLinks": "Links",
     "marketError": "Failed to load plugin market",
-    "retry": "Retry"
+    "retry": "Retry",
+    "source": {
+      "dsh-plugins": "Official source",
+      "awesome-dsh-plugin": "Awesome curated",
+      "dshget": "dshget aggregated",
+      "github-topic": "GitHub topic (community)"
+    },
+    "confidence": {
+      "official": "Official",
+      "curated": "Curated",
+      "aggregated": "Aggregated",
+      "unverified": "Unverified"
+    },
+    "unverifiedConfirm": "This plugin comes from an unreviewed source and its code is provided by a third party; it may contain harmful behavior. Only install it if you trust the source.",
+    "unverifiedAck": "I understand the risk and want to install anyway"
   },
   "settings": {
     "title": "Settings",
@@ -246,6 +260,27 @@
       "empty": "No SKILL repositories yet"
     },
     "skillRepoExists": "This repo is already listed",
+    "pluginSources": {
+      "title": "Plugin sources",
+      "hint": "Marketplace catalog sources: enable/disable, reorder, or add custom sources. github-topic is a dynamically discovered community channel whose contents are not reviewed.",
+      "id": "Source ID",
+      "kind": "Kind",
+      "confidence": "Confidence",
+      "url": "Catalog URL",
+      "add": "Add",
+      "empty": "No plugin sources yet",
+      "enable": "Enabled",
+      "delete": "Delete",
+      "invalidId": "Source ID must not be empty",
+      "invalidUrl": "Source URL must start with http(s)://",
+      "duplicateId": "This source ID already exists",
+      "sourceKinds": {
+        "primary": "Primary",
+        "awesome": "Awesome curated",
+        "dshGet": "dshget aggregated",
+        "githubTopic": "GitHub topic"
+      }
+    },
     "proxy": {
       "title": "Proxy",
       "enabled": "Enable proxy",

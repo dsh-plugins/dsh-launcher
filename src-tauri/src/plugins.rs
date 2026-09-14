@@ -2,17 +2,20 @@
 // exposes per-channel versions (stable = releases/latest, beta =
 // pre-releases/next, alpha = latest commit) plus install/enable plumbing.
 
-use crate::config::{new_id, DshInstance};
+use crate::config::{
+    default_plugin_sources, new_id, sanitize_name, Confidence, DshInstance, PluginSourceConfig,
+    SourceKind,
+};
 use crate::AppState;
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Manager, State};
 
-/// Market API endpoint (dsh-plugins.github.io publishes to the custom domain).
-const MARKET_URL: &str = "https://dsh-plug.in/api/plugins.json";
-/// The community catalog (awesome-dsh-plugin.com), a different schema keyed by
-/// an `install` command line; see `parse_awesome_install`.
-const AWESOME_URL: &str = "https://awesome-dsh-plugin.com/plugins.json";
 const NPM_REGISTRY: &str = "https://registry.npmjs.org";
+
+/// Environment override for the enabled plugin sources (issue #46). Comma-
+/// separated entries; each is either `url` or `id|kind|url`. Replaces the
+/// persisted list for this process only (never written back to config.json).
+const PLUGIN_SOURCES_ENV: &str = "DSHLAUNCHER_PLUGIN_SOURCES";
 
 /// Public OAuth App client id used to boost unauthenticated GitHub API quota
 /// from 60 to 5000 requests/hour (an anonymous client-id parameter, no
@@ -76,10 +79,25 @@ pub struct MarketPlugin {
     pub urls: Option<MarketPluginUrls>,
     #[serde(default)]
     pub relationship: Option<Vec<MarketPluginRelationship>>,
-    /// Which catalog this entry came from. Defaults to the primary dsh-plug.in
-    /// catalog so old cached/frontend payloads without the field stay valid.
+    /// Id of the source this entry came from (issue #46): a built-in id like
+    /// "dsh-plugins" / "awesome-dsh-plugin" / "dshget" / "github-topic", or a
+    /// user-defined id. Defaults to the primary catalog so old cached/frontend
+    /// payloads without the field stay valid.
+    #[serde(default = "default_source_id")]
+    pub source: String,
+    /// Credibility tier of the winning source; see `Confidence`.
     #[serde(default)]
-    pub source: PluginSource,
+    pub confidence: Confidence,
+    /// Every source id that lists this plugin (attribution union after dedup).
+    #[serde(default)]
+    pub sources: Vec<String>,
+    /// `owner/repo` hint so version resolution (alpha channel) and alpha
+    /// installs work for entries that are not in any static catalog.
+    #[serde(default)]
+    pub repo: Option<String>,
+    /// Upstream verification status (dshget), passed through verbatim.
+    #[serde(default)]
+    pub verification: Option<String>,
     /// Community-catalog extras (absent for the primary catalog).
     #[serde(default)]
     pub category: Option<String>,
@@ -89,16 +107,8 @@ pub struct MarketPlugin {
     pub downloads: Option<u64>,
 }
 
-/// Which catalog a market entry came from. Serialised lowercase so the
-/// frontend filter can match on the string.
-#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "kebab-case")]
-pub enum PluginSource {
-    /// The primary catalog at dsh-plug.in (official, listed first).
-    #[default]
-    DshPlugins,
-    /// The community catalog at awesome-dsh-plugin.com.
-    AwesomeDshPlugin,
+fn default_source_id() -> String {
+    "dsh-plugins".to_string()
 }
 
 // ---------------------------------------------------------------------------
@@ -231,35 +241,71 @@ pub(crate) fn github_install_spec(repo: &str, git_ref: &str, subpath: Option<&st
     }
 }
 
+/// Builds a localized bilingual description out of an `{ en, zh }` pair.
+fn description_from(en: Option<&str>, zh: Option<&str>) -> Option<MarketDescription> {
+    let mut list = Vec::new();
+    if let Some(en) = en {
+        list.push(MarketPluginDescription {
+            language: "en".to_string(),
+            content: en.to_string(),
+        });
+    }
+    if let Some(zh) = zh {
+        list.push(MarketPluginDescription {
+            language: "zh".to_string(),
+            content: zh.to_string(),
+        });
+    }
+    if list.is_empty() {
+        None
+    } else {
+        Some(MarketDescription::Localized(list))
+    }
+}
+
+/// Best-effort `owner/repo` hint from a catalog entry: the install target id
+/// (for `github:` ids) or the entry's repository/page URL.
+fn repo_hint_of(id: &str, url: Option<&str>) -> Option<String> {
+    if let Some((repo, _)) = parse_github_id(id) {
+        return Some(repo);
+    }
+    let url = url?;
+    if let Some(pos) = url.find("github.com/") {
+        let tail = &url[pos + "github.com/".len()..];
+        let tail = tail.trim_end_matches(".git").trim_end_matches('/');
+        let mut parts = tail.split('/');
+        if let (Some(owner), Some(name)) = (parts.next(), parts.next()) {
+            if !owner.is_empty() && !name.is_empty() {
+                return Some(format!("{owner}/{name}"));
+            }
+        }
+    }
+    None
+}
+
+/// Stamps an entry with the source it came from and that source's credibility.
+fn tag_entry(mp: &mut MarketPlugin, src: &PluginSourceConfig) {
+    mp.source = src.id.clone();
+    mp.confidence = src.confidence;
+    if !mp.sources.contains(&src.id) {
+        mp.sources.insert(0, src.id.clone());
+    }
+}
+
 /// Converts one awesome-dsh-plugin entry into a `MarketPlugin`, or None when
 /// its `install` line cannot be resolved to a drivable plugin id.
 fn awesome_to_market(p: &AwesomePlugin) -> Option<MarketPlugin> {
     let id = parse_awesome_install(&p.install)?;
-    let description = p.description.as_ref().and_then(|d| {
-        let mut list = Vec::new();
-        if let Some(en) = &d.en {
-            list.push(MarketPluginDescription {
-                language: "en".to_string(),
-                content: en.clone(),
-            });
-        }
-        if let Some(zh) = &d.zh {
-            list.push(MarketPluginDescription {
-                language: "zh".to_string(),
-                content: zh.clone(),
-            });
-        }
-        if list.is_empty() {
-            None
-        } else {
-            Some(MarketDescription::Localized(list))
-        }
-    });
+    let description = p
+        .description
+        .as_ref()
+        .and_then(|d| description_from(d.en.as_deref(), d.zh.as_deref()));
     let urls = p.url.as_ref().map(|u| MarketPluginUrls {
         homepage: None,
         repository: Some(u.clone()),
         issues: None,
     });
+    let repo = repo_hint_of(&id, p.url.as_deref());
     Some(MarketPlugin {
         id,
         name: p.name.clone(),
@@ -267,11 +313,291 @@ fn awesome_to_market(p: &AwesomePlugin) -> Option<MarketPlugin> {
         support_versions: None,
         urls,
         relationship: None,
-        source: PluginSource::AwesomeDshPlugin,
+        source: default_source_id(),
+        confidence: Confidence::default(),
+        sources: Vec::new(),
+        repo,
+        verification: None,
         category: p.category.clone(),
         stars: p.stars,
         downloads: p.downloads,
     })
+}
+
+// ---------------------------------------------------------------------------
+// DSH Get catalog (dshget-data/catalog.json)
+// ---------------------------------------------------------------------------
+
+/// One entry in the DSH Get aggregated catalog. Only the fields the launcher
+/// consumes are modelled; `install` uses the same shape as awesome's, so
+/// `parse_awesome_install` handles it directly.
+#[derive(Clone, Debug, Deserialize)]
+struct DshGetPlugin {
+    name: String,
+    #[serde(default)]
+    url: Option<String>,
+    #[serde(default)]
+    category: Option<String>,
+    #[serde(default)]
+    description: Option<AwesomeDescription>,
+    #[serde(default)]
+    stars: Option<u64>,
+    /// e.g. `dsh plugin --profile web add github:owner/repo`.
+    install: String,
+    /// Upstream catalogs this entry was aggregated from (attribution).
+    #[serde(default)]
+    sources: Vec<String>,
+    #[serde(default)]
+    verification: Option<String>,
+    #[serde(default = "default_true")]
+    installable: bool,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+struct DshGetCatalog {
+    #[serde(default)]
+    plugins: Vec<DshGetPlugin>,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+/// Converts one DSH Get entry into a `MarketPlugin`. Entries the catalog marks
+/// as not installable are dropped.
+fn dshget_to_market(p: &DshGetPlugin) -> Option<MarketPlugin> {
+    if !p.installable {
+        return None;
+    }
+    let id = parse_awesome_install(&p.install)?;
+    let description = p
+        .description
+        .as_ref()
+        .and_then(|d| description_from(d.en.as_deref(), d.zh.as_deref()));
+    let urls = p.url.as_ref().map(|u| MarketPluginUrls {
+        homepage: None,
+        repository: Some(u.clone()),
+        issues: None,
+    });
+    let repo = repo_hint_of(&id, p.url.as_deref());
+    Some(MarketPlugin {
+        id,
+        name: p.name.clone(),
+        description,
+        support_versions: None,
+        urls,
+        relationship: None,
+        source: default_source_id(),
+        confidence: Confidence::default(),
+        sources: p.sources.clone(),
+        repo,
+        verification: p.verification.clone(),
+        category: p.category.clone(),
+        stars: p.stars,
+        downloads: None,
+    })
+}
+
+// ---------------------------------------------------------------------------
+// GitHub topic live discovery (issue #46, channel C)
+// ---------------------------------------------------------------------------
+
+const TOPIC_QUERY: &str = "topic:dsh-plugin";
+const TOPIC_PER_PAGE: u32 = 100;
+/// Page budget: the search API is heavily rate-limited (~30 req/min), so we
+/// never page deeper than this per refresh.
+const TOPIC_MAX_PAGES: u32 = 2;
+/// Probe budget: repos whose name is not self-identifying are checked against
+/// their raw manifest, but only this many per refresh.
+const TOPIC_MAX_PROBES: usize = 30;
+
+/// Repos/orgs that carry the topic but are not installable plugins: DeepSeek's
+/// own core repos, catalogs/aggregators, and the launcher itself. Matched
+/// case-insensitively against `owner/repo` (exact, or as an owner prefix).
+const TOPIC_DENYLIST: &[&str] = &[
+    "deepseek-ai",
+    "dsh-plugins/dsh-launcher",
+    "bobby-sheng/dshget-data",
+    "bobby-sheng/dshget-plugin",
+    "omdsh-dev/dsh-hub-workshop",
+    "hrhgit/deepseek-harness-plugin-manager",
+];
+
+fn topic_denied(full_name: &str) -> bool {
+    let lower = full_name.to_lowercase();
+    let owner = lower.split('/').next().unwrap_or("");
+    TOPIC_DENYLIST.iter().any(|d| {
+        let d = d.to_lowercase();
+        lower == d || owner == d || lower.starts_with(&format!("{d}/"))
+    })
+}
+
+/// Strong heuristic: the repo name announces itself as a DSH plugin.
+fn name_looks_like_plugin(name: &str) -> bool {
+    let n = name.to_lowercase();
+    n.starts_with("dsh-") || n.starts_with("dsh_") || n.contains("dsh-plugin")
+}
+
+/// Pure denoise decision for one topic candidate: it must not be denylisted and
+/// must either self-identify by name or carry a DSH plugin manifest (checked
+/// separately over the network).
+fn topic_entry_accepted(name: &str, owner: &str, has_manifest: bool) -> bool {
+    let full = format!("{owner}/{name}");
+    if topic_denied(&full) || is_core_package(&format!("github:{full}")) {
+        return false;
+    }
+    name_looks_like_plugin(name) || has_manifest
+}
+
+/// Fetches one search page with bounded exponential backoff.
+async fn topic_search_page(page: u32) -> Result<Vec<serde_json::Value>, String> {
+    let url = github_api_url(&format!(
+        "/search/repositories?q={TOPIC_QUERY}&sort=updated&order=desc&per_page={TOPIC_PER_PAGE}&page={page}"
+    ));
+    let mut delay_ms = 1000u64;
+    let mut last_err = String::new();
+    for attempt in 0..3 {
+        if attempt > 0 {
+            tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
+            delay_ms *= 2;
+        }
+        match fetch_json(&url, 8 * 1024 * 1024).await {
+            Ok(v) => {
+                return Ok(v
+                    .get("items")
+                    .and_then(|i| i.as_array())
+                    .cloned()
+                    .unwrap_or_default())
+            }
+            Err(e) => {
+                crate::log_warn!(
+                    "GitHub topic 搜索第 {page} 页失败(第 {} 次): {e}",
+                    attempt + 1
+                );
+                last_err = e;
+            }
+        }
+    }
+    Err(last_err)
+}
+
+/// Probes a repo's default branch (`HEAD` on raw.githubusercontent, so no extra
+/// API call) for a DSH plugin manifest: `package.json` declaring a `dsh.bundle`,
+/// or a `cordis.patch.yml`.
+async fn repo_has_dsh_manifest(full_name: &str) -> bool {
+    // Probes are best-effort and numerous, so use a much shorter timeout than
+    // the catalog fetches: a stalled CDN must not stall the whole refresh.
+    let Ok(client) = crate::proxy::apply(reqwest::Client::builder())
+        .timeout(std::time::Duration::from_secs(8))
+        .user_agent("dsh-launcher")
+        .build()
+    else {
+        return false;
+    };
+    let pkg_url = format!("https://cdn.jsdelivr.net/gh/{full_name}@HEAD/package.json");
+    if let Ok(resp) = client.get(&pkg_url).send().await {
+        if resp.status().is_success() {
+            if let Ok(bytes) = resp.bytes().await {
+                if let Ok(v) = serde_json::from_slice::<serde_json::Value>(&bytes) {
+                    let has_bundle = v.get("dsh.bundle").is_some()
+                        || v.get("dsh")
+                            .and_then(|d| d.get("bundle"))
+                            .is_some_and(|b| !b.is_null());
+                    if has_bundle {
+                        return true;
+                    }
+                }
+            }
+        }
+    }
+    let patch_url = format!("https://cdn.jsdelivr.net/gh/{full_name}@HEAD/cordis.patch.yml");
+    matches!(client.get(&patch_url).send().await, Ok(r) if r.status().is_success())
+}
+
+/// Live discovery over `topic:dsh-plugin`. Pages are budgeted with backoff; a
+/// later page failing keeps the pages already collected (resume semantics)
+/// instead of discarding the refresh, and the caller's cache wrapper handles
+/// TTL + last-good.
+async fn fetch_github_topic() -> Result<Vec<MarketPlugin>, String> {
+    let mut repos: Vec<serde_json::Value> = Vec::new();
+    for page in 1..=TOPIC_MAX_PAGES {
+        match topic_search_page(page).await {
+            Ok(items) => {
+                let full_page = items.len() == TOPIC_PER_PAGE as usize;
+                repos.extend(items);
+                if !full_page {
+                    break;
+                }
+            }
+            Err(e) => {
+                if repos.is_empty() {
+                    return Err(e);
+                }
+                crate::log_warn!(
+                    "topic 第 {page} 页失败，保留已获取的 {} 条候选: {e}",
+                    repos.len()
+                );
+                break;
+            }
+        }
+    }
+    if repos.is_empty() {
+        return Err("GitHub topic 搜索未返回结果".to_string());
+    }
+
+    let mut out = Vec::new();
+    let mut probes = 0usize;
+    let mut probed_out = 0usize;
+    for r in &repos {
+        let name = r.get("name").and_then(|v| v.as_str()).unwrap_or("");
+        let full_name = r.get("full_name").and_then(|v| v.as_str()).unwrap_or("");
+        if name.is_empty() || full_name.is_empty() {
+            continue;
+        }
+        let mut accepted = name_looks_like_plugin(name);
+        if !accepted && !topic_denied(full_name) {
+            if probes < TOPIC_MAX_PROBES {
+                probes += 1;
+                accepted = repo_has_dsh_manifest(full_name).await;
+            } else {
+                probed_out += 1;
+                continue;
+            }
+        }
+        let owner = full_name.split('/').next().unwrap_or("");
+        if !topic_entry_accepted(name, owner, accepted) {
+            continue;
+        }
+        let description = r
+            .get("description")
+            .and_then(|v| v.as_str())
+            .filter(|s| !s.is_empty());
+        let html = r.get("html_url").and_then(|v| v.as_str());
+        out.push(MarketPlugin {
+            id: format!("github:{full_name}"),
+            name: name.to_string(),
+            description: description.map(|d| MarketDescription::Plain(d.to_string())),
+            support_versions: None,
+            urls: html.map(|u| MarketPluginUrls {
+                homepage: None,
+                repository: Some(u.to_string()),
+                issues: None,
+            }),
+            relationship: None,
+            source: default_source_id(),
+            confidence: Confidence::default(),
+            sources: Vec::new(),
+            repo: Some(full_name.to_string()),
+            verification: None,
+            category: None,
+            stars: r.get("stargazers_count").and_then(|v| v.as_u64()),
+            downloads: None,
+        });
+    }
+    if probed_out > 0 {
+        crate::log_warn!("topic 通道探测预算用尽，{probed_out} 个候选未验证被跳过");
+    }
+    Ok(out)
 }
 
 // ---------------------------------------------------------------------------
@@ -336,6 +662,10 @@ pub struct InstallPluginInput {
     pub channel: PluginChannel,
     pub instance_id: String,
     pub profile: String,
+    /// `owner/repo` (or a GitHub URL) hint for alpha installs of npm-id plugins
+    /// that live in a repo; required for entries found via a live source.
+    #[serde(default)]
+    pub repo: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -390,115 +720,523 @@ pub(crate) async fn fetch_json_pub(url: &str, cap: usize) -> Result<serde_json::
 // Commands: catalog
 // ---------------------------------------------------------------------------
 
-/// Fetches the marketplace plugin catalog from every configured source and
-/// merges them. The primary dsh-plug.in catalog is listed first; entries from
-/// the community catalog (awesome-dsh-plugin.com) follow. A source that fails
-/// to fetch or parse is skipped (logged), never aborts the whole listing, and
-/// a duplicate plugin id keeps the higher-priority (earlier) source's entry.
-/// `query` filters by id/name/description (case-insensitive substring).
-#[tauri::command(rename_all = "snake_case")]
-pub async fn fetch_plugin_market(query: Option<String>) -> Result<Vec<MarketPlugin>, String> {
-    // Fetch both catalogs concurrently; each returns Err on failure.
-    let (primary_res, awesome_res) = tokio::join!(
-        fetch_json(MARKET_URL, 4 * 1024 * 1024),
-        fetch_json(AWESOME_URL, 8 * 1024 * 1024)
-    );
-
-    let mut plugins: Vec<MarketPlugin> = Vec::new();
-
-    // Primary catalog (dsh-plug.in) first.
-    match primary_res.and_then(|v| {
-        serde_json::from_value::<Vec<MarketPlugin>>(v)
-            .map_err(|e| format!("解析插件市场数据失败: {e}"))
-    }) {
-        Ok(mut list) => {
-            for p in &mut list {
-                p.source = PluginSource::DshPlugins;
-            }
-            plugins.extend(list);
-        }
-        Err(e) => crate::log_warn!("主插件源获取失败，忽略: {e}"),
+/// Stamps a whole listing with its source. Every adapter funnels through this,
+/// so a new adapter cannot forget to attribute its entries (which would make
+/// them masquerade as the official catalog).
+fn tag_all(src: &PluginSourceConfig, mut list: Vec<MarketPlugin>) -> Vec<MarketPlugin> {
+    for p in &mut list {
+        tag_entry(p, src);
     }
+    list
+}
 
-    // Community catalog (awesome-dsh-plugin.com) after; skip duplicate ids.
-    match awesome_res.and_then(|v| {
-        serde_json::from_value::<AwesomeCatalog>(v)
-            .map_err(|e| format!("解析 awesome-dsh-plugin 数据失败: {e}"))
-    }) {
-        Ok(cat) => {
+/// Adapter dispatch: fetches and parses one catalog over the network, tagging
+/// every entry with the source id + credibility. No caching here (see
+/// `fetch_source`).
+async fn fetch_catalog(src: &PluginSourceConfig) -> Result<Vec<MarketPlugin>, String> {
+    match src.kind {
+        SourceKind::Primary => {
+            let v = fetch_json(&src.url, 8 * 1024 * 1024).await?;
+            let list: Vec<MarketPlugin> =
+                serde_json::from_value(v).map_err(|e| format!("解析主源数据失败: {e}"))?;
+            Ok(tag_all(src, list))
+        }
+        SourceKind::Awesome => {
+            let v = fetch_json(&src.url, 8 * 1024 * 1024).await?;
+            let cat: AwesomeCatalog =
+                serde_json::from_value(v).map_err(|e| format!("解析 awesome 数据失败: {e}"))?;
+            let mut out = Vec::new();
             for aw in &cat.plugins {
-                let Some(mp) = awesome_to_market(aw) else {
-                    crate::log_warn!(
-                        "awesome 插件「{}」install 行无法解析，跳过: {}",
+                match awesome_to_market(aw) {
+                    Some(mp) => out.push(mp),
+                    None => crate::log_warn!(
+                        "awesome 条目「{}」install 行无法解析，跳过: {}",
                         aw.name,
                         aw.install
-                    );
-                    continue;
-                };
-                if plugins.iter().any(|p| p.id == mp.id) {
-                    crate::log_warn!("awesome 插件「{}」与主源 id 冲突，保留主源条目", mp.id);
-                    continue;
+                    ),
                 }
-                plugins.push(mp);
+            }
+            Ok(tag_all(src, out))
+        }
+        SourceKind::DshGet => {
+            let v = fetch_json(&src.url, 8 * 1024 * 1024).await?;
+            let cat: DshGetCatalog =
+                serde_json::from_value(v).map_err(|e| format!("解析 dshget 数据失败: {e}"))?;
+            let mut out = Vec::new();
+            for p in &cat.plugins {
+                if let Some(mp) = dshget_to_market(p) {
+                    out.push(mp);
+                }
+            }
+            Ok(tag_all(src, out))
+        }
+        SourceKind::GithubTopic => Ok(tag_all(src, fetch_github_topic().await?)),
+    }
+}
+
+// Per-source last-good disk cache, so an unreachable source degrades instead of
+// disappearing from the market. Live sources reuse a fresh cache to respect the
+// GitHub search rate limit.
+const TOPIC_CACHE_TTL_SECS: i64 = 24 * 60 * 60;
+
+#[derive(Serialize, Deserialize)]
+struct SourceCache {
+    saved_at: i64,
+    plugins: Vec<MarketPlugin>,
+}
+
+fn now_ts() -> i64 {
+    chrono::Utc::now().timestamp()
+}
+
+/// Cache file for one source. The id is sanitised for filesystem safety AND
+/// hashed: ids are user-supplied and distinct ids can sanitise to the same name
+/// (e.g. `a/b` and `a_b`), which would let sources serve each other's cache.
+fn cache_file(cache_dir: &std::path::Path, id: &str) -> std::path::PathBuf {
+    use sha2::{Digest, Sha256};
+    let digest = Sha256::digest(id.as_bytes());
+    let hash = digest
+        .iter()
+        .take(6)
+        .map(|b| format!("{b:02x}"))
+        .collect::<String>();
+    cache_dir.join(format!("{}-{hash}.json", sanitize_name(id)))
+}
+
+fn read_source_cache(cache_dir: &std::path::Path, id: &str) -> Option<SourceCache> {
+    let raw = std::fs::read_to_string(cache_file(cache_dir, id)).ok()?;
+    serde_json::from_str::<SourceCache>(&raw).ok()
+}
+
+fn write_source_cache(cache_dir: &std::path::Path, id: &str, plugins: &[MarketPlugin]) {
+    if std::fs::create_dir_all(cache_dir).is_err() {
+        return;
+    }
+    let payload = SourceCache {
+        saved_at: now_ts(),
+        plugins: plugins.to_vec(),
+    };
+    if let Ok(raw) = serde_json::to_string(&payload) {
+        let _ = std::fs::write(cache_file(cache_dir, id), raw);
+    }
+}
+
+/// Fetches one source, degrading to its last-good cache when the network fails.
+async fn fetch_source(
+    src: &PluginSourceConfig,
+    cache_dir: Option<&std::path::Path>,
+) -> Result<Vec<MarketPlugin>, String> {
+    if src.kind == SourceKind::GithubTopic {
+        if let Some(dir) = cache_dir {
+            if let Some(c) = read_source_cache(dir, &src.id) {
+                if now_ts() - c.saved_at < TOPIC_CACHE_TTL_SECS {
+                    return Ok(c.plugins);
+                }
             }
         }
-        Err(e) => crate::log_warn!("awesome-dsh-plugin 插件源获取失败，忽略: {e}"),
+    }
+    match fetch_catalog(src).await {
+        Ok(list) => {
+            if let Some(dir) = cache_dir {
+                write_source_cache(dir, &src.id, &list);
+            }
+            Ok(list)
+        }
+        Err(e) => {
+            if let Some(dir) = cache_dir {
+                if let Some(c) = read_source_cache(dir, &src.id) {
+                    crate::log_warn!(
+                        "插件源「{}」不可达，改用 last-good 缓存({} 条): {e}",
+                        src.id,
+                        c.plugins.len()
+                    );
+                    return Ok(c.plugins);
+                }
+            }
+            Err(e)
+        }
+    }
+}
+
+/// Whether `owner/repo` belongs to DeepSeek's own org.
+fn is_core_repo(repo: &str) -> bool {
+    repo.split('/')
+        .next()
+        .is_some_and(|owner| owner.eq_ignore_ascii_case("deepseek-ai"))
+}
+
+/// The grain red line (issue #46): never surface DeepSeek's own core packages
+/// as installable marketplace plugins, whatever source produced them. Matching
+/// is normalised (trimmed, `npm:` prefix stripped, case-insensitive) so a
+/// source cannot slip one past with cosmetic differences.
+fn is_core_package(id: &str) -> bool {
+    let id = id.trim();
+    let id = id.strip_prefix("npm:").unwrap_or(id);
+    if id.to_lowercase().starts_with("@deepseek-ai/") {
+        return true;
+    }
+    parse_github_id(id).is_some_and(|(repo, _)| is_core_repo(&repo))
+}
+
+/// Drops an entry if either its install id or its repo hint points at a core
+/// package: the hint is what alpha resolution/installs follow, so a benign id
+/// paired with a core repo must not get through.
+fn entry_is_core(p: &MarketPlugin) -> bool {
+    is_core_package(&p.id) || p.repo.as_deref().is_some_and(is_core_repo)
+}
+
+/// Drops core packages from one source's listing, logging each drop.
+fn drop_core_packages(src_id: &str, list: Vec<MarketPlugin>) -> Vec<MarketPlugin> {
+    list.into_iter()
+        .filter(|p| {
+            if entry_is_core(p) {
+                crate::log_warn!("插件源「{src_id}」返回核心包「{}」，已丢弃", p.id);
+                false
+            } else {
+                true
+            }
+        })
+        .collect()
+}
+
+fn max_opt(a: Option<u64>, b: Option<u64>) -> Option<u64> {
+    match (a, b) {
+        (Some(x), Some(y)) => Some(x.max(y)),
+        (x, None) => x,
+        (None, y) => y,
+    }
+}
+
+/// Merges catalogs in source-priority order. A duplicate id keeps the highest
+/// credibility tier's identity fields; stars/downloads take the max while
+/// attribution, category and the repo hint are unioned/filled in.
+fn merge_plugins(collected: Vec<(u32, Vec<MarketPlugin>)>) -> Vec<MarketPlugin> {
+    let mut ordered = collected;
+    ordered.sort_by_key(|(order, _)| *order);
+    let mut out: Vec<MarketPlugin> = Vec::new();
+    let mut index: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+    for (_, list) in ordered {
+        for mut mp in list {
+            if !mp.sources.contains(&mp.source) {
+                mp.sources.insert(0, mp.source.clone());
+            }
+            match index.get(&mp.id).copied() {
+                Some(i) => merge_into(&mut out[i], mp),
+                None => {
+                    index.insert(mp.id.clone(), out.len());
+                    out.push(mp);
+                }
+            }
+        }
+    }
+    out
+}
+
+fn merge_into(dst: &mut MarketPlugin, src: MarketPlugin) {
+    for s in std::iter::once(src.source.clone()).chain(src.sources.iter().cloned()) {
+        if !dst.sources.contains(&s) {
+            dst.sources.push(s);
+        }
+    }
+    dst.stars = max_opt(dst.stars, src.stars);
+    dst.downloads = max_opt(dst.downloads, src.downloads);
+    if dst.category.is_none() {
+        dst.category = src.category;
+    }
+    if src.confidence > dst.confidence {
+        // The more trustworthy source wins wholesale — including its repo hint,
+        // which alpha resolution and alpha installs both follow. Keeping a
+        // lower-trust source's `repo` would make the installed/queried repo
+        // disagree with the entry the user selected.
+        dst.confidence = src.confidence;
+        dst.source = src.source;
+        dst.name = src.name;
+        dst.description = src.description;
+        dst.urls = src.urls;
+        dst.relationship = src.relationship;
+        dst.support_versions = src.support_versions;
+        dst.verification = src.verification;
+        dst.repo = src.repo;
+    } else if dst.repo.is_none() {
+        // Equal or lower tier: only fill a gap we cannot otherwise resolve.
+        dst.repo = src.repo;
+    }
+}
+
+fn matches_query(p: &MarketPlugin, q: &str) -> bool {
+    if p.id.to_lowercase().contains(q) || p.name.to_lowercase().contains(q) {
+        return true;
+    }
+    match &p.description {
+        Some(MarketDescription::Plain(s)) => s.to_lowercase().contains(q),
+        Some(MarketDescription::Localized(list)) => {
+            list.iter().any(|d| d.content.to_lowercase().contains(q))
+        }
+        None => false,
+    }
+}
+
+/// Overall budget for one market refresh. Sources are fetched concurrently, so
+/// this bounds the whole listing: a source that misses the deadline is skipped
+/// (it keeps whatever it cached on a previous run, and is logged), rather than
+/// holding the market hostage.
+const MARKET_FETCH_BUDGET: std::time::Duration = std::time::Duration::from_secs(45);
+
+/// Core market listing: fetches every enabled source concurrently, drops core
+/// packages, merges duplicates, then filters by `query`. Sources that fail or
+/// exceed the deadline are skipped in favour of their last-good cache, so one
+/// bad source never prevents the rest of the market from rendering.
+async fn fetch_market_impl(
+    sources: Vec<PluginSourceConfig>,
+    cache_dir: Option<std::path::PathBuf>,
+    query: Option<String>,
+) -> Vec<MarketPlugin> {
+    let mut all_enabled: Vec<PluginSourceConfig> =
+        sources.into_iter().filter(|s| s.enabled).collect();
+    all_enabled.sort_by_key(|s| s.order);
+
+    // Tasks report `(order, id, result)`. An aborted task's output is discarded
+    // by JoinSet, so which sources finished is tracked here rather than read
+    // back out of the set.
+    let mut set: tokio::task::JoinSet<(u32, String, Result<Vec<MarketPlugin>, String>)> =
+        tokio::task::JoinSet::new();
+    for src in all_enabled.iter().cloned() {
+        let dir = cache_dir.clone();
+        set.spawn(async move {
+            let res = fetch_source(&src, dir.as_deref()).await;
+            (src.order, src.id, res)
+        });
     }
 
+    let mut collected: Vec<(u32, Vec<MarketPlugin>)> = Vec::new();
+    let mut finished: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let deadline = tokio::time::Instant::now() + MARKET_FETCH_BUDGET;
+    loop {
+        let joined = match tokio::time::timeout_at(deadline, set.join_next()).await {
+            Ok(Some(j)) => j,
+            // No tasks left.
+            Ok(None) => break,
+            // Budget exhausted: the rest are aborted below.
+            Err(_) => break,
+        };
+        match joined {
+            Ok((order, id, Ok(list))) => {
+                finished.insert(id.clone());
+                collected.push((order, drop_core_packages(&id, list)));
+            }
+            Ok((_, id, Err(e))) => {
+                finished.insert(id.clone());
+                crate::log_warn!("插件源「{id}」获取失败，忽略: {e}");
+            }
+            Err(e) => crate::log_warn!("插件源任务异常: {e}"),
+        }
+    }
+    // Sources that never reported (over budget or panicked): fall back to their
+    // last-good cache so they still contribute last-known data.
+    set.abort_all();
+    for src in all_enabled.iter() {
+        if finished.contains(&src.id) {
+            continue;
+        }
+        if let Some(dir) = cache_dir.as_deref() {
+            if let Some(c) = read_source_cache(dir, &src.id) {
+                crate::log_warn!(
+                    "插件源「{}」超出 {}s 预算，改用 last-good 缓存({} 条)",
+                    src.id,
+                    MARKET_FETCH_BUDGET.as_secs(),
+                    c.plugins.len()
+                );
+                collected.push((src.order, c.plugins));
+                continue;
+            }
+        }
+        crate::log_warn!(
+            "插件源「{}」超出 {}s 预算且无缓存，本次跳过",
+            src.id,
+            MARKET_FETCH_BUDGET.as_secs()
+        );
+    }
+
+    let plugins = merge_plugins(collected);
     let q = query
         .as_deref()
         .map(|s| s.trim().to_lowercase())
         .filter(|s| !s.is_empty());
-    let Some(q) = q else {
-        return Ok(plugins);
-    };
+    match q {
+        Some(q) => plugins
+            .into_iter()
+            .filter(|p| matches_query(p, &q))
+            .collect(),
+        None => plugins,
+    }
+}
 
-    let filtered = plugins
-        .into_iter()
-        .filter(|p| {
-            if p.id.to_lowercase().contains(&q) || p.name.to_lowercase().contains(&q) {
-                return true;
-            }
-            match &p.description {
-                Some(MarketDescription::Plain(s)) => s.to_lowercase().contains(&q),
-                Some(MarketDescription::Localized(list)) => {
-                    list.iter().any(|d| d.content.to_lowercase().contains(&q))
+/// The source list the launcher actually uses: the `DSHLAUNCHER_PLUGIN_SOURCES`
+/// override when present and parseable, else the persisted settings (with the
+/// built-in defaults for configs written before issue #46).
+fn effective_plugin_sources(state: &AppState) -> Vec<PluginSourceConfig> {
+    if let Ok(raw) = std::env::var(PLUGIN_SOURCES_ENV) {
+        let parsed = parse_sources_env(&raw);
+        if !parsed.is_empty() {
+            return parsed;
+        }
+        crate::log_warn!("{PLUGIN_SOURCES_ENV} 未解析出有效源，回退到设置");
+    }
+    let mut list = state.config.lock().unwrap().settings.plugin_sources.clone();
+    if list.is_empty() {
+        list = default_plugin_sources();
+    }
+    list.sort_by_key(|s| s.order);
+    list
+}
+
+fn parse_source_kind(s: &str) -> Option<SourceKind> {
+    match s {
+        "primary" => Some(SourceKind::Primary),
+        "awesome" => Some(SourceKind::Awesome),
+        "dsh-get" | "dshget" => Some(SourceKind::DshGet),
+        "github-topic" => Some(SourceKind::GithubTopic),
+        _ => None,
+    }
+}
+
+fn infer_source_kind(url: &str) -> SourceKind {
+    if url.contains("dsh-plug.in") {
+        SourceKind::Primary
+    } else if url.contains("awesome-dsh-plugin") {
+        SourceKind::Awesome
+    } else {
+        SourceKind::DshGet
+    }
+}
+
+fn confidence_for(kind: SourceKind) -> Confidence {
+    match kind {
+        SourceKind::Primary => Confidence::Official,
+        SourceKind::Awesome => Confidence::Curated,
+        SourceKind::DshGet => Confidence::Aggregated,
+        SourceKind::GithubTopic => Confidence::Unverified,
+    }
+}
+
+fn derive_source_id(url: &str) -> String {
+    let host = url
+        .split("://")
+        .nth(1)
+        .unwrap_or(url)
+        .split('/')
+        .next()
+        .unwrap_or("source");
+    format!("custom-{}", sanitize_name(host).to_lowercase())
+}
+
+/// Parses `DSHLAUNCHER_PLUGIN_SOURCES`: comma-separated entries, each either a
+/// bare `url` or `id|kind|url`. Invalid entries are logged and skipped.
+fn parse_sources_env(raw: &str) -> Vec<PluginSourceConfig> {
+    let mut out = Vec::new();
+    for (i, item) in raw
+        .split(',')
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .enumerate()
+    {
+        let parts: Vec<&str> = item.split('|').map(str::trim).collect();
+        let (id, kind, url) = match parts.as_slice() {
+            [url] => (None, infer_source_kind(url), *url),
+            [id, kind, url] => match parse_source_kind(kind) {
+                Some(k) => (Some(*id), k, *url),
+                None => {
+                    crate::log_warn!("忽略未知插件源 kind「{kind}」: {item}");
+                    continue;
                 }
-                None => false,
+            },
+            _ => {
+                crate::log_warn!("忽略格式非法的插件源条目(需 url 或 id|kind|url): {item}");
+                continue;
             }
-        })
-        .collect();
-    Ok(filtered)
+        };
+        if !(url.starts_with("https://") || url.starts_with("http://")) {
+            crate::log_warn!("忽略非 http(s) 的插件源: {item}");
+            continue;
+        }
+        let id = match id.filter(|s| !s.is_empty()) {
+            Some(id) => id.to_string(),
+            None => derive_source_id(url),
+        };
+        out.push(PluginSourceConfig {
+            id,
+            url: url.to_string(),
+            kind,
+            enabled: true,
+            confidence: confidence_for(kind),
+            order: i as u32,
+        });
+    }
+    out
+}
+
+/// Lists the configured plugin catalog sources (issue #46); the frontend uses
+/// this for the market's source filter and the settings editor.
+#[tauri::command]
+pub fn list_plugin_sources(state: State<'_, AppState>) -> Result<Vec<PluginSourceConfig>, String> {
+    Ok(effective_plugin_sources(state.inner()))
+}
+
+/// Fetches the marketplace plugin catalog from every enabled source and merges
+/// them. A source that fails to fetch or parse degrades to its last-good cache
+/// (logged) and never aborts the whole listing. `query` filters by
+/// id/name/description (case-insensitive substring).
+#[tauri::command(rename_all = "snake_case")]
+pub async fn fetch_plugin_market(
+    state: State<'_, AppState>,
+    query: Option<String>,
+) -> Result<Vec<MarketPlugin>, String> {
+    let cache_dir = state.data_dir.join("plugin-cache");
+    let sources = effective_plugin_sources(state.inner());
+    Ok(fetch_market_impl(sources, Some(cache_dir), query).await)
 }
 
 // ---------------------------------------------------------------------------
 // Commands: versions per channel
 // ---------------------------------------------------------------------------
 
-/// Resolve the GitHub "owner/repo" for a plugin id. npm ids look up the
-/// package's repository URL when urls.repository is absent; github: ids are
-/// parsed directly.
-fn github_repo_of(plugin: &MarketPlugin) -> Option<String> {
-    if let Some(repo) = plugin
-        .urls
-        .as_ref()
-        .and_then(|u| u.repository.as_ref().or(u.homepage.as_ref()))
+/// Normalises a caller-supplied repo reference to `owner/repo`: accepts
+/// `owner/repo`, `https://github.com/owner/repo[.git]`, and
+/// `git@github.com:owner/repo.git`. Returns None for anything else.
+fn normalize_repo_ref(raw: &str) -> Option<String> {
+    let raw = raw.trim();
+    if raw.is_empty() {
+        return None;
+    }
+    let body = if let Some(rest) = raw
+        .strip_prefix("https://github.com/")
+        .or_else(|| raw.strip_prefix("http://github.com/"))
+        .or_else(|| raw.strip_prefix("git@github.com:"))
     {
-        if let Some(pos) = repo.find("github.com/") {
-            let tail = &repo[pos + "github.com/".len()..];
-            let tail = tail.trim_end_matches(".git").trim_end_matches('/');
-            let mut parts = tail.split('/');
-            if let (Some(owner), Some(name)) = (parts.next(), parts.next()) {
-                if !owner.is_empty() && !name.is_empty() {
-                    return Some(format!("{owner}/{name}"));
-                }
-            }
+        rest
+    } else if raw.contains("://") || raw.contains('@') || raw.contains(':') {
+        return None;
+    } else {
+        raw
+    };
+    let body = body.trim_end_matches(".git").trim_end_matches('/');
+    let mut parts = body.split('/');
+    match (parts.next(), parts.next(), parts.next()) {
+        (Some(o), Some(r), None) if !o.is_empty() && !r.is_empty() => Some(format!("{o}/{r}")),
+        _ => None,
+    }
+}
+
+/// Resolves the GitHub repo for a plugin: the caller's hint (market entry's
+/// `repo` field or repository URL) wins, then a `github:` plugin id. Returns
+/// None when neither yields a repo — nothing else is a reliable source.
+fn resolve_repo(plugin_id: &str, repo_hint: Option<&str>) -> Option<String> {
+    if let Some(hint) = repo_hint {
+        if let Some(repo) = normalize_repo_ref(hint) {
+            return Some(repo);
         }
     }
-    if let Some((repo, _subpath)) = parse_github_id(&plugin.id) {
-        return Some(repo);
-    }
-    None
+    parse_github_id(plugin_id).map(|(repo, _)| repo)
 }
 
 /// Fetches versions for a plugin across the requested channel.
@@ -506,11 +1244,16 @@ fn github_repo_of(plugin: &MarketPlugin) -> Option<String> {
 ///   back to the version list ordered by publish time (all at once).
 /// - alpha pages through the GitHub commit history (30 per page); `page` is
 ///   1-based and defaults to 1. `has_more` tells the UI to lazy-load more.
+///
+/// `repo` is the market entry's `owner/repo` (or repository URL) hint. Alpha
+/// needs it because live/unverified entries are not in any static catalog, so
+/// the repo cannot be looked up server-side.
 #[tauri::command(rename_all = "snake_case")]
 pub async fn fetch_plugin_versions(
     plugin_id: String,
     channel: PluginChannel,
     page: Option<u32>,
+    repo: Option<String>,
 ) -> Result<PluginVersionPage, String> {
     // URL tarballs have no registry/channels: a single pseudo-version on
     // stable; other channels are empty.
@@ -544,7 +1287,7 @@ pub async fn fetch_plugin_versions(
                 has_more: false,
             })
         }
-        PluginChannel::Alpha => alpha_commit(&plugin_id, page.unwrap_or(1)).await,
+        PluginChannel::Alpha => alpha_commit(&plugin_id, page.unwrap_or(1), repo.as_deref()).await,
     }
 }
 
@@ -706,15 +1449,21 @@ async fn npm_versions(
 /// Fetches one page of the commit history (alpha channel). GitHub commits
 /// API returns up to `per_page` items; `has_more` is true when a full page
 /// came back. `is_default` marks the first commit of page 1.
-async fn alpha_commit(plugin_id: &str, page: u32) -> Result<PluginVersionPage, String> {
-    // Alpha needs the GitHub repo; it is derived from the market entry.
-    let catalog = fetch_plugin_market(None).await?;
-    let plugin = catalog
-        .iter()
-        .find(|p| p.id == plugin_id)
-        .ok_or_else(|| format!("插件 {plugin_id} 不在市场中"))?;
-    let repo = github_repo_of(plugin)
-        .ok_or_else(|| format!("插件 {plugin_id} 没有可用的 GitHub 仓库地址"))?;
+async fn alpha_commit(
+    plugin_id: &str,
+    page: u32,
+    repo_hint: Option<&str>,
+) -> Result<PluginVersionPage, String> {
+    // Alpha needs the GitHub repo. For a `github:` id the id itself is
+    // authoritative (it also carries the monorepo subpath that must match the
+    // commits queried); the frontend's repo hint is only used for ids that
+    // cannot name a repo on their own, e.g. live-discovered npm packages.
+    let repo = if let Some((repo, _)) = parse_github_id(plugin_id) {
+        repo
+    } else {
+        resolve_repo(plugin_id, repo_hint)
+            .ok_or_else(|| format!("插件 {plugin_id} 没有可用的 GitHub 仓库地址"))?
+    };
 
     // Monorepo plugins (`github:owner/repo#path:<subdir>`): restrict the
     // commit list to commits touching the plugin's own directory.
@@ -1671,6 +2420,7 @@ pub async fn start_install_plugin_file_task(
         channel: PluginChannel::Stable,
         instance_id,
         profile,
+        repo: None,
     };
     start_install_plugin_task(app, state, input).await
 }
@@ -1738,12 +2488,9 @@ async fn do_install_plugin(
             Some((repo, subpath)) => github_install_spec(&repo, &input.version, subpath.as_deref()),
             None => match input.channel {
                 PluginChannel::Alpha => {
-                    let catalog = fetch_plugin_market(None).await?;
-                    let plugin = catalog
-                        .iter()
-                        .find(|p| p.id == input.plugin_id)
-                        .ok_or_else(|| format!("插件 {} 不在市场中", input.plugin_id))?;
-                    let repo = github_repo_of(plugin)
+                    // Live/unverified entries have no catalog entry to look up;
+                    // the frontend passes the repo hint with the install input.
+                    let repo = resolve_repo(&input.plugin_id, input.repo.as_deref())
                         .ok_or_else(|| format!("插件 {} 没有 GitHub 仓库", input.plugin_id))?;
                     format!("github:{repo}#{}", input.version)
                 }
@@ -2746,7 +3493,10 @@ mod tests {
         let mp = awesome_to_market(&aw).expect("install resolves");
         assert_eq!(mp.id, "@furongjun1999/dsh-memory");
         assert_eq!(mp.name, "dsh-memory");
-        assert_eq!(mp.source, PluginSource::AwesomeDshPlugin);
+        // Parsers are source-agnostic; the adapter tags source/confidence.
+        assert_eq!(mp.source, "dsh-plugins");
+        assert_eq!(mp.confidence, Confidence::Unverified);
+        assert_eq!(mp.repo.as_deref(), Some("FuRongJun-1999/dsh-memory"));
         assert_eq!(mp.category.as_deref(), Some("agi"));
         assert_eq!(mp.stars, Some(35));
         assert_eq!(mp.downloads, Some(1856));
@@ -2778,6 +3528,392 @@ mod tests {
         assert_eq!(mp.id, "github:0imzero/dsh-workspace-menu");
         assert!(mp.description.is_none(), "no description block");
         assert_eq!(mp.stars, None);
+    }
+
+    // -----------------------------------------------------------------------
+    // Issue #46: source registry, dedup, credibility, dshget adapter
+    // -----------------------------------------------------------------------
+
+    fn src(id: &str, kind: SourceKind, confidence: Confidence, order: u32) -> PluginSourceConfig {
+        PluginSourceConfig {
+            id: id.to_string(),
+            url: format!("https://example.test/{id}.json"),
+            kind,
+            enabled: true,
+            confidence,
+            order,
+        }
+    }
+
+    fn entry(id: &str, name: &str) -> MarketPlugin {
+        MarketPlugin {
+            id: id.to_string(),
+            name: name.to_string(),
+            description: None,
+            support_versions: None,
+            urls: None,
+            relationship: None,
+            source: default_source_id(),
+            confidence: Confidence::default(),
+            sources: Vec::new(),
+            repo: None,
+            verification: None,
+            category: None,
+            stars: None,
+            downloads: None,
+        }
+    }
+
+    #[test]
+    fn core_packages_are_never_market_entries() {
+        assert!(is_core_package("@deepseek-ai/dsh"));
+        assert!(is_core_package("github:deepseek-ai/dsh"));
+        assert!(is_core_package("github:DeepSeek-AI/dsh#path:packages/x"));
+        assert!(!is_core_package("@dsh-plugin/dsh-loader"));
+        assert!(!is_core_package("github:someone/deepseek-ai-tools"));
+        assert!(!is_core_package("dsh-approve-for-me"));
+    }
+
+    #[test]
+    fn core_check_resists_cosmetic_variants() {
+        // Leading/trailing whitespace and the `npm:` alias form.
+        assert!(is_core_package("  @deepseek-ai/dsh  "));
+        assert!(is_core_package("npm:@deepseek-ai/dsh"));
+        // A benign-looking install id with a core repo hint is still core: the
+        // hint is what alpha resolution and installation follow.
+        let mut p = entry("some-innocent-name", "innocent");
+        p.repo = Some("deepseek-ai/dsh".to_string());
+        assert!(entry_is_core(&p));
+        assert_eq!(drop_core_packages("test", vec![p]).len(), 0);
+        // A non-core repo hint passes.
+        let mut ok = entry("dsh-tool", "tool");
+        ok.repo = Some("someone/dsh-tool".to_string());
+        assert!(!entry_is_core(&ok));
+    }
+
+    #[test]
+    fn cache_files_do_not_collide_for_distinct_ids() {
+        let dir = std::path::Path::new("plugin-cache");
+        assert_ne!(
+            cache_file(dir, "a/b"),
+            cache_file(dir, "a_b"),
+            "distinct source ids must not share a cache file"
+        );
+        assert_ne!(cache_file(dir, "x"), cache_file(dir, "y"));
+        // Path traversal is neutralised: the result never escapes the dir.
+        let evil = cache_file(dir, "../../../etc/passwd");
+        assert_eq!(evil.parent(), Some(dir));
+    }
+
+    #[test]
+    fn tag_entry_stamps_source_and_confidence() {
+        let mut mp = entry("github:o/r", "r");
+        tag_entry(
+            &mut mp,
+            &src("dshget", SourceKind::DshGet, Confidence::Aggregated, 2),
+        );
+        assert_eq!(mp.source, "dshget");
+        assert_eq!(mp.confidence, Confidence::Aggregated);
+        assert_eq!(mp.sources, vec!["dshget"]);
+    }
+
+    #[test]
+    fn merge_keeps_highest_confidence_and_unions_attribution() {
+        let mut low = entry("github:o/r", "from-awesome");
+        low.source = "awesome-dsh-plugin".to_string();
+        low.sources = vec!["awesome-dsh-plugin".to_string()];
+        low.confidence = Confidence::Curated;
+        low.stars = Some(10);
+        low.category = Some("ui".to_string());
+
+        let mut high = entry("github:o/r", "from-official");
+        high.source = "dsh-plugins".to_string();
+        high.sources = vec!["dsh-plugins".to_string()];
+        high.confidence = Confidence::Official;
+        high.stars = Some(3);
+        high.repo = Some("o/r".to_string());
+
+        // Higher-order source first (same order the registry uses: official
+        // listed before the community catalog): the later, higher tier must
+        // still win, including its repo hint.
+        let merged = merge_plugins(vec![(1, vec![low.clone()]), (0, vec![high.clone()])]);
+        assert_eq!(merged.len(), 1);
+        let m = &merged[0];
+        assert_eq!(m.source, "dsh-plugins");
+        assert_eq!(m.confidence, Confidence::Official);
+        assert_eq!(m.name, "from-official");
+        // stars take the max across sources, attribution is unioned.
+        assert_eq!(m.stars, Some(10));
+        assert_eq!(m.category.as_deref(), Some("ui"));
+        assert_eq!(m.repo.as_deref(), Some("o/r"));
+        assert!(m.sources.contains(&"dsh-plugins".to_string()));
+        assert!(m.sources.contains(&"awesome-dsh-plugin".to_string()));
+
+        // Budget 0 (lower order) first, then the better source: the winner's
+        // repo hint must replace the low-trust one, not be shadowed by it.
+        let mut low_other = low.clone();
+        low_other.repo = Some("attacker/mirror".to_string());
+        let merged2 = merge_plugins(vec![(0, vec![low_other]), (2, vec![high.clone()])]);
+        assert_eq!(merged2.len(), 1);
+        assert_eq!(merged2[0].confidence, Confidence::Official);
+        assert_eq!(
+            merged2[0].repo.as_deref(),
+            Some("o/r"),
+            "the more trustworthy source's repo hint must win"
+        );
+
+        // Equal tiers (different ids): the first-processed entry keeps identity,
+        // and a missing repo is filled from the later one.
+        let mut first = entry("github:a/x", "first");
+        first.source = "s1".to_string();
+        first.confidence = Confidence::Aggregated;
+        let mut second = entry("github:a/x", "second");
+        second.source = "s2".to_string();
+        second.confidence = Confidence::Aggregated;
+        second.repo = Some("a/x".to_string());
+        let merged3 = merge_plugins(vec![(0, vec![first]), (1, vec![second])]);
+        assert_eq!(merged3[0].name, "first");
+        assert_eq!(merged3[0].source, "s1");
+        assert_eq!(merged3[0].repo.as_deref(), Some("a/x"));
+    }
+
+    #[test]
+    fn dshget_entries_are_parsed_and_uninstallable_skipped() {
+        let raw = r#"{
+            "plugins": [
+                {
+                    "name": "dsh-thing",
+                    "url": "https://github.com/omdsh-dev/dsh-thing",
+                    "category": "ui",
+                    "description": { "en": "A thing.", "zh": "一个东西。" },
+                    "stars": 12,
+                    "install": "dsh plugin --profile web add github:omdsh-dev/dsh-thing",
+                    "sources": ["omdsh-hub", "github-topic"],
+                    "verification": null,
+                    "installable": true
+                },
+                {
+                    "name": "broken",
+                    "install": "dsh plugin --profile web add github:omdsh-dev/broken",
+                    "installable": false
+                },
+                {
+                    "name": "no-add-line",
+                    "install": "not a plugin command",
+                    "installable": true
+                }
+            ]
+        }"#;
+        let cat: DshGetCatalog = serde_json::from_str(raw).unwrap();
+        let parsed: Vec<MarketPlugin> = cat.plugins.iter().filter_map(dshget_to_market).collect();
+        assert_eq!(
+            parsed.len(),
+            1,
+            "uninstallable + unparsable entries dropped"
+        );
+        let mp = &parsed[0];
+        assert_eq!(mp.id, "github:omdsh-dev/dsh-thing");
+        assert_eq!(mp.repo.as_deref(), Some("omdsh-dev/dsh-thing"));
+        assert_eq!(mp.category.as_deref(), Some("ui"));
+        assert_eq!(mp.stars, Some(12));
+        assert_eq!(mp.sources, vec!["omdsh-hub", "github-topic"]);
+        match &mp.description {
+            Some(MarketDescription::Localized(list)) => assert_eq!(list.len(), 2),
+            other => panic!("expected localized description, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn normalize_repo_ref_accepts_common_forms() {
+        assert_eq!(normalize_repo_ref("o/r").as_deref(), Some("o/r"));
+        assert_eq!(
+            normalize_repo_ref("https://github.com/o/r.git").as_deref(),
+            Some("o/r")
+        );
+        assert_eq!(
+            normalize_repo_ref("git@github.com:o/r.git").as_deref(),
+            Some("o/r")
+        );
+        assert_eq!(normalize_repo_ref("https://gitlab.com/o/r"), None);
+        assert_eq!(normalize_repo_ref("github:o/r"), None);
+        assert_eq!(normalize_repo_ref(""), None);
+    }
+
+    #[test]
+    fn resolve_repo_prefers_hint_then_github_id() {
+        assert_eq!(
+            resolve_repo("some-npm-pkg", Some("https://github.com/o/r")).as_deref(),
+            Some("o/r")
+        );
+        assert_eq!(
+            resolve_repo("github:o/r#path:sub", None).as_deref(),
+            Some("o/r")
+        );
+        assert_eq!(resolve_repo("some-npm-pkg", None), None);
+    }
+
+    #[test]
+    fn parse_sources_env_parses_forms_and_rejects_invalid() {
+        let parsed = parse_sources_env(
+            "https://mirror.test/catalog.json, my|awesome|https://a.test/p.json, bad|nope|https://b.test/x.json, ftp://c.test/x.json",
+        );
+        assert_eq!(parsed.len(), 2, "invalid kind and non-http are dropped");
+        assert_eq!(parsed[0].kind, SourceKind::DshGet);
+        assert_eq!(parsed[0].confidence, Confidence::Aggregated);
+        assert!(parsed[0].id.starts_with("custom-"));
+        assert_eq!(parsed[1].id, "my");
+        assert_eq!(parsed[1].kind, SourceKind::Awesome);
+        assert_eq!(parsed[1].confidence, Confidence::Curated);
+        assert_eq!(parsed[1].order, 1);
+    }
+
+    #[test]
+    fn topic_denoise_accepts_plugins_and_rejects_core_and_noise() {
+        // Self-identifying by name.
+        assert!(topic_entry_accepted("dsh-memory", "someone", false));
+        assert!(topic_entry_accepted("dsh_thing", "someone", false));
+        assert!(topic_entry_accepted("my-dsh-plugin", "someone", false));
+        // Non-obvious name but a real DSH manifest.
+        assert!(topic_entry_accepted("harness-extras", "someone", true));
+        // Name heuristic AND manifest both absent -> dropped.
+        assert!(!topic_entry_accepted("random-large-repo", "someone", false));
+        // Core repos are never accepted, manifest or not.
+        assert!(!topic_entry_accepted("dsh", "deepseek-ai", true));
+        assert!(!topic_entry_accepted("DeepSeek-V3", "deepseek-ai", true));
+        // Known catalogs/aggregators are denylisted.
+        assert!(!topic_entry_accepted("dshget-data", "bobby-sheng", true));
+        assert!(!topic_entry_accepted("dsh-launcher", "dsh-plugins", true));
+    }
+
+    #[test]
+    fn topic_denied_matches_owner_and_full_name_case_insensitively() {
+        assert!(topic_denied("DeepSeek-AI/dsh"));
+        assert!(topic_denied("deepseek-ai/anything"));
+        assert!(topic_denied("omdsh-dev/dsh-hub-workshop"));
+        assert!(!topic_denied("someone/dsh-memory"));
+        assert!(!topic_denied("deepseek-ai-fan/dsh-tool"));
+    }
+
+    #[test]
+    fn core_packages_are_dropped_from_a_source_listing() {
+        let list = vec![
+            entry("@deepseek-ai/dsh", "core-npm"),
+            entry("github:deepseek-ai/dsh", "core-git"),
+            entry("github:someone/dsh-tool", "ok"),
+        ];
+        let kept = drop_core_packages("test", list);
+        assert_eq!(kept.len(), 1);
+        assert_eq!(kept[0].id, "github:someone/dsh-tool");
+    }
+
+    #[tokio::test]
+    async fn unreachable_source_falls_back_to_last_good_cache() {
+        let dir = std::env::temp_dir().join(format!("dsh-plugins-cache-{}", uuid::Uuid::new_v4()));
+        let mut s = src("dshget", SourceKind::DshGet, Confidence::Aggregated, 2);
+        // Port 1 refuses connections immediately, so this fails fast offline.
+        s.url = "http://127.0.0.1:1/catalog.json".to_string();
+        let cached = vec![entry("github:o/r", "from-cache")];
+        write_source_cache(&dir, &s.id, &cached);
+
+        let got = fetch_source(&s, Some(&dir))
+            .await
+            .expect("an unreachable source must degrade to its last-good cache");
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[0].name, "from-cache");
+
+        // With no cache, the failure is surfaced (the caller logs and skips it).
+        let empty_dir = dir.join("empty");
+        assert!(fetch_source(&s, Some(&empty_dir)).await.is_err());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn live_topic_cache_is_served_when_fresh() {
+        let dir = std::env::temp_dir().join(format!("dsh-plugins-cache-{}", uuid::Uuid::new_v4()));
+        let s = src(
+            "github-topic",
+            SourceKind::GithubTopic,
+            Confidence::Unverified,
+            3,
+        );
+        let cached = vec![entry("github:o/r", "r")];
+        write_source_cache(&dir, &s.id, &cached);
+        assert!(read_source_cache(&dir, &s.id).is_some());
+        // A fresh cache must round-trip the entries verbatim.
+        let read = read_source_cache(&dir, &s.id).unwrap();
+        assert_eq!(read.plugins.len(), 1);
+        assert!(now_ts() - read.saved_at < TOPIC_CACHE_TTL_SECS);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn stale_topic_cache_is_refetched_instead_of_served() {
+        let dir = std::env::temp_dir().join(format!("dsh-plugins-cache-{}", uuid::Uuid::new_v4()));
+        let s = src(
+            "github-topic",
+            SourceKind::GithubTopic,
+            Confidence::Unverified,
+            3,
+        );
+        // Write a cache whose timestamp is past the TTL.
+        std::fs::create_dir_all(&dir).unwrap();
+        let stale = SourceCache {
+            saved_at: now_ts() - TOPIC_CACHE_TTL_SECS - 60,
+            plugins: vec![entry("github:stale/x", "stale")],
+        };
+        std::fs::write(
+            cache_file(&dir, &s.id),
+            serde_json::to_string(&stale).unwrap(),
+        )
+        .unwrap();
+
+        // The TTL only short-circuits the network call while the cache is fresh
+        // (`now - saved_at < TTL`), so a stale entry necessarily reaches
+        // `fetch_catalog`: either the refresh succeeds and rewrites the file, or
+        // it fails and the stale payload returns as last-good. Assert exactly
+        // that, in both directions, without depending on which one happens here
+        // — this test previously asserted the offline outcome unconditionally,
+        // which passed on a host with no GitHub route and failed on CI runners.
+        // The "degrade to last-good" half is also covered host-independently by
+        // `unreachable_source_falls_back_to_last_good_cache` (connection
+        // refused on port 1).
+        let before = read_source_cache(&dir, &s.id).expect("stale cache written above");
+        let fetched_live = match fetch_source(&s, Some(&dir)).await {
+            Ok(got) => {
+                // The only two ways to get here are the successful refresh and
+                // the last-good fallback; the fake id tells them apart.
+                let served_stale = got.iter().any(|p| p.id == "github:stale/x");
+                assert!(
+                    served_stale || !got.is_empty(),
+                    "a refresh must either succeed or fall back to the stale cache"
+                );
+                !served_stale
+            }
+            Err(_) => false,
+        };
+        // Reading the cache back is pure I/O, so it pins the contract down
+        // without touching the network.
+        let after = read_source_cache(&dir, &s.id).expect("cache must remain readable");
+        if fetched_live {
+            assert!(
+                now_ts() - after.saved_at < TOPIC_CACHE_TTL_SECS,
+                "a successful refetch must refresh the cache timestamp"
+            );
+            assert!(
+                !after.plugins.iter().any(|p| p.id == "github:stale/x"),
+                "a successful refetch must replace the stale entries"
+            );
+        } else {
+            assert_eq!(
+                after.saved_at, before.saved_at,
+                "a failed refresh must not rewrite the cache file"
+            );
+            assert!(
+                after.plugins.iter().any(|p| p.id == "github:stale/x"),
+                "a failed refresh must keep the stale payload as last-good"
+            );
+        }
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -3113,9 +4249,64 @@ mod tests {
     // `cargo test plugins::tests::live_ -- --ignored`).
     #[tokio::test]
     #[ignore]
-    async fn live_fetch_market_and_versions() {
-        let plugins = fetch_plugin_market(None).await.unwrap();
+    async fn live_dshget_catalog_parses_and_filters_core() {
+        let dshget = default_plugin_sources()
+            .into_iter()
+            .find(|s| s.id == "dshget")
+            .expect("dshget source is a default");
+        let list = fetch_catalog(&dshget)
+            .await
+            .expect("dshget catalog must be fetchable");
+        assert!(list.len() > 1000, "catalog is large, got {}", list.len());
+        assert!(
+            list.iter().all(|p| p.source == "dshget"),
+            "every entry must be stamped with the source id"
+        );
+        assert!(
+            list.iter().all(|p| p.confidence == Confidence::Aggregated),
+            "every entry must carry the source's confidence"
+        );
+        assert!(
+            list.iter().all(|p| !is_core_package(&p.id)),
+            "the adapter must not emit core packages (checked by fetch_market_impl too)"
+        );
+        // github: ids dominate this catalog, and every entry must carry a repo
+        // hint so alpha version resolution works without a static catalog.
+        assert!(
+            list.iter()
+                .filter(|p| p.id.starts_with("github:"))
+                .all(|p| p.repo.is_some()),
+            "github: entries need a repo hint"
+        );
+    }
+
+    /// Market half of the live smoke test: fetches every default source over the
+    /// real network. Deliberately does NOT touch `api.github.com` (unreachable on
+    /// some networks without a proxy), so this half stays runnable anywhere the
+    /// three static catalogs are reachable.
+    #[tokio::test]
+    #[ignore]
+    async fn live_fetch_market() {
+        let sources = default_plugin_sources();
+        let plugins = fetch_market_impl(sources.clone(), None, None).await;
         assert!(!plugins.is_empty(), "market must return plugins");
+        // Every enabled source must have contributed: a source that failed only
+        // logs a warning and is skipped, so a missing source id is the signal.
+        for src in sources.iter().filter(|s| s.enabled) {
+            assert!(
+                plugins.iter().any(|p| p.source == src.id),
+                "enabled source `{}` contributed nothing",
+                src.id
+            );
+        }
+        // The core-package red line holds for the merged live result too.
+        for p in &plugins {
+            assert!(
+                !is_core_package(&p.id),
+                "core package leaked into the market: {}",
+                p.id
+            );
+        }
         // The catalog must contain the loader plugin.
         assert!(
             plugins.iter().any(|p| p.id == "@dsh-plugin/dsh-loader"),
@@ -3139,6 +4330,14 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// Versions half of the live smoke test. Requires npm and `api.github.com`;
+    /// on a network without a GitHub proxy the alpha leg cannot run, so this is
+    /// a separate test from `live_fetch_market`.
+    #[tokio::test]
+    #[ignore]
+    async fn live_fetch_plugin_versions() {
         // npm-based stable versions for a known plugin.
         let stable = npm_versions("@dsh-plugin/dsh-auxiliary", &PluginChannel::Stable)
             .await
@@ -3154,6 +4353,7 @@ mod tests {
             "@dsh-plugin/dsh-auxiliary".to_string(),
             PluginChannel::Alpha,
             Some(1),
+            Some("dsh-plugins/dsh-auxiliary".to_string()),
         )
         .await
         .unwrap();
@@ -3168,6 +4368,7 @@ mod tests {
                 "@dsh-plugin/dsh-auxiliary".to_string(),
                 PluginChannel::Alpha,
                 Some(2),
+                None,
             )
             .await
             .unwrap();

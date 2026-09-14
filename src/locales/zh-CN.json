@@ -200,7 +200,21 @@
     "issues": "Issues",
     "viewLinks": "链接",
     "marketError": "插件市场加载失败",
-    "retry": "重试"
+    "retry": "重试",
+    "source": {
+      "dsh-plugins": "官方插件源",
+      "awesome-dsh-plugin": "Awesome 精选",
+      "dshget": "dshget 聚合",
+      "github-topic": "GitHub Topic（社区）"
+    },
+    "confidence": {
+      "official": "官方",
+      "curated": "精选",
+      "aggregated": "聚合",
+      "unverified": "未验证"
+    },
+    "unverifiedConfirm": "该插件来自未经审核的来源，代码由第三方提供，可能包含危险行为。请确认你信任该来源后再安装。",
+    "unverifiedAck": "我已了解风险，仍要安装"
   },
   "settings": {
     "title": "设置",
@@ -246,6 +260,27 @@
       "empty": "暂无 SKILL 仓库"
     },
     "skillRepoExists": "该仓库已在列表中",
+    "pluginSources": {
+      "title": "插件来源",
+      "hint": "插件市场目录来源：可启用/停用、调整顺序，或添加自定义来源。github-topic 为动态发现的社区来源，内容未经审核。",
+      "id": "来源 ID",
+      "kind": "类型",
+      "confidence": "可信度",
+      "url": "目录地址",
+      "add": "添加",
+      "empty": "暂无插件来源",
+      "enable": "启用",
+      "delete": "删除",
+      "invalidId": "来源 ID 不能为空",
+      "invalidUrl": "来源地址必须以 http(s):// 开头",
+      "duplicateId": "该来源 ID 已存在",
+      "sourceKinds": {
+        "primary": "主目录",
+        "awesome": "Awesome 精选",
+        "dshGet": "dshget 聚合",
+        "githubTopic": "GitHub Topic"
+      }
+    },
     "proxy": {
       "title": "代理",
       "enabled": "启用代理",
