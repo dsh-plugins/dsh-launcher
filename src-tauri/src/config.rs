@@ -149,9 +149,22 @@ pub fn default_plugin_sources() -> Vec<PluginSourceConfig> {
     ]
 }
 
+/// Returns the built-in definition for a source id, when it is one of the
+/// launcher-shipped catalogs.
+fn builtin_source(id: &str) -> Option<PluginSourceConfig> {
+    default_plugin_sources().into_iter().find(|s| s.id == id)
+}
+
 /// Drops user-supplied source entries that cannot be driven (empty id, or a
 /// non-http(s) URL for a static kind), de-duplicates ids, and renumbers `order`
 /// to the list index so the persisted list is always a coherent priority order.
+///
+/// Trust is launcher-assigned, never self-attested (issue #46 review): entries
+/// reusing a built-in id keep their customized URL/enabled state but have
+/// `kind`/`confidence` restored to the built-in values, and custom sources are
+/// always forced to `Confidence::Unverified` no matter what the payload claims
+/// — otherwise a custom catalog could attest itself "official", overwrite the
+/// official entry's repo hint in dedup, and bypass the unverified-install ack.
 pub fn sanitize_plugin_sources(list: Vec<PluginSourceConfig>) -> Vec<PluginSourceConfig> {
     let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
     list.into_iter()
@@ -169,6 +182,15 @@ pub fn sanitize_plugin_sources(list: Vec<PluginSourceConfig>) -> Vec<PluginSourc
             s.id = s.id.trim().to_string();
             s.url = s.url.trim().to_string();
             s.order = i as u32;
+            match builtin_source(&s.id) {
+                Some(builtin) => {
+                    s.kind = builtin.kind;
+                    s.confidence = builtin.confidence;
+                }
+                None => {
+                    s.confidence = Confidence::Unverified;
+                }
+            }
             s
         })
         .collect()
@@ -383,6 +405,10 @@ pub fn load_config(path: &Path) -> Config {
                 cleanup_orphan_homes(&mut cfg);
                 ensure_user_dsh_home(&mut cfg);
                 migrate_news_source(&mut cfg);
+                // Self-heal configs persisted before trust locking existed:
+                // strip self-attested confidence/kind from stored sources.
+                cfg.settings.plugin_sources =
+                    sanitize_plugin_sources(std::mem::take(&mut cfg.settings.plugin_sources));
                 cfg
             }
             Err(err) => {
@@ -510,4 +536,79 @@ pub fn sanitize_name(name: &str) -> String {
 
 pub fn new_id(prefix: &str) -> String {
     format!("{prefix}-{}", uuid::Uuid::new_v4())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn source(id: &str, kind: SourceKind, confidence: Confidence) -> PluginSourceConfig {
+        PluginSourceConfig {
+            id: id.to_string(),
+            url: "https://example.com/catalog.json".to_string(),
+            kind,
+            enabled: true,
+            confidence,
+            order: 99,
+        }
+    }
+
+    #[test]
+    fn sanitize_locks_builtin_kind_and_confidence() {
+        // A payload reusing the dshget id but claiming to be an official
+        // primary catalog must be reverted to the built-in definition; the
+        // customized URL (mirror use case) survives.
+        let out = sanitize_plugin_sources(vec![source(
+            "dshget",
+            SourceKind::Primary,
+            Confidence::Official,
+        )]);
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].kind, SourceKind::DshGet);
+        assert_eq!(out[0].confidence, Confidence::Aggregated);
+        assert_eq!(out[0].url, "https://example.com/catalog.json");
+        assert_eq!(out[0].order, 0);
+    }
+
+    #[test]
+    fn sanitize_forces_custom_sources_unverified() {
+        let out = sanitize_plugin_sources(vec![
+            source("my-mirror", SourceKind::Primary, Confidence::Official),
+            source("corp-hub", SourceKind::Awesome, Confidence::Curated),
+        ]);
+        assert_eq!(out.len(), 2);
+        // Custom sources keep their schema kind (it drives parsing) but never
+        // their self-attested trust tier.
+        assert_eq!(out[0].kind, SourceKind::Primary);
+        assert_eq!(out[0].confidence, Confidence::Unverified);
+        assert_eq!(out[1].kind, SourceKind::Awesome);
+        assert_eq!(out[1].confidence, Confidence::Unverified);
+    }
+
+    #[test]
+    fn sanitize_drops_undrivable_and_dedupes() {
+        let mut bad_url = source("bad", SourceKind::Primary, Confidence::Unverified);
+        bad_url.url = "ftp://nope".to_string();
+        let empty_id = source("  ", SourceKind::Primary, Confidence::Unverified);
+        let dup = source("my-mirror", SourceKind::Primary, Confidence::Unverified);
+        let out = sanitize_plugin_sources(vec![
+            bad_url,
+            empty_id,
+            source("my-mirror", SourceKind::Primary, Confidence::Unverified),
+            dup,
+        ]);
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].id, "my-mirror");
+        assert_eq!(out[0].order, 0);
+    }
+
+    #[test]
+    fn sanitize_keeps_builtin_defaults_intact() {
+        let out = sanitize_plugin_sources(default_plugin_sources());
+        assert_eq!(out.len(), 4);
+        assert_eq!(out[0].id, "dsh-plugins");
+        assert_eq!(out[0].confidence, Confidence::Official);
+        assert_eq!(out[3].id, "github-topic");
+        assert!(!out[3].enabled);
+    }
 }

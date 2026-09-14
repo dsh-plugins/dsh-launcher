@@ -262,7 +262,7 @@
     "skillRepoExists": "This repo is already listed",
     "pluginSources": {
       "title": "Plugin sources",
-      "hint": "Marketplace catalog sources: enable/disable, reorder, or add custom sources. github-topic is a dynamically discovered community channel whose contents are not reviewed.",
+      "hint": "Marketplace catalog sources: enable/disable, reorder, or add custom sources. github-topic is a dynamically discovered community channel whose contents are not reviewed. Confidence is assigned by the launcher: built-in sources keep their preset tier, and custom sources are always treated as unverified.",
       "id": "Source ID",
       "kind": "Kind",
       "confidence": "Confidence",

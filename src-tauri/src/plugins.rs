@@ -364,9 +364,19 @@ fn default_true() -> bool {
 }
 
 /// Converts one DSH Get entry into a `MarketPlugin`. Entries the catalog marks
-/// as not installable are dropped.
+/// as not installable are dropped, and so are entries dshget's own review
+/// pipeline rejected: a "rejected" verdict is an active negative signal, so
+/// they must not surface as installable Aggregated entries (issue #46 review;
+/// the live catalog carries 200+ rejected-but-installable entries).
 fn dshget_to_market(p: &DshGetPlugin) -> Option<MarketPlugin> {
     if !p.installable {
+        return None;
+    }
+    if p.verification
+        .as_deref()
+        .map(|v| v.trim().eq_ignore_ascii_case("rejected"))
+        .unwrap_or(false)
+    {
         return None;
     }
     let id = parse_awesome_install(&p.install)?;
@@ -3701,6 +3711,14 @@ mod tests {
                     "name": "no-add-line",
                     "install": "not a plugin command",
                     "installable": true
+                },
+                {
+                    "name": "rejected-by-review",
+                    "url": "https://github.com/omdsh-dev/rejected-by-review",
+                    "stars": 99999,
+                    "install": "dsh plugin --profile web add github:omdsh-dev/rejected-by-review",
+                    "verification": "Rejected",
+                    "installable": true
                 }
             ]
         }"#;
@@ -3709,7 +3727,7 @@ mod tests {
         assert_eq!(
             parsed.len(),
             1,
-            "uninstallable + unparsable entries dropped"
+            "uninstallable + unparsable + review-rejected entries dropped"
         );
         let mp = &parsed[0];
         assert_eq!(mp.id, "github:omdsh-dev/dsh-thing");

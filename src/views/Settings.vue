@@ -239,13 +239,6 @@ const SOURCE_KIND_OPTIONS = computed<{ value: SourceKind; label: string }[]>(() 
   { value: 'github-topic', label: t('settings.pluginSources.sourceKinds.githubTopic') },
 ])
 
-const SOURCE_CONFIDENCE_OPTIONS = computed<{ value: Confidence; label: string }[]>(() => [
-  { value: 'official', label: t('plugins.confidence.official') },
-  { value: 'curated', label: t('plugins.confidence.curated') },
-  { value: 'aggregated', label: t('plugins.confidence.aggregated') },
-  { value: 'unverified', label: t('plugins.confidence.unverified') },
-])
-
 const CONFIDENCE_TAG_COLORS: Record<Confidence, string> = {
   official: 'green',
   curated: 'purple',
@@ -256,7 +249,6 @@ const CONFIDENCE_TAG_COLORS: Record<Confidence, string> = {
 const newSourceId = ref('')
 const newSourceKind = ref<SourceKind>('primary')
 const newSourceUrl = ref('')
-const newSourceConfidence = ref<Confidence>('unverified')
 const pluginSourceBusy = ref(false)
 
 /** Order is the array index; renumber on every mutation. */
@@ -299,7 +291,9 @@ async function onAddPluginSource() {
       url,
       kind: newSourceKind.value,
       enabled: true,
-      confidence: newSourceConfidence.value,
+      // Trust is launcher-assigned: custom sources are always unverified
+      // (the backend locks this in sanitize_plugin_sources regardless).
+      confidence: 'unverified' as Confidence,
       order: store.settings.plugin_sources.length,
     },
   ])
@@ -608,11 +602,6 @@ const homeColumns = computed(() => [
         />
         <a-select v-model="newSourceKind" style="width: 150px">
           <a-option v-for="o in SOURCE_KIND_OPTIONS" :key="o.value" :value="o.value">
-            {{ o.label }}
-          </a-option>
-        </a-select>
-        <a-select v-model="newSourceConfidence" style="width: 150px">
-          <a-option v-for="o in SOURCE_CONFIDENCE_OPTIONS" :key="o.value" :value="o.value">
             {{ o.label }}
           </a-option>
         </a-select>
