@@ -33,7 +33,6 @@ const newVersionDir = ref('')
 const importResult = ref<ImportReport | null>(null)
 
 /** i18n color / label per item status. */
-const itemStatusOf = (status: ImportItem['status']) => status
 const itemColor = (status: ImportItem['status']) =>
   status === 'added' ? 'green' : status === 'failed' ? 'red' : 'gray'
 const itemLabel = (status: ImportItem['status']) =>
@@ -107,13 +106,10 @@ function profileKey(homePath: string, profile: string): string {
   return `${homePath}::${profile}`
 }
 
-function versionItemLabel(item: ImportItem): string {
-  // A version alone is not an instance — surface that explicitly instead of
-  // letting the user wonder why nothing appeared in the instance list.
-  if (item.kind === 'version' && item.status === 'added') {
-    return `${itemLabel(item.status)} — ${t('importScan.versionNotInstance')}`
-  }
-  return itemLabel(item.status)
+/** A version alone is not an instance — the row says so explicitly instead of
+ * letting the user wonder why nothing appeared in the instance list. */
+function isVersionOnlyRow(item: ImportItem): boolean {
+  return item.kind === 'version' && item.status === 'added'
 }
 
 async function doImport() {
@@ -237,7 +233,7 @@ function close() {
               </a-tag>
               <span class="import-item-name">{{ item.name }}</span>
               <span v-if="item.reason" class="import-item-reason">{{ item.reason }}</span>
-              <span v-else-if="versionItemLabel(item) !== itemLabel(item.status)" class="import-item-reason">
+              <span v-else-if="isVersionOnlyRow(item)" class="import-item-reason">
                 {{ t('importScan.versionNotInstance') }}
               </span>
             </li>
