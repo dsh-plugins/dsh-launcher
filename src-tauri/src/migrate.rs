@@ -136,6 +136,13 @@ pub fn bootstrap(app: &tauri::App) -> Bootstrap {
         // Already migrated on a previous launch (config.json present)?
         if pointer_target.join("config.json").exists() {
             let _ = fs::create_dir_all(&pointer_target);
+            // Heal configs written before path rewriting existed: absolute
+            // version/home paths may still point at the old default dir.
+            rewrite_config_paths(
+                &pointer_target.join("config.json"),
+                &default_dir,
+                &pointer_target,
+            );
             // The old default dir is left as the golden backup; snapshot it
             // (keeping the pointer file alive) for the 30-day recovery
             // window when it still holds data.
@@ -183,22 +190,130 @@ pub fn bootstrap(app: &tauri::App) -> Bootstrap {
     }
 }
 
-/// Snapshots the default (old) data dir as `<default>.old-<ts>` when it still
-/// holds data, then restores the pointer file inside the fresh default dir
-/// so the resolution chain keeps working. Best-effort.
+/// Snapshots the default (old) data dir as `<default>.old-<ts>` when it
+/// still holds payload (anything beyond the pointer file), then restores
+/// the pointer file inside the fresh default dir so the resolution chain
+/// keeps working. Also prunes snapshots past the 30-day retention window.
+/// Best-effort.
 fn snapshot_default_dir(default_dir: &Path, new_dir: &Path) {
     // Keep the pointer content before renaming the old dir away.
     let pointer_content = fs::read_to_string(default_dir.join(POINTER_FILE)).unwrap_or_default();
-    if !dir_is_empty(default_dir).unwrap_or(false) {
+    // Only snapshot real payload. After a migration the default dir holds
+    // just the pointer file; snapshotting that on every launch would pile
+    // up useless `<default>.old-<ts>` copies (issue #43 review).
+    if dir_has_payload(default_dir) {
         snapshot_old_dir(default_dir);
     }
-    // The default dir now either does not exist or is an empty shell from a
-    // previous snapshot; recreate it and restore the pointer file.
+    prune_old_snapshots(default_dir);
+    // The default dir now either does not exist or is a payload-free shell
+    // (possibly from a previous snapshot); recreate it and restore the
+    // pointer file.
     let _ = fs::create_dir_all(default_dir);
     if !pointer_content.trim().is_empty() {
         let _ = fs::write(default_dir.join(POINTER_FILE), pointer_content.trim());
     }
     let _ = new_dir;
+}
+
+/// True when `dir` contains anything other than the pointer file.
+fn dir_has_payload(dir: &Path) -> bool {
+    let Ok(entries) = fs::read_dir(dir) else {
+        return false;
+    };
+    entries.flatten().any(|e| e.file_name() != POINTER_FILE)
+}
+
+/// Retention window for `.old-<ts>` snapshots (see `snapshot_old_dir`).
+const SNAPSHOT_RETENTION_DAYS: i64 = 30;
+
+/// Removes `<default>.old-<ts>` snapshots older than the retention window.
+/// Best-effort; snapshots with unparseable timestamps are kept.
+fn prune_old_snapshots(default_dir: &Path) {
+    let cutoff = chrono::Utc::now() - chrono::Duration::days(SNAPSHOT_RETENTION_DAYS);
+    for snap in list_snapshots(default_dir) {
+        let Some(name) = snap.file_name().map(|s| s.to_string_lossy().to_string()) else {
+            continue;
+        };
+        let Some(ts) = name.rsplit(".old-").next() else {
+            continue;
+        };
+        let Ok(taken_at) = chrono::NaiveDateTime::parse_from_str(ts, "%Y%m%d%H%M%S") else {
+            continue;
+        };
+        if taken_at.and_utc() < cutoff {
+            remove_tree(&snap);
+        }
+    }
+}
+
+/// Rewrites absolute `versions[].dir` / `homes[].path` entries in
+/// `config.json` that point inside `old_root` so they follow the data dir
+/// to `new_root`. Returns the number of rewritten entries. Idempotent and
+/// best-effort: unreadable or unparseable configs are left untouched.
+pub fn rewrite_config_paths(config_path: &Path, old_root: &Path, new_root: &Path) -> u64 {
+    if paths_equal(old_root, new_root) {
+        return 0;
+    }
+    let Ok(raw) = fs::read_to_string(config_path) else {
+        return 0;
+    };
+    let Ok(mut value) = serde_json::from_str::<serde_json::Value>(&raw) else {
+        return 0;
+    };
+    let mut rewritten = 0u64;
+    for (array_key, field) in [("versions", "dir"), ("homes", "path")] {
+        let Some(items) = value.get_mut(array_key).and_then(|v| v.as_array_mut()) else {
+            continue;
+        };
+        for item in items {
+            let Some(dir_str) = item.get(field).and_then(|v| v.as_str()) else {
+                continue;
+            };
+            if let Some(rebased) = rebase_path(Path::new(dir_str), old_root, new_root) {
+                item[field] = serde_json::Value::String(rebased.to_string_lossy().to_string());
+                rewritten += 1;
+            }
+        }
+    }
+    if rewritten > 0 {
+        match serde_json::to_string_pretty(&value) {
+            Ok(out) => {
+                if let Err(e) = fs::write(config_path, out) {
+                    eprintln!(
+                        "dsh-launcher: 重写 config.json 路径失败 {}: {e}",
+                        config_path.display()
+                    );
+                }
+            }
+            Err(e) => eprintln!("dsh-launcher: 序列化 config.json 失败: {e}"),
+        }
+    }
+    rewritten
+}
+
+/// Returns `new_root.join(rel)` when `path` lies inside `old_root`
+/// (case-insensitive components on Windows), otherwise `None`.
+fn rebase_path(path: &Path, old_root: &Path, new_root: &Path) -> Option<PathBuf> {
+    let mut rest = path.components();
+    let mut prefix = old_root.components();
+    loop {
+        match prefix.next() {
+            None => return Some(new_root.join(rest.as_path())),
+            Some(want) => {
+                let got = rest.next()?;
+                let got_s = got.as_os_str().to_string_lossy();
+                let want_s = want.as_os_str().to_string_lossy();
+                #[cfg(windows)]
+                if got_s.to_lowercase() != want_s.to_lowercase() {
+                    return None;
+                }
+                #[cfg(not(windows))]
+                if got_s != want_s {
+                    return None;
+                }
+            }
+        }
+    }
 }
 
 /// Recursively copies a directory tree with `std::fs` (no extra deps).
@@ -315,6 +430,12 @@ pub fn migrate_data_dir(from: &Path, to: &Path) -> Result<(), String> {
         let _cfg = crate::config::load_config(&new_config);
     }
 
+    // 4.5 Rebase absolute version/home paths recorded in the copied config:
+    // they still point at the old dir, which is about to be renamed away.
+    if new_config.exists() {
+        rewrite_config_paths(&new_config, from, to);
+    }
+
     // 5. Commit: drop the marker. The pointer file is updated by the caller
     //    after a successful switch.
     let _ = fs::remove_file(&flag_path);
@@ -332,9 +453,9 @@ pub fn snapshot_old_dir(old: &Path) {
     }
 }
 
-/// Lists `.old-<ts>` snapshots next to the current data dir (for the
-/// "restore previous data dir" entry point; UI wiring is a follow-up).
-#[allow(dead_code)]
+/// Lists `.old-<ts>` snapshots next to the current data dir (used for
+/// retention pruning; the "restore previous data dir" UI entry point is a
+/// follow-up).
 pub fn list_snapshots(data_dir: &Path) -> Vec<PathBuf> {
     let parent = data_dir.parent().unwrap_or(Path::new("."));
     let name = data_dir
@@ -541,6 +662,159 @@ mod tests {
         // Make the target a FILE so create_dir_all fails.
         std::fs::write(&to, "in the way").unwrap();
         assert!(migrate_data_dir(&from, &to).is_err());
+        std::fs::remove_dir_all(&tmp).unwrap();
+    }
+
+    #[test]
+    fn migrate_data_dir_rebases_config_paths() {
+        let tmp = std::env::temp_dir().join(format!("dsh-migrate-rebase-{}", uuid::Uuid::new_v4()));
+        let from = tmp.join("from");
+        let to = tmp.join("to");
+        std::fs::create_dir_all(from.join("versions/v1")).unwrap();
+        std::fs::create_dir_all(from.join("homes/h1")).unwrap();
+        let outside = tmp.join("elsewhere");
+        let config = serde_json::json!({
+            "versions": [
+                {"id": "v1", "version": "1.0", "dir": from.join("versions/v1").to_string_lossy()},
+                {"id": "v2", "version": "2.0", "dir": outside.to_string_lossy()},
+            ],
+            "homes": [
+                {"id": "h1", "name": "h1", "path": from.join("homes/h1").to_string_lossy()},
+            ],
+        });
+        std::fs::write(
+            from.join("config.json"),
+            serde_json::to_string_pretty(&config).unwrap(),
+        )
+        .unwrap();
+        migrate_data_dir(&from, &to).unwrap();
+        let raw = std::fs::read_to_string(to.join("config.json")).unwrap();
+        let migrated: serde_json::Value = serde_json::from_str(&raw).unwrap();
+        assert_eq!(
+            migrated["versions"][0]["dir"].as_str().unwrap(),
+            to.join("versions/v1").to_string_lossy()
+        );
+        // Paths outside the old root stay untouched.
+        assert_eq!(
+            migrated["versions"][1]["dir"].as_str().unwrap(),
+            outside.to_string_lossy()
+        );
+        assert_eq!(
+            migrated["homes"][0]["path"].as_str().unwrap(),
+            to.join("homes/h1").to_string_lossy()
+        );
+        std::fs::remove_dir_all(&tmp).unwrap();
+    }
+
+    #[test]
+    fn rewrite_config_paths_is_idempotent() {
+        let tmp = std::env::temp_dir().join(format!("dsh-rebase-idem-{}", uuid::Uuid::new_v4()));
+        let from = tmp.join("from");
+        let to = tmp.join("to");
+        std::fs::create_dir_all(&from).unwrap();
+        let config_path = tmp.join("config.json");
+        let config = serde_json::json!({
+            "versions": [{"id": "v1", "version": "1.0", "dir": from.join("versions/v1").to_string_lossy()}],
+        });
+        std::fs::write(&config_path, serde_json::to_string(&config).unwrap()).unwrap();
+        assert_eq!(rewrite_config_paths(&config_path, &from, &to), 1);
+        assert_eq!(rewrite_config_paths(&config_path, &from, &to), 0);
+        // Same-root calls never touch the file.
+        assert_eq!(rewrite_config_paths(&config_path, &to, &to), 0);
+        std::fs::remove_dir_all(&tmp).unwrap();
+    }
+
+    #[test]
+    fn rewrite_config_paths_tolerates_broken_config() {
+        let tmp = std::env::temp_dir().join(format!("dsh-rebase-broken-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&tmp).unwrap();
+        let missing = tmp.join("nope.json");
+        assert_eq!(rewrite_config_paths(&missing, &tmp, &tmp.join("x")), 0);
+        let broken = tmp.join("broken.json");
+        std::fs::write(&broken, "not json").unwrap();
+        assert_eq!(rewrite_config_paths(&broken, &tmp, &tmp.join("x")), 0);
+        assert_eq!(std::fs::read_to_string(&broken).unwrap(), "not json");
+        std::fs::remove_dir_all(&tmp).unwrap();
+    }
+
+    #[test]
+    fn dir_has_payload_ignores_pointer_file() {
+        let tmp = std::env::temp_dir().join(format!("dsh-payload-test-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&tmp).unwrap();
+        assert!(!dir_has_payload(&tmp));
+        std::fs::write(tmp.join(POINTER_FILE), "C:/somewhere").unwrap();
+        // Pointer file alone is not payload.
+        assert!(!dir_has_payload(&tmp));
+        std::fs::write(tmp.join("config.json"), "{}").unwrap();
+        assert!(dir_has_payload(&tmp));
+        std::fs::remove_dir_all(&tmp).unwrap();
+    }
+
+    #[test]
+    fn snapshot_default_dir_does_not_accumulate_pointer_only_snapshots() {
+        let tmp = std::env::temp_dir().join(format!("dsh-snap-accum-{}", uuid::Uuid::new_v4()));
+        let default_dir = tmp.join("default");
+        let new_dir = tmp.join("new");
+        std::fs::create_dir_all(&default_dir).unwrap();
+        std::fs::create_dir_all(&new_dir).unwrap();
+        std::fs::write(
+            default_dir.join(POINTER_FILE),
+            new_dir.to_string_lossy().as_bytes(),
+        )
+        .unwrap();
+        // Simulate repeated launches on the already-migrated branch.
+        for _ in 0..3 {
+            snapshot_default_dir(&default_dir, &new_dir);
+        }
+        assert!(list_snapshots(&default_dir).is_empty());
+        // The pointer file survives every pass.
+        assert_eq!(
+            std::fs::read_to_string(default_dir.join(POINTER_FILE)).unwrap(),
+            new_dir.to_string_lossy()
+        );
+        std::fs::remove_dir_all(&tmp).unwrap();
+    }
+
+    #[test]
+    fn snapshot_default_dir_snapshots_real_payload() {
+        let tmp = std::env::temp_dir().join(format!("dsh-snap-payload-{}", uuid::Uuid::new_v4()));
+        let default_dir = tmp.join("default");
+        let new_dir = tmp.join("new");
+        std::fs::create_dir_all(&default_dir).unwrap();
+        std::fs::create_dir_all(&new_dir).unwrap();
+        std::fs::write(
+            default_dir.join(POINTER_FILE),
+            new_dir.to_string_lossy().as_bytes(),
+        )
+        .unwrap();
+        std::fs::write(default_dir.join("config.json"), "{}").unwrap();
+        snapshot_default_dir(&default_dir, &new_dir);
+        let snaps = list_snapshots(&default_dir);
+        assert_eq!(snaps.len(), 1);
+        assert!(snaps[0].join("config.json").exists());
+        // Pointer file was restored in the fresh default dir.
+        assert!(default_dir.join(POINTER_FILE).exists());
+        std::fs::remove_dir_all(&tmp).unwrap();
+    }
+
+    #[test]
+    fn prune_old_snapshots_removes_only_expired() {
+        let tmp = std::env::temp_dir().join(format!("dsh-prune-test-{}", uuid::Uuid::new_v4()));
+        let default_dir = tmp.join("default");
+        std::fs::create_dir_all(&default_dir).unwrap();
+        let old_ts = (chrono::Utc::now() - chrono::Duration::days(31)).format("%Y%m%d%H%M%S");
+        let new_ts = chrono::Utc::now().format("%Y%m%d%H%M%S");
+        let expired = tmp.join(format!("default.old-{old_ts}"));
+        let fresh = tmp.join(format!("default.old-{new_ts}"));
+        let garbled = tmp.join("default.old-not-a-date");
+        std::fs::create_dir_all(&expired).unwrap();
+        std::fs::create_dir_all(&fresh).unwrap();
+        std::fs::create_dir_all(&garbled).unwrap();
+        prune_old_snapshots(&default_dir);
+        assert!(!expired.exists());
+        assert!(fresh.exists());
+        // Unparseable timestamps are kept for manual inspection.
+        assert!(garbled.exists());
         std::fs::remove_dir_all(&tmp).unwrap();
     }
 }
