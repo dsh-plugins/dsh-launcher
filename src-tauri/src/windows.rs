@@ -103,7 +103,9 @@ fn webview_data_dir(app: &AppHandle, instance_id: &str) -> Option<PathBuf> {
 ///
 /// Windows and Linux keep the browser cookies there; macOS does not, so a
 /// caller that must also drop the cookies goes through `clear_webview_data`
-/// rather than this directory-only helper.
+/// rather than this directory-only helper. macOS therefore has no caller for
+/// it, which `-D warnings` would flag as dead code.
+#[cfg_attr(any(target_os = "macos", target_os = "ios"), allow(dead_code))]
 pub(crate) fn clear_instance_webview_data_from(app: &AppHandle, instance_id: &str) {
     if let Some(state) = app.try_state::<AppState>() {
         clear_instance_webview_data(&state, instance_id);
