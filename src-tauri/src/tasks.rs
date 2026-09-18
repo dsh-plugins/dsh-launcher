@@ -4,7 +4,7 @@ use serde::Serialize;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tauri::{AppHandle, Emitter, Manager, State};
-use tokio::io::{AsyncBufReadExt, BufReader};
+use tokio::io::BufReader;
 use tokio::sync::Mutex;
 
 pub const TASK_PROGRESS_EVENT: &str = "task://progress";
@@ -453,10 +453,11 @@ async fn ensure_web_profile_template(
     let mut attempts = 0;
     let mut ready = false;
     if let Some(out) = child.stdout.take() {
-        let mut reader = BufReader::new(out).lines();
+        let mut reader = BufReader::new(out);
+        let mut buf = Vec::new();
         loop {
             tokio::select! {
-                line = reader.next_line() => {
+                line = crate::process::read_line_lossy(&mut reader, &mut buf) => {
                     match line {
                         Ok(Some(l)) => {
                             let l = l.trim().to_string();
@@ -468,7 +469,11 @@ async fn ensure_web_profile_template(
                                 break;
                             }
                         }
-                        _ => break,
+                        Ok(None) => break,
+                        Err(e) => {
+                            crate::log_warn!("临时 DSH 输出读取终止: {e}");
+                            break;
+                        }
                     }
                 }
                 _ = timer.tick() => {
@@ -656,10 +661,11 @@ pub(crate) async fn ensure_web_profile_template_wsl(
     let mut timer = tokio::time::interval(std::time::Duration::from_millis(300));
     let mut attempts = 0;
     if let Some(out) = child.stdout.take() {
-        let mut reader = BufReader::new(out).lines();
+        let mut reader = BufReader::new(out);
+        let mut buf = Vec::new();
         loop {
             tokio::select! {
-                line = reader.next_line() => {
+                line = crate::process::read_line_lossy(&mut reader, &mut buf) => {
                     match line {
                         Ok(Some(l)) => {
                             let l = l.trim().to_string();
@@ -675,7 +681,11 @@ pub(crate) async fn ensure_web_profile_template_wsl(
                                 break;
                             }
                         }
-                        _ => break,
+                        Ok(None) => break,
+                        Err(e) => {
+                            crate::log_warn!("WSL 临时 DSH 输出读取终止: {e}");
+                            break;
+                        }
                     }
                 }
                 _ = timer.tick() => {
@@ -1387,8 +1397,19 @@ impl tokio::io::AsyncRead for StreamPipe {
 
 async fn stream_pipe(app: AppHandle, task_id: String, pipe: StreamPipe) {
     let state = app.state::<AppState>();
-    let mut lines = BufReader::new(pipe).lines();
-    while let Ok(Some(line)) = lines.next_line().await {
+    let mut reader = BufReader::new(pipe);
+    let mut buf = Vec::new();
+    loop {
+        // Lossy read (issue #42): a non-UTF-8 byte must not silently kill
+        // the reader and truncate the task log mid-stream.
+        let line = match crate::process::read_line_lossy(&mut reader, &mut buf).await {
+            Ok(Some(line)) => line,
+            Ok(None) => break,
+            Err(e) => {
+                crate::log_warn!("任务 {task_id} 子进程输出读取终止: {e}");
+                break;
+            }
+        };
         let line = line.trim_end_matches(['\r', '\n']).to_string();
         if line.is_empty() {
             continue;
