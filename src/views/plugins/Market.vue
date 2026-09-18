@@ -5,6 +5,7 @@ import { useI18n } from 'vue-i18n'
 import { useLauncherStore } from '@/stores/launcher'
 import { injectDownloadScroll } from '@/composables/download-scroll'
 import { api } from '@/api'
+import { useProgressiveList } from '@/composables/progressive-list'
 import type { Confidence, MarketPlugin, PluginSource } from '@/api/types'
 
 // keep-alive name: the download page caches this view (search/scroll state).
@@ -86,6 +87,11 @@ const filtered = computed(() => {
     return p.id.toLowerCase().includes(q) || p.name.toLowerCase().includes(q) || desc.includes(q)
   })
 })
+
+// Progressive rendering (issue #50): the merged multi-source catalog holds
+// thousands of entries; rendering them in one pass freezes the page. Rows
+// stream in per animation frame instead.
+const { visible: visiblePlugins, growing: listGrowing } = useProgressiveList(filtered)
 
 const hasSupportBadge = (p: MarketPlugin) => {
   const sv = p.support_versions
@@ -176,7 +182,7 @@ onBeforeUnmount(() => {
           <a-empty :description="search ? t('plugins.noMatch') : t('plugins.empty')" />
         </div>
         <div
-          v-for="p in filtered"
+          v-for="p in visiblePlugins"
           :key="p.id"
           class="plugin-row"
           @click="choose(p)"
@@ -213,6 +219,9 @@ onBeforeUnmount(() => {
             <span class="version-arrow">›</span>
           </div>
         </div>
+        <div v-if="listGrowing" class="market-streaming">
+          <a-spin :size="20" />
+        </div>
       </template>
     </div>
   </div>
@@ -244,6 +253,12 @@ onBeforeUnmount(() => {
 
 .market-empty {
   padding: 20px 0;
+}
+
+.market-streaming {
+  display: flex;
+  justify-content: center;
+  padding: 12px 0;
 }
 
 .plugin-row {

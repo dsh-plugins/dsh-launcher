@@ -4,6 +4,7 @@ import { useI18n } from 'vue-i18n'
 import { api } from '@/api'
 import type { MarketModpack } from '@/api/types'
 import { useLauncherStore } from '@/stores/launcher'
+import { useProgressiveList } from '@/composables/progressive-list'
 import ModpackImportDialog from '@/components/ModpackImportDialog.vue'
 
 // keep-alive name: the download page caches this view (search state).
@@ -60,6 +61,10 @@ const filtered = computed(() => {
     return hay.includes(q)
   })
 })
+
+// Progressive rendering (issue #50), same as the plugin market: rows stream
+// in per animation frame instead of one blocking render pass.
+const { visible: visiblePacks, growing: listGrowing } = useProgressiveList(filtered)
 
 function install(pack: MarketModpack) {
   importSource.value = pack.downloadUrl
@@ -127,7 +132,7 @@ onMounted(() => {
             :description="search || typeFilter ? t('modpack.marketNoMatch') : t('modpack.marketEmpty')"
           />
         </div>
-        <div v-for="p in filtered" :key="p.id" class="modpack-row">
+        <div v-for="p in visiblePacks" :key="p.id" class="modpack-row">
           <span class="modpack-icon">📦</span>
           <div class="modpack-meta">
             <div class="modpack-name">
@@ -165,6 +170,9 @@ onMounted(() => {
             </a-button>
           </div>
         </div>
+        <div v-if="listGrowing" class="market-streaming">
+          <a-spin :size="20" />
+        </div>
       </template>
     </div>
 
@@ -198,6 +206,12 @@ onMounted(() => {
 
 .market-empty {
   padding: 20px 0;
+}
+
+.market-streaming {
+  display: flex;
+  justify-content: center;
+  padding: 12px 0;
 }
 
 .modpack-row {
