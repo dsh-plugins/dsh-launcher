@@ -17,6 +17,11 @@ pub struct DshHome {
     /// Windows HOME.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub wsl: Option<String>,
+    /// Storage redirections (issue #51): whitelisted entry name → absolute
+    /// target path. The entry inside this HOME is replaced by a link to the
+    /// target, so bulky data (sessions, attachments, …) can live elsewhere.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub links: std::collections::BTreeMap<String, String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -470,6 +475,7 @@ pub fn ensure_user_dsh_home(cfg: &mut Config) {
         name: "用户默认 (~/.dsh)".to_string(),
         path: dsh,
         wsl: None,
+        links: Default::default(),
     });
 }
 

@@ -61,6 +61,7 @@ pub(crate) fn create_home_record(
         name: name.to_string(),
         path: path_buf,
         wsl: None,
+        links: Default::default(),
     };
     let mut cfg = state.config.lock().unwrap();
     cfg.homes.push(home.clone());
@@ -446,6 +447,7 @@ pub fn copy_instance(
                 name: home_name,
                 path: path_buf,
                 wsl: None,
+                links: Default::default(),
             };
             cfg.homes.push(home.clone());
             home.id
@@ -831,7 +833,7 @@ pub(crate) enum LinkMode {
 
 /// True when the path is a directory link: a reparse point (junction or
 /// symlink) on Windows, a symlink on Unix. Detection never follows the link.
-fn entry_is_dir_link(path: &std::path::Path) -> bool {
+pub(crate) fn entry_is_dir_link(path: &std::path::Path) -> bool {
     let Ok(md) = std::fs::symlink_metadata(path) else {
         return false;
     };
@@ -849,7 +851,10 @@ fn entry_is_dir_link(path: &std::path::Path) -> bool {
 
 /// Creates a directory link at `link` pointing at `target`: a junction on
 /// Windows (`mklink /J`, no privileges needed), a symlink elsewhere.
-fn create_dir_link(target: &std::path::Path, link: &std::path::Path) -> std::io::Result<()> {
+pub(crate) fn create_dir_link(
+    target: &std::path::Path,
+    link: &std::path::Path,
+) -> std::io::Result<()> {
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;

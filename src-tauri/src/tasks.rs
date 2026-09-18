@@ -867,6 +867,7 @@ async fn do_create_wsl_instance(
                 name: name.to_string(),
                 path: path_buf,
                 wsl: Some(distro.to_string()),
+                links: Default::default(),
             };
             cfg.homes.push(home.clone());
             crate::commands::save_state(state, &cfg)?;
@@ -1984,6 +1985,7 @@ async fn do_copy_instance(
         name: home_name,
         path: dest.clone(),
         wsl: None,
+        links: Default::default(),
     };
     let inst = {
         let mut cfg = state.config.lock().unwrap();

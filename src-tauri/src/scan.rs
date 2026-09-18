@@ -483,6 +483,7 @@ fn apply_import(cfg: &mut crate::config::Config, input: &ImportScannedInput) -> 
                     name: home_display_name(&path, home.wsl.as_deref()),
                     path: path.clone(),
                     wsl: home.wsl.clone(),
+                    links: Default::default(),
                 });
                 report.homes_added += 1;
                 report.items.push(ImportItem {

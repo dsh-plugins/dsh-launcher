@@ -676,6 +676,7 @@ mod tests {
             name: "h1".to_string(),
             path: PathBuf::from("C:/homes/h1"),
             wsl: None,
+            links: Default::default(),
         });
         cfg.instances.push(crate::config::DshInstance {
             id: "i1".to_string(),

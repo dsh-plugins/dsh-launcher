@@ -3,6 +3,7 @@ mod commands;
 mod config;
 mod doctor;
 mod icons;
+mod links;
 mod mcp;
 mod migrate;
 mod modpack;
@@ -205,6 +206,9 @@ pub fn run() {
             commands::create_home,
             commands::default_dedicated_home_path,
             commands::remove_home,
+            links::list_home_links,
+            links::set_home_link,
+            links::clear_home_link,
             commands::list_wsl_distros,
             commands::list_versions,
             commands::fetch_available_versions,

@@ -10,6 +10,7 @@ import type {
   DshVersion,
   ExportModpackInput,
   ExportDshhomeInput,
+  HomeLinkInfo,
   ImportModpackInput,
   InstallPluginInput,
   InstalledPlugin,
@@ -58,6 +59,17 @@ const isTauri = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window
 // ---------------------------------------------------------------------------
 
 const MOCK_KEY = 'dsh-launcher.mock.v1'
+
+/** Issue #51 whitelist (mirrors src-tauri/src/links.rs REDIRECTABLE). */
+const MOCK_LINK_KINDS: Record<string, boolean> = {
+  sessions: true,
+  skills: true,
+  attachments: true,
+  storages: true,
+  'settings.yaml': false,
+  '.credentials.yaml': false,
+  'cordis.patch.yml': false,
+}
 
 interface MockDb {
   homes: DshHome[]
@@ -143,6 +155,9 @@ function loadDb(): MockDb {
       db.settings.hide_launcher_on_window_open = db.settings.hide_launcher_on_window_open ?? false
       db.settings.plugin_sources = db.settings.plugin_sources ?? seedDb().settings.plugin_sources
       db.mcp = db.mcp ?? {}
+      db.homes.forEach((h) => {
+        h.links = h.links ?? {}
+      })
       return db
     }
   } catch {
@@ -305,6 +320,34 @@ async function mockCall<T>(cmd: string, args?: Record<string, unknown>): Promise
     }
     case 'list_homes':
       return db.homes as T
+    // Issue #51 (mock): storage redirection backed by home.links.
+    case 'list_home_links': {
+      const home = db.homes.find((h) => h.id === String(args?.home_id))
+      if (!home) fail('DSH_HOME 不存在')
+      const links = home.links ?? {}
+      return Object.entries(MOCK_LINK_KINDS).map(([entry, is_dir]) => ({
+        entry,
+        is_dir,
+        target: links[entry] ?? '',
+        active: !!links[entry],
+      })) as T
+    }
+    case 'set_home_link': {
+      const home = db.homes.find((h) => h.id === String(args?.home_id))
+      if (!home) fail('DSH_HOME 不存在')
+      const entry = String(args?.entry ?? '')
+      if (!(entry in MOCK_LINK_KINDS)) fail(`不支持重定向的条目: ${entry}`)
+      home.links = { ...(home.links ?? {}), [entry]: String(args?.target ?? '') }
+      saveDb(db)
+      return undefined as T
+    }
+    case 'clear_home_link': {
+      const home = db.homes.find((h) => h.id === String(args?.home_id))
+      if (!home) fail('DSH_HOME 不存在')
+      if (home.links) delete home.links[String(args?.entry ?? '')]
+      saveDb(db)
+      return undefined as T
+    }
     case 'default_dedicated_home_path': {
       const name = String(args?.name ?? 'instance')
       const safe = name.replace(/[^\w一-龥.-]+/g, '_')
@@ -1276,6 +1319,11 @@ export const api = {
   listHomes: () => call<DshHome[]>('list_homes'),
   createHome: (name: string, path: string) => call<DshHome>('create_home', { name, path }),
   removeHome: (id: string) => call<void>('remove_home', { id }),
+  listHomeLinks: (homeId: string) => call<HomeLinkInfo[]>('list_home_links', { home_id: homeId }),
+  setHomeLink: (homeId: string, entry: string, target: string) =>
+    call<void>('set_home_link', { home_id: homeId, entry, target }),
+  clearHomeLink: (homeId: string, entry: string) =>
+    call<void>('clear_home_link', { home_id: homeId, entry }),
   defaultDedicatedHomePath: (name: string) => call<string>('default_dedicated_home_path', { name }),
 
   listVersions: () => call<DshVersion[]>('list_versions'),

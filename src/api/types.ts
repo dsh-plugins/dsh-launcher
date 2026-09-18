@@ -6,6 +6,18 @@ export interface DshHome {
   path: string
   /** WSL distro name when this HOME lives inside WSL (issue #19); `path` is then a Linux path. */
   wsl?: string | null
+  /** Storage redirections (issue #51): entry name → absolute target path. */
+  links?: Record<string, string>
+}
+
+/** One redirectable HOME entry's redirection state (issue #51). */
+export interface HomeLinkInfo {
+  entry: string
+  is_dir: boolean
+  /** Configured target (empty = not redirected). */
+  target: string
+  /** The entry currently IS a link resolving to `target`. */
+  active: boolean
 }
 
 export interface DshVersion {
