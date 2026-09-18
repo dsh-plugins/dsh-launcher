@@ -1898,14 +1898,38 @@ async fn do_copy_instance(
         .join("homes")
         .join(crate::config::sanitize_name(name));
 
-    // Pass 1: count files for a meaningful percent.
+    // Pass 1: count entries for a meaningful percent. The count follows the
+    // same link-preserving rules as the copy (linked directory subtrees are
+    // one entry), so it is cheap; it still runs on a blocking thread with a
+    // heartbeat so a large tree never looks frozen (复制实例无进度显示).
     push_task_log(app, state, task_id, "正在统计源 DSH_HOME 文件…").await;
-    let total = crate::commands::count_tree_files(&src_home.path).max(1);
+    let scanned = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let count_handle = {
+        let src = src_home.path.clone();
+        let counter = scanned.clone();
+        tauri::async_runtime::spawn_blocking(move || {
+            crate::commands::count_tree_entries(&src, &move || {
+                counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            })
+        })
+    };
+    let mut count_handle = count_handle;
+    let total = loop {
+        tokio::select! {
+            res = &mut count_handle => {
+                break res.map_err(|e| format!("统计线程失败: {e}"))?.max(1);
+            }
+            _ = tokio::time::sleep(std::time::Duration::from_millis(500)) => {
+                let n = scanned.load(std::sync::atomic::Ordering::Relaxed);
+                push_task_log(app, state, task_id, &format!("正在统计源 DSH_HOME 文件…已扫描 {n} 项")).await;
+            }
+        }
+    };
     push_task_log(
         app,
         state,
         task_id,
-        &format!("共 {total} 个文件，开始复制（链接目标将解引用复制）…"),
+        &format!("共 {total} 个文件，开始复制（目录链接将保留为链接）…"),
     )
     .await;
 
