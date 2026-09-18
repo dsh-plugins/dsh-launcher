@@ -107,11 +107,21 @@ fn create_file_link(target: &Path, link: &Path) -> std::io::Result<()> {
 
 /// Removes a link entry (junction / symlink) without touching its target.
 fn remove_link(path: &Path, is_dir: bool) -> std::io::Result<()> {
-    if is_dir {
-        // remove_dir on a junction removes the link, not the target tree.
-        std::fs::remove_dir(path)
-    } else {
+    #[cfg(unix)]
+    {
+        // unlink(2) removes the symlink itself regardless of the target's
+        // type; remove_dir would fail with "not a directory".
+        let _ = is_dir;
         std::fs::remove_file(path)
+    }
+    #[cfg(windows)]
+    {
+        if is_dir {
+            // remove_dir on a junction removes the link, not the target tree.
+            std::fs::remove_dir(path)
+        } else {
+            std::fs::remove_file(path)
+        }
     }
 }
 
