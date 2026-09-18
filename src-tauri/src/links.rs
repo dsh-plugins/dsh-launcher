@@ -88,15 +88,16 @@ fn link_points_to(path: &Path, target: &Path) -> bool {
 fn create_file_link(target: &Path, link: &Path) -> std::io::Result<()> {
     #[cfg(unix)]
     {
-        return std::os::unix::fs::symlink(target, link);
+        std::os::unix::fs::symlink(target, link)
     }
     #[cfg(windows)]
     {
         if std::os::windows::fs::symlink_file(target, link).is_ok() {
-            return Ok(());
+            Ok(())
+        } else {
+            // Fallback: hard link (same volume only).
+            std::fs::hard_link(target, link)
         }
-        // Fallback: hard link (same volume only).
-        std::fs::hard_link(target, link)
     }
     #[cfg(not(any(unix, windows)))]
     {
