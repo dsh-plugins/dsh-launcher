@@ -2,7 +2,7 @@
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
-import { Message } from '@arco-design/web-vue'
+import { Message, Modal } from '@arco-design/web-vue'
 import { api } from '@/api'
 import { useLauncherStore } from '@/stores/launcher'
 import type {
@@ -252,6 +252,32 @@ async function onViewLog() {
   }
 }
 
+/** Env overrides apply at process launch only (issue #52): when the user
+ * edits them on a running instance, offer an immediate restart so the change
+ * visibly takes effect instead of looking broken. */
+function maybePromptEnvRestart(previous: DshInstance | null, envChanged: boolean) {
+  if (!previous || !envChanged) return
+  if (store.statusOf(previous.id).state !== 'running') return
+  const profile = previous.last_profile ?? previous.default_profile
+  Modal.confirm({
+    title: t('instanceEdit.envRestartTitle'),
+    content: profile
+      ? t('instanceEdit.envRestartHint', { profile })
+      : t('instanceEdit.envRestartNoProfile'),
+    okText: profile ? t('instanceEdit.envRestartNow') : t('common.confirm'),
+    cancelText: t('instanceEdit.envRestartLater'),
+    async onOk() {
+      if (!profile) return
+      try {
+        await api.stopInstance(previous.id)
+        await api.startInstance(previous.id, profile)
+      } catch (e) {
+        Message.error(String(e))
+      }
+    },
+  })
+}
+
 // --- Save ----------------------------------------------------------------------
 
 const formValid = computed(
@@ -273,6 +299,12 @@ async function onSave() {
       resolvedHomeId = home.id
       await store.refreshHomes()
     }
+    // Issue #52: env changes only reach the process at launch. Detect an
+    // env edit on a running instance so we can offer an immediate restart
+    // instead of leaving it on stale variables.
+    const previous = isNew.value ? null : (store.instanceById(editingId.value!) as DshInstance)
+    const envFingerprint = (m: Record<string, string>) => JSON.stringify(Object.entries(m).sort())
+    const envChanged = !!previous && envFingerprint(previous.env_overrides) !== envFingerprint(envOverrides)
     if (isNew.value) {
       await api.createInstance({
         name: name.value.trim(),
@@ -294,6 +326,7 @@ async function onSave() {
     }
     await store.refreshInstances()
     Message.success(t('instanceEdit.saved'))
+    maybePromptEnvRestart(previous, envChanged)
     router.push({ name: 'home' })
   } catch (e) {
     Message.error(String(e))

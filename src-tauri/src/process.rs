@@ -668,6 +668,55 @@ pub fn tui_active_profile(cfg: &Config, instance_id: &str) -> Option<String> {
 mod tests {
     use super::*;
 
+    /// Minimal Config with one home + one instance carrying env overrides.
+    fn cfg_with_env(overrides: &[(&str, &str)]) -> Config {
+        let mut cfg = Config::default();
+        cfg.homes.push(crate::config::DshHome {
+            id: "h1".to_string(),
+            name: "h1".to_string(),
+            path: PathBuf::from("C:/homes/h1"),
+            wsl: None,
+        });
+        cfg.instances.push(crate::config::DshInstance {
+            id: "i1".to_string(),
+            name: "demo".to_string(),
+            version_id: "v1".to_string(),
+            home_id: "h1".to_string(),
+            env_overrides: overrides
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect(),
+            default_profile: None,
+            last_profile: None,
+            icon: None,
+            port: None,
+        });
+        cfg
+    }
+
+    #[test]
+    fn build_env_carries_overrides_and_reserves_dsh_home() {
+        let cfg = cfg_with_env(&[
+            ("MY_FLAG", "1"),
+            ("DSH_HOME", "C:/evil"),
+            ("DSH_LAUNCHER_INSTANCE", "spoofed"),
+        ]);
+        let env = build_env(&cfg, "i1").unwrap();
+        let get = |k: &str| env.iter().find(|(key, _)| key == k).map(|(_, v)| v.clone());
+        assert_eq!(get("MY_FLAG").as_deref(), Some("1"));
+        // DSH_HOME always comes from the instance's home, never the payload.
+        assert_eq!(get("DSH_HOME").as_deref(), Some("C:/homes/h1"));
+        assert_eq!(get("DSH_LAUNCHER_INSTANCE").as_deref(), Some("demo"));
+        // Exactly one DSH_HOME entry.
+        assert_eq!(env.iter().filter(|(k, _)| k == "DSH_HOME").count(), 1);
+    }
+
+    #[test]
+    fn build_env_errors_for_unknown_instance() {
+        let cfg = cfg_with_env(&[]);
+        assert!(build_env(&cfg, "nope").is_err());
+    }
+
     #[tokio::test]
     async fn read_line_lossy_survives_invalid_utf8() {
         // Issue #42: 'a' + GBK「…」+ 'b' is not valid UTF-8; Lines::next_line

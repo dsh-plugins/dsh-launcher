@@ -112,12 +112,9 @@ pub async fn start_tui_session(
 
     let (home_path, version_dir) = crate::plugins::resolve_instance(&state, instance_id)?;
     let cfg = state.config.lock().unwrap().clone();
-    let inst = cfg
-        .instances
-        .iter()
-        .find(|i| i.id == instance_id)
-        .cloned()
-        .ok_or_else(|| "实例不存在".to_string())?;
+    if !cfg.instances.iter().any(|i| i.id == instance_id) {
+        return Err("实例不存在".to_string());
+    }
     let Some(profile) = crate::process::tui_active_profile(&cfg, instance_id) else {
         return Err("实例没有可用的 profile".to_string());
     };
@@ -140,8 +137,7 @@ pub async fn start_tui_session(
         ));
     }
 
-    let mut env = crate::process::build_env(&cfg, instance_id)?;
-    env.push(("DSH_LAUNCHER_INSTANCE".to_string(), inst.name.clone()));
+    let env = crate::process::build_env(&cfg, instance_id)?;
 
     let pty_system = native_pty_system();
     let pair = pty_system
