@@ -143,6 +143,22 @@ pub async fn ensure_distro_running(
     Ok(())
 }
 
+/// Runs a blocking closure on the async runtime's blocking pool.
+///
+/// WSL work reaches its files through the `\\wsl$\` share, where one
+/// `std::fs` call can block for milliseconds rather than microseconds; running
+/// those inline in an `async fn` parks a runtime worker and stalls every other
+/// command while a tree is walked (issue #49 G3). Shared by the modules that
+/// touch UNC paths (`modpack`, `skills`, `plugins`).
+pub async fn run_blocking<T, F>(f: F) -> Result<T, String>
+where
+    T: Send + 'static,
+    F: FnOnce() -> T + Send + 'static,
+{
+    tauri::async_runtime::spawn_blocking(f)
+        .await
+        .map_err(|e| format!("后台线程失败: {e}"))
+}
 /// Lists installed WSL distros (`wsl.exe -l -q`), excluding the internal
 /// docker-desktop distros. Empty when WSL is unavailable.
 #[cfg(windows)]
@@ -491,5 +507,48 @@ mod tests {
             version_fs_path(&wsl_ver),
             std::path::PathBuf::from(r"\\wsl$\Debian\home\u\.dsh-launcher\versions\0.1.0")
         );
+    }
+
+    /// issue #49 §2.2 boundary cases for the path bridge: the root path, a
+    /// trailing slash, spaces and an embedded single quote must all survive the
+    /// Linux -> UNC mapping (and `sh_quote` must keep the Linux form usable in
+    /// a script).
+    #[test]
+    fn fs_path_handles_boundary_linux_paths() {
+        // The filesystem root: trim_start_matches('/') leaves "", so the UNC
+        // path is the share root with no trailing separator.
+        assert_eq!(
+            fs_path(Some("Ubuntu"), std::path::Path::new("/")),
+            std::path::PathBuf::from(r"\\wsl$\Ubuntu\")
+        );
+        // A trailing slash must not produce an empty path component.
+        assert_eq!(
+            fs_path(Some("Ubuntu"), std::path::Path::new("/home/u/")),
+            std::path::PathBuf::from(r"\\wsl$\Ubuntu\home\u\")
+        );
+        // Spaces are literal in both flavours.
+        let spaced = std::path::Path::new("/home/u/my homes/x");
+        assert_eq!(
+            fs_path(Some("Ubuntu"), spaced),
+            std::path::PathBuf::from(r"\\wsl$\Ubuntu\home\u\my homes\x")
+        );
+        assert_eq!(sh_quote("/home/u/my homes/x"), "'/home/u/my homes/x'");
+        // A single quote in a Linux path is shell-escaped, not dropped.
+        let quoted = "/home/u/it's/x";
+        assert_eq!(
+            fs_path(Some("Ubuntu"), std::path::Path::new(quoted)),
+            std::path::PathBuf::from(r"\\wsl$\Ubuntu\home\u\it's\x")
+        );
+        assert_eq!(sh_quote(quoted), r"'/home/u/it'\''s/x'");
+    }
+
+    /// A local path must never be rewritten: `fs_path(None, ...)` is the
+    /// identity even for a Linux-looking path (the caller decides the flavour).
+    #[test]
+    fn fs_path_is_identity_for_local_homes() {
+        for raw in ["/", "/home/u/", "/home/u/it's/x", r"C:\homes\l"] {
+            let p = std::path::Path::new(raw);
+            assert_eq!(fs_path(None, p), p.to_path_buf(), "raw: {raw}");
+        }
     }
 }
