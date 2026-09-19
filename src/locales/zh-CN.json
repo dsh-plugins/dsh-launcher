@@ -61,7 +61,8 @@
       "warnTitle": "依赖树提示",
       "errorTitle": "依赖树异常"
     },
-    "noProfile": "该实例的 DSH_HOME 下没有可用 Profile"
+    "noProfile": "该实例的 DSH_HOME 下没有可用 Profile",
+    "wslInstallHint": "该实例位于 WSL 发行版「{distro}」内：依赖将在发行版内安装（拉取 Linux 二进制），请确保发行版可用"
   },
   "tui": {
     "starting": "正在启动 TUI 会话…"

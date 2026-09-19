@@ -61,7 +61,8 @@
       "warnTitle": "Dependency tree notice",
       "errorTitle": "Dependency tree fault"
     },
-    "noProfile": "No profile available under this instance's DSH_HOME"
+    "noProfile": "No profile available under this instance's DSH_HOME",
+    "wslInstallHint": "This instance lives inside the WSL distro \"{distro}\": dependencies are installed there (Linux binaries), so the distro must be available"
   },
   "tui": {
     "starting": "Starting TUI session…"
