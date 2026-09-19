@@ -441,6 +441,9 @@ pnpm build            # vue-tsc --noEmit && vite build
 | 3 | 阶段 3 进程类/插件链路 | 主 agent | §1.3 的 8 个消费点逐条复核（结论见阶段 3 节）；新增 `store_paths_match_wsl_linux_store` / `forwarded_flags_*` 单测；门禁全绿（test 179 passed） | ✅ 完成 |
 | 4 | 阶段 4 前端解禁 | 主 agent | 整页占位已删、`wslTabUnsupported` 死键零引用、向导新增 WSL 提示、整合包导入新增发行版选择器；i18n 键双向对齐校验通过（627/627）；`pnpm build` 0 | ✅ 完成 |
 | 5 | 阶段 5 验收 | 主 agent | §5.1 逐条对照（见 5.1 表）；README 中英文 WSL 段更新；**真机矩阵不可执行**（本机无 WSL2，R4）→ 已明确标注为评审方待办 | ⚠️ 部分（真机待外部执行） |
+| 5 | 阶段 5 独立审查 | subagent（独立 reviewer） | 全量 `git diff origin/main...HEAD` 逐文件审查 + 全仓 grep 交叉验证；**发现 1 阻塞 + 4 应修 + 9 建议**；明确"未发现"项 6 条（await 层级、shell 注入、回滚清理、main 回退、i18n 同步、版本过滤） | ✅ 完成 |
+| 5 | 评审问题修复 | 主 agent | **B1** i18n 键命名空间错（`instances` → `plugins`）；**S1** dshhome 导入图标写到 Linux 路径（静默丢失，已改 `fs_home`）；**S2** PTY 路径用 `cmd.env` 传 WSL 环境变量（跨不过 WSLENV 边界，改为内联 `export`）；**S3** 6 个 profile 命令 + 列表命令缺 `ensure_distro_running`（改 async + 前置 boot）；**S4** `start_instance` 冷启动先探测后拉起（已调序）。门禁全绿（fmt 0 / clippy 0 / **test 181 passed** / pnpm build 0） | ✅ 已修 |
+| 5 | 评审建议处理 | 主 agent | **A2** 已被 `5406562` 修复（reviewer 主动撤回）；**A3** 复核为**误报**（WSL 分支两个 `version_dir` 均为 Linux 路径，`prepare_shim` 在 WSL 下不可达）；**A9** 已加固（`cleanup_wsl_scratch` 断言路径位于 `<WslRoot>/tmp/` 前缀下，否则拒绝删除）；**A8** 已清理冗余绑定；**A1/A4/A5/A6/A7** 记录为后续优化项（非阻塞） | ⚠️ 部分采纳 |
 
 ---
 
