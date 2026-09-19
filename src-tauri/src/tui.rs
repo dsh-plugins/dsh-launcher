@@ -122,8 +122,13 @@ pub async fn start_tui_session(
         .iter()
         .find(|h| h.id == inst.home_id)
         .and_then(|h| h.wsl.clone());
-    // WSL (issue #19 follow-up): profile-kind probing reads through \\wsl$\,
-    // so ensure the distro is running before classifying.
+    // WSL (issue #19 follow-up): `resolve_instance` just returned the
+    // \\wsl$\ UNC path, and every read below (profile-kind probing, the
+    // bin.js probe, the spawn) needs the distro running. This MUST stay
+    // before the first UNC touch — the order is load-bearing (issue #49 G2):
+    // \\wsl$\ is unreachable while the distro is stopped, so an early probe
+    // would report a false "install incomplete". Locked by
+    // `wsl_boot_precedes_unc_probe` in the tests below.
     if let Some(d) = &wsl_distro {
         crate::wsl::ensure_distro_running(&state, d).await?;
     }
@@ -139,7 +144,7 @@ pub async fn start_tui_session(
     // WSL (issue #19 follow-up): the TUI runs inside the distro. The bin.js
     // exists check and the spawn go through wsl.exe; the version dir is the
     // Linux path.
-    let (linux_version, linux_home) = {
+    let (linux_version, linux_home, version_label) = {
         let cfg2 = state.config.lock().unwrap();
         let home = cfg2
             .homes
@@ -151,32 +156,19 @@ pub async fn start_tui_session(
             .iter()
             .find(|v| v.id == inst.version_id)
             .ok_or_else(|| "版本不存在".to_string())?;
-        (ver.dir.clone(), home.path.clone())
+        (ver.dir.clone(), home.path.clone(), ver.version.clone())
     };
+    // WSL probes the bin.js inside the distro (`test -s`); local instances
+    // check the Windows/UNC path. The two flavours never mix: `linux_version`
+    // is only ever handed to wsl.exe, `version_dir` only to std::fs.
     if let Some(distro) = &wsl_distro {
         let bin = crate::process::version_bin(&linux_version);
         if !crate::wsl::wsl_test(distro, "-s", &bin.to_string_lossy()).await {
-            return Err(format!(
-                "版本 {} 安装不完整（缺少 {}），请重新安装",
-                cfg.versions
-                    .iter()
-                    .find(|v| v.dir == linux_version)
-                    .map(|v| v.version.clone())
-                    .unwrap_or_default(),
-                bin.display()
-            ));
+            return Err(crate::process::version_missing_message(&version_label, &bin));
         }
     } else if !crate::process::version_bin_ready(&version_dir) {
         let bin = crate::process::version_bin(&version_dir);
-        return Err(format!(
-            "版本 {} 安装不完整（缺少 {}），请重新安装",
-            cfg.versions
-                .iter()
-                .find(|v| v.dir == version_dir)
-                .map(|v| v.version.clone())
-                .unwrap_or_default(),
-            bin.display()
-        ));
+        return Err(crate::process::version_missing_message(&version_label, &bin));
     }
 
     let env = crate::process::build_env(&cfg, instance_id)?;
@@ -568,5 +560,41 @@ mod tests {
     #[test]
     fn base64_decode_rejects_garbage() {
         assert!(super::base64_decode("not-base64!").is_err());
+    }
+
+    /// issue #49 G2: \\wsl$\ is unreachable while the distro is stopped, so
+    /// the boot (`ensure_distro_running`) must precede every UNC read in
+    /// `start_tui_session` — otherwise a cold start reports a false
+    /// "版本安装不完整". Source-order assertion: the live path needs a real
+    /// distro, which CI has no way to provide (R4).
+    #[test]
+    fn wsl_boot_precedes_unc_probe() {
+        let src = include_str!("tui.rs");
+        let body = src
+            .split("pub async fn start_tui_session")
+            .nth(1)
+            .expect("start_tui_session must exist")
+            .split("#[cfg(test)]")
+            .next()
+            .unwrap();
+        let boot = body
+            .find("ensure_distro_running")
+            .expect("the WSL branch must boot the distro");
+        // Every UNC-touching step in the session: profile-kind classification,
+        // the in-distro bin.js probe, and the spawn. All must come after boot.
+        for probe in [
+            "profile_kind",
+            "version_bin_ready",
+            "wsl_test(distro",
+            "spawn_command",
+        ] {
+            let at = body
+                .find(probe)
+                .unwrap_or_else(|| panic!("{probe} must appear in start_tui_session"));
+            assert!(
+                boot < at,
+                "{probe} runs before ensure_distro_running ({boot} vs {at}); the WSL share would be unreachable"
+            );
+        }
     }
 }
