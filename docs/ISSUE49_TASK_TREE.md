@@ -333,6 +333,8 @@ pub async fn ensure_distro_running(state, distro) -> Result<(), String>;  // TTL
 - [x] **新增**：对 WSL 实例在插件安装向导中提示"依赖将在发行版内安装（拉取 Linux 二进制）"，避免用户误解
 - [x] `vue-tsc --noEmit` + `vite build` 零错
 
+> **G4 复核修正（自审发现的真实缺陷）**：初版只加了提示，但 storage tab 仍会调用 `api.listHomeLinks`，而 `links.rs::list_home_links` 对 WSL **硬拒绝**——用户每次进入该 tab 都会看到一条后端错误 toast，与"给出能力提示而非报错"的目标相反。已改为：`loadHomeLinks()` 对 WSL 直接短路返回空、表格整体不渲染（`v-if="... && !isWsl"`）、`profilesNeedHome` 兜底分支加 `v-else-if="!isWsl"`。
+
 > **落地细节**：`InstallWizard.vue` 新增 `selectedDistro` 计算属性（经 `store.homeById(inst.home_id)?.wsl`），选中 WSL 实例时渲染 `plugins.wslInstallHint` 提示；`ModpackImportDialog.vue` 为 dshhome 形态新增发行版选择器（`onMounted` 拉 `api.listWslDistros()`，失败则静默留空，本地路径不受影响）。i18n 键 `instanceEdit.wslTabUnsupported` 全仓零引用（grep 确认）。**i18n 键对齐已校验**：zh-CN 与 en-US 各 627 个叶子键，双向差集为空。
 
 ### 阶段 5：验收（2~3 轮）
