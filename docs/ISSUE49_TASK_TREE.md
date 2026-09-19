@@ -269,33 +269,71 @@ pub async fn ensure_distro_running(state, distro) -> Result<(), String>;  // TTL
 
 > ⚠️ **过程坑预警**（源自 issue #46 的教训）：解冲突时不要用 `git checkout --ours/--theirs` 整块取边；main 侧 `plugins.rs` 有 1359 行改动，整块取边会**静默回退** main 的功能（市场多源、doctor、迁移）。逐函数比对 + `git diff 9105434...HEAD --stat` 复核。
 
-### 阶段 2：补齐纯文件类缺口（G1/G2/G4/G5/G6）🟠（3~4 轮）
+### 阶段 2：补齐纯文件类缺口（G1/G2/G4/G5/G6）🟠（3~4 轮）✅
 
-- [ ] **G1**：`terminal.rs` WSL 分支确认跳过 `prepare_shim`；补 `wsl_test(d,"-s",bin)` 显式校验
-- [ ] **G2**：`tui.rs` 确认 `ensure_distro_running` 在 `version_bin_ready`/UNC 探测**之前**执行；顺序错误则调整
-- [ ] **G4**：`InstanceEdit.vue` storage tab 对 WSL 显示**局部能力提示**（非整页禁用）；`links.rs` 后端硬拒绝保留为安全网
-- [ ] **G5**：`modpack.rs` `import_dshhome_body`（`:2275`）补 WSL 分支，复用 `pnpm_install_profile_wsl`
-- [ ] **G6**：`skills.rs` `install_skill_repo` 在 WSL 下改为**发行版内 `git clone`**（`wsl_bash` + Linux 目标路径）
-- [ ] **G3（部分）**：UNC 重 I/O 包 `spawn_blocking`（`copy_instance` 递归拷贝、`uninstall` 的 `remove_dir_all`）
-- [ ] 单测：`fs_path` / `home_fs_path` / `version_fs_path` 双向映射（PR #48 已带 3 项，补齐边界：根路径 `/`、尾斜杠、含空格、含单引号）
-- [ ] 门禁四项全绿
+- [x] **G1**：`terminal.rs` WSL 分支确认跳过 `prepare_shim`；补 `wsl_test(d,"-s",bin)` 显式校验
+- [x] **G2**：`tui.rs` 确认 `ensure_distro_running` 在 `version_bin_ready`/UNC 探测**之前**执行；顺序错误则调整
+- [x] **G4**：`InstanceEdit.vue` storage tab 对 WSL 显示**局部能力提示**（非整页禁用）；`links.rs` 后端硬拒绝保留为安全网
+- [x] **G5**：`modpack.rs` `import_dshhome_body`（`:2275`）补 WSL 分支，复用 `pnpm_install_profile_wsl`
+- [x] **G6**：`skills.rs` `install_skill_repo` 在 WSL 下改为**发行版内 `git clone`**（`wsl_bash` + Linux 目标路径）
+- [x] **G3（部分）**：UNC 重 I/O 包 `spawn_blocking`（`copy_instance` 递归拷贝、`uninstall` 的 `remove_dir_all`）
+- [x] 单测：`fs_path` / `home_fs_path` / `version_fs_path` 双向映射（PR #48 已带 3 项，补齐边界：根路径 `/`、尾斜杠、含空格、含单引号）
+- [x] 门禁四项全绿
 
-### 阶段 3：补齐进程类缺口 + 插件链路复核（G3 收尾）🔴 核心（3~4 轮）
+> **实际结果**
+>
+> | 缺口 | 落地方式 | 关键设计 |
+> | --- | --- | --- |
+> | G1 | `terminal.rs` 新增 `wsl_version_bin_ready(distro, bin)` + `spawn_session` 改 `async` | WSL 分支**确实**跳过 `prepare_shim`（该函数写 Windows `dsh.cmd` 并用 `version_bin_ready` 检查 Linux 目录，必然失败）；探针改为发行版内 `test -s`，错误信息打印 **Linux** 路径（不泄露用户看不见的 UNC） |
+> | G2 | `tui.rs` 顺序确认正确，加注释锁定契约 + 源码序回归测试 | `wsl_boot_precedes_unc_probe` 断言 `ensure_distro_running` 出现在 `profile_kind` / `version_bin_ready` / `wsl_test` / `spawn_command` **之前**（真机路径 CI 无法覆盖，见 R4） |
+> | G4 | `InstanceEdit.vue` storage 分支加 `v-if="isWsl"` 提示 + 操作按钮 `:disabled="isWsl"`；i18n 新增 `storageWslUnsupported` | 后端 `links.rs` 硬拒绝保留为安全网；**未**实现 WSL 存储重定向（采纳 §7.2 Q1 延期建议） |
+> | G5 | `import_dshhome_body` 新增 `home_linux` / `distro` 参数；`ImportModpackInput` 新增 `wsl_distro`；前端 `ModpackImportDialog` 加发行版选择器 | **复核修正**（见下）：初版只把文件路径改成 UNC，漏了"版本必须来自该发行版" |
+> | G6 | `install_skill_repo` WSL 分支：`mktemp -d` → 发行版内 `git clone` → UNC 读 bundle → 复制进发行版 skills 目录 | 抽出 4 个**纯函数**脚本构造器（`wsl_clone_script` / `wsl_rev_parse_script` / `wsl_describe_script` / `wsl_rm_script`）以便单测；URL 与目录全部 `sh_quote` |
+> | G3 | 新增共享 `wsl::run_blocking`；包装 `modpack` 的 4 处 tree 拷贝、`skills` 的 UNC 遍历、`plugins` 的清单读取 / 版本探测 / patch 读改写 | 说明见下 |
+>
+> **G5 复核修正（自审发现的真实缺陷）**：初版实现把 `home.path` 直接当 Windows 路径用（未过 `home_fs_path`），且在 WSL 目标下可能解析到**本地 Windows 的版本记录**——启动时会在发行版内引用一个不存在的 Linux 路径。已改为：先定 `distro` → 再 `resolve_import_version(.., distro)` 按 `v.wsl` 过滤 → 缺失时调 `install_version_streamed_wsl`。新增回归测试 `import_version_selection_is_distro_scoped`。
+>
+> **G3 范围说明（与计划原文的差异）**：计划点名 `copy_instance` 递归拷贝，但 `tasks.rs::do_copy_instance` **在 main 上已经**是 `spawn_blocking`（阶段 1 合并时保留，只把源换成 `src_fs`），无需改动。`uninstall_plugin` 的 `remove_dir_all` 经复核**不在**卸载路径上（它只读/写 `cordis.patch.yml`，实际删除由发行版内的 CLI 完成），因此改为包装真正存在的 UNC I/O：profile 清单读取、node_modules 版本探测、`cordis.patch.yml` 读改写、以及 modpack/skills 的树遍历。
 
-- [ ] 逐条复核 §1.3 的 **8 个 `resolve_instance` 消费点**在 WSL 下走对了语义（Windows 可视 vs Linux）
-- [ ] `dsh_plugin_command` 的 `wsl_test` 探针：确认不阻塞（`async`）+ 失败信息可诊断
-- [ ] `start_install_plugin_file_task` 的 tgz 复制：确认 UNC 复制目标目录已 `mkdir -p`，且失败时清理发行版临时文件
-- [ ] `run_dsh_plugin` 的 store 一致性检测（`linked_store_dir` / `store_paths_match`）：WSL 下比对的是 **Linux store 路径**（PR #48 已传入 `linux_store`），补单测
-- [ ] `relink_profile_store` 的 `node_exe` 参数：确认 WSL 下为发行版 node（非 Windows node）
-- [ ] 补测：`forwarded_pnpm_flags` 纯函数化后（PR #48 已去掉 `State` 参数）的单测
+### 阶段 3：补齐进程类缺口 + 插件链路复核（G3 收尾）🔴 核心（3~4 轮）✅
 
-### 阶段 4：前端解禁与能力降级（1~2 轮）
+- [x] 逐条复核 §1.3 的 **8 个 `resolve_instance` 消费点**在 WSL 下走对了语义（Windows 可视 vs Linux）
+- [x] `dsh_plugin_command` 的 `wsl_test` 探针：确认不阻塞（`async`）+ 失败信息可诊断
+- [x] `start_install_plugin_file_task` 的 tgz 复制：确认 UNC 复制目标目录已 `mkdir -p`，且失败时清理发行版临时文件
+- [x] `run_dsh_plugin` 的 store 一致性检测（`linked_store_dir` / `store_paths_match`）：WSL 下比对的是 **Linux store 路径**（PR #48 已传入 `linux_store`），补单测
+- [x] `relink_profile_store` 的 `node_exe` 参数：确认 WSL 下为发行版 node（非 Windows node）
+- [x] 补测：`forwarded_pnpm_flags` 纯函数化后（PR #48 已去掉 `State` 参数）的单测
 
-- [ ] 删除 `InstanceEdit.vue` 的 WSL 整页占位分支（PR #48 已删，合并后复核 storage 是否被漏掉）
-- [ ] 删除 i18n 死键 `instanceEdit.wslTabUnsupported`（zh-CN + en-US 同步）
-- [ ] `InstallWizard.vue` / `MigratePluginsDialog.vue` 放开 WSL 过滤（PR #48 已做）
-- [ ] **新增**：对 WSL 实例在插件安装向导中提示"依赖将在发行版内安装（拉取 Linux 二进制）"，避免用户误解
-- [ ] `vue-tsc --noEmit` + `vite build` 零错
+> **逐条复核结论（§1.3 的 8 个消费点）**
+>
+> | 消费点 | 语义 | 结论 |
+> | --- | --- | --- |
+> | `plugins.rs::list_installed_plugins` | 读 profile 清单 + patch | ✅ 走 `resolve_instance`（UNC）；已移入 `run_blocking` |
+> | `plugins.rs::check_plugin_updates` | 读 node_modules | ✅ 走 `resolve_instance`（UNC）；版本探测已移入 `run_blocking` |
+> | `plugins.rs::set_plugins_enabled` | 读写 `cordis.patch.yml` | ✅ 走 `resolve_instance`（UNC）；读写已移入 `run_blocking` |
+> | `plugins.rs::uninstall_plugin` | 文件准备 + 发行版内执行 | ✅ `resolve_instance_linux` 取 Linux 路径给 CLI；UNC 给 patch 读写；两者**未混用** |
+> | `plugins.rs::start_install_plugin_task` | 参数解析 | ✅ `resolve_instance`（UNC）仅用于 `dir.exists()` 预检，正确 |
+> | `plugins.rs::do_install_plugin` | 文件准备 + 发行版内执行 | ✅ `resolve_instance_linux` → `fs_home` 走 UNC、`home_path`/`version_dir` 走 CLI；命名与用法一致 |
+> | `terminal.rs::spawn_session` | PTY cwd | ✅ 阶段 2 已重构为 `home_fs`（本地 cwd）+ 发行版内 bash |
+> | `tui.rs::start_tui_session` | PTY cwd | ✅ 同上；`ensure_distro_running` 前置 |
+>
+> **其余复核项**
+>
+> - `dsh_plugin_command` 的 `wsl_test` 是 `async fn`，不阻塞 runtime；bin 缺失时报错含**发行版内 Linux 路径**，可诊断。
+> - tgz 复制：`wsl_output(["mkdir","-p",tmp_dir])` 先建目录，再用 `uuid` 唯一化文件名避免并发同名冲突。**开放项**：安装成功后**未**删除发行版临时文件（计划 §7.2 Q3 建议 TTL 清理）——本轮未做，留待产品决策。
+> - store 一致性：`linux_store` 取自 `WslRoot::pnpm_store()`（Linux 路径），与 `linked_store_dir` 读到的 `.modules.yaml` 值同属 Linux 语义 → 比对正确。新增 `store_paths_match_wsl_linux_store` 锁定（并断言 UNC 形式**不**匹配）。
+> - `relink_profile_store` 的 `node_exe` 在 WSL 分支来自 `WslRoot::node_exe()`（发行版 node），非 `process::node()`。
+> - `forwarded_pnpm_flags` 单测：新增 `forwarded_flags_use_the_supplied_store` 与 `forwarded_flags_registry_only_when_set`（后者含环境变量清理，避免污染其他测试）。
+
+### 阶段 4：前端解禁与能力降级（1~2 轮）✅
+
+- [x] 删除 `InstanceEdit.vue` 的 WSL 整页占位分支（PR #48 已删，合并后复核 storage 是否被漏掉）
+- [x] 删除 i18n 死键 `instanceEdit.wslTabUnsupported`（zh-CN + en-US 同步）
+- [x] `InstallWizard.vue` / `MigratePluginsDialog.vue` 放开 WSL 过滤（PR #48 已做）
+- [x] **新增**：对 WSL 实例在插件安装向导中提示"依赖将在发行版内安装（拉取 Linux 二进制）"，避免用户误解
+- [x] `vue-tsc --noEmit` + `vite build` 零错
+
+> **落地细节**：`InstallWizard.vue` 新增 `selectedDistro` 计算属性（经 `store.homeById(inst.home_id)?.wsl`），选中 WSL 实例时渲染 `plugins.wslInstallHint` 提示；`ModpackImportDialog.vue` 为 dshhome 形态新增发行版选择器（`onMounted` 拉 `api.listWslDistros()`，失败则静默留空，本地路径不受影响）。i18n 键 `instanceEdit.wslTabUnsupported` 全仓零引用（grep 确认）。**i18n 键对齐已校验**：zh-CN 与 en-US 各 627 个叶子键，双向差集为空。
 
 ### 阶段 5：验收（2~3 轮）
 
@@ -330,14 +368,16 @@ pub async fn ensure_distro_running(state, distro) -> Result<(), String>;  // TTL
 
 | # | 验收标准 | 判定方式 | 状态 |
 | --- | --- | --- | --- |
-| 1 | 统一路径桥：WSL 路径自动映射 `\\wsl$\`，访问前自动检测/拉起发行版（TTL 探针缓存） | 单测 `fs_path`/`home_fs_path`/`version_fs_path` 双向 + 真机 `wsl --terminate` 后自动拉起 | ⬜ |
-| 2 | Profile 增删改查 + Web/TUI 类型识别 | 真机：新建/复制/重命名/删除 profile，TUI profile 显示为 TUI 类型 | ⬜ |
-| 3 | 插件查看版本状态 + 启停 + 卸载 | 真机：列出已装插件、切换启用、卸载 | ⬜ |
-| 3b | 插件安装（npm/GitHub/本地 tgz）在发行版内执行，拉取 Linux 产物 | 真机：三种来源各装一次，`node_modules` 内含 `.node` Linux 二进制 | ⬜ |
-| 4 | Skills 与 MCP 在 WSL HOME 中增删查改（`cordis.patch.yml`） | 真机：装一个 skill 仓库、增删一个 MCP server | ⬜ |
-| 5 | 从 WSL 实例复制到本地 Windows 新 HOME，迁移 Profile 与图标 | 真机：复制后本地实例可启动，图标保留 | ⬜ |
-| 6 | 终端经 `wsl.exe -d <distro> -- bash -i`；TUI Profile 在 WSL 内 exec | 真机：终端可交互、`echo $HOME` 为 Linux 路径；TUI 可启动 | ⬜ |
-| 7 | 前端解禁：移除整页禁用占位，按能力正常呈现 | 视觉核对：6 个 tab 均可用（storage 为能力提示） | ⬜ |
+| 1 | 统一路径桥：WSL 路径自动映射 `\\wsl$\`，访问前自动检测/拉起发行版（TTL 探针缓存） | 单测 `fs_path`/`home_fs_path`/`version_fs_path` 双向 + 真机 `wsl --terminate` 后自动拉起 | 🟡 **单测 ✅ / 真机不可执行**（本机无 WSL2）。新增边界单测 `fs_path_handles_boundary_linux_paths`（根 `/`、尾斜杠、空格、单引号）与 `fs_path_is_identity_for_local_homes` |
+| 2 | Profile 增删改查 + Web/TUI 类型识别 | 真机：新建/复制/重命名/删除 profile，TUI profile 显示为 TUI 类型 | 🟡 代码路径已全部改走 `home_fs_path`；**真机未验** |
+| 3 | 插件查看版本状态 + 启停 + 卸载 | 真机：列出已装插件、切换启用、卸载 | 🟡 语义复核 ✅（§阶段 3 表）+ 新增 store/参数单测；**真机未验** |
+| 3b | 插件安装（npm/GitHub/本地 tgz）在发行版内执行，拉取 Linux 产物 | 真机：三种来源各装一次，`node_modules` 内含 `.node` Linux 二进制 | 🟡 `dsh_plugin_command` 走 `wsl_bash` + 发行版 node/pnpm/store 已确认；**真机未验** |
+| 4 | Skills 与 MCP 在 WSL HOME 中增删查改（`cordis.patch.yml`） | 真机：装一个 skill 仓库、增删一个 MCP server | 🟡 **本轮补齐**：`install_skill_repo` 改发行版内 `git clone`（原为 Windows git 写 UNC）；4 个脚本构造器有单测；**真机未验** |
+| 5 | 从 WSL 实例复制到本地 Windows 新 HOME，迁移 Profile 与图标 | 真机：复制后本地实例可启动，图标保留 | 🟡 `tasks.rs` 源走 `src_fs`（UNC）+ `spawn_blocking`；**真机未验** |
+| 6 | 终端经 `wsl.exe -d <distro> -- bash -i`；TUI Profile 在 WSL 内 exec | 真机：终端可交互、`echo $HOME` 为 Linux 路径；TUI 可启动 | 🟡 **本轮补齐** G1/G2：终端版本探针改发行版内 `test -s`；TUI 顺序契约有回归测试；**真机未验** |
+| 7 | 前端解禁：移除整页禁用占位，按能力正常呈现 | 视觉核对：6 个 tab 均可用（storage 为能力提示） | ✅ 整页占位已删、死键已清、`pnpm build` 零错；**视觉核对未做**（需运行 GUI + WSL） |
+
+> **验收口径说明（重要）**：本机 **未安装 WSL2**（`wsl.exe -l -q` 返回 `WSL_E_DISTRO_NOT_FOUND`），§5.2 真机冒烟矩阵**在本机不可执行**。因此上表所有涉及发行版内实际行为的条目均为「代码路径复核 + 单测覆盖」而非「真机通过」。这正对应计划 §7.1 **R4**（CI/开发机均无 WSL2）。**PR 评审时应明确要求维护者在具备 WSL2 的机器上跑一遍 §5.2 矩阵**。
 
 ### 5.2 真机冒烟矩阵（阶段 5 执行）
 
@@ -383,7 +423,11 @@ pnpm build            # vue-tsc --noEmit && vite build
 | — | 建档 | 主 agent | 依据 issue #49 + 上游 `main` @ `9105434` 源码核验，产出本文件；实测 PR #48 状态为 OPEN/CONFLICTING | ✅ 完成 |
 | 0 | 阶段 0 现状确认 | 主 agent | 基线 `9105434` 冻结（gh api + ls-remote 双确认）；PR #48 仍 OPEN/CONFLICTING/DIRTY；**本机无 WSL2**（`WSL_E_DISTRO_NOT_FOUND`）→ 真机矩阵不可执行；工具链 cargo 1.97/node 24/pnpm 11 可构建 | ✅ 完成 |
 | 1 | 阶段 1 追平 main | 主 agent | 分支 `feat/49-wsl-home-ops` 起于 `9105434`；cherry-pick PR #48 两提交（`6638349`/`b146e10`）+ 补 `DshHome.links`（`2486c92`）。冲突仅 4 文件（`plugins.rs`/`commands.rs` **自动合并**，与预估的 🔴 极高不符）；四项门禁全绿（fmt 0 / clippy 0 / test 166 passed / pnpm build 0） | ✅ 完成 |
-| 1 | 阶段 1 复核 | 主 agent | `git diff 9105434...HEAD --stat` = 18 文件 +604/-111，与 PR #48 原始 diff 吻合，无 main 侧回退；`count_tree_files` 不存在于 main，已按"取 main 心跳实现 + 换 UNC 源"处理 | ✅ 完成 |
+| 1 | 阶段 1 复核 | 主 agent | `git diff 9105434...HEAD --stat` = 18 文件 +604/-111，与 PR #48 原始 diff 吻合，无 main 侧回退；`count_tree_files` 不存在于 main，已按"取 main 心跳实现 + 换 UNC 源"处理 | ✅ 完成 || 2 | 阶段 2 纯文件类缺口 | 主 agent | G1（终端探针）/G2（TUI 顺序契约）/G4（storage 能力提示）/G5（dshhome 导入 WSL）/G6（发行版内 git clone）/G3（UNC I/O → `run_blocking`）全部落地；边界单测补齐；门禁四项全绿（fmt 0 / clippy 0 / test 179 passed / pnpm build 0） | ✅ 完成 |
+| 2 | 阶段 2 复核 | 主 agent | **自审发现 G5 真实缺陷**：初版未把 `home.path` 过 `home_fs_path`，且 WSL 目标可能解析到本地 Windows 版本记录 → 已抽 `resolve_import_version(.., distro)` 按 `v.wsl` 过滤 + 走 `install_version_streamed_wsl`，补回归测试 | ✅ 已修 |
+| 3 | 阶段 3 进程类/插件链路 | 主 agent | §1.3 的 8 个消费点逐条复核（结论见阶段 3 节）；新增 `store_paths_match_wsl_linux_store` / `forwarded_flags_*` 单测；门禁全绿（test 179 passed） | ✅ 完成 |
+| 4 | 阶段 4 前端解禁 | 主 agent | 整页占位已删、`wslTabUnsupported` 死键零引用、向导新增 WSL 提示、整合包导入新增发行版选择器；i18n 键双向对齐校验通过（627/627）；`pnpm build` 0 | ✅ 完成 |
+| 5 | 阶段 5 验收 | 主 agent | §5.1 逐条对照（见 5.1 表）；README 中英文 WSL 段更新；**真机矩阵不可执行**（本机无 WSL2，R4）→ 已明确标注为评审方待办 | ⚠️ 部分（真机待外部执行） |
 
 ---
 
