@@ -285,7 +285,7 @@ async fn spawn_session(
         Some(_) => "wsl.exe".to_string(),
         None => shell_program(),
     };
-    let (shim_dir, _version_bin) = if let Some(distro) = &wsl_distro {
+    let shim_dir = if let Some(distro) = &wsl_distro {
         let bin = crate::process::version_bin(&version_linux);
         if !wsl_version_bin_ready(distro, &bin).await {
             return Err(crate::process::version_missing_message(
@@ -293,10 +293,9 @@ async fn spawn_session(
                 &bin,
             ));
         }
-        (None, bin)
+        None
     } else {
-        let bin_dir = prepare_shim(&state.data_dir, &version_fs)?;
-        (Some(bin_dir), crate::process::version_bin(&version_fs))
+        Some(prepare_shim(&state.data_dir, &version_fs)?)
     };
     let env = terminal_env(state, instance_id, shim_dir.as_deref())?;
 
