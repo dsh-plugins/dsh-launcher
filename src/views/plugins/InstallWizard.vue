@@ -39,6 +39,13 @@ const profilesLoading = ref(false)
 const instances = computed(() => store.instances)
 const selectedInstance = computed(() => store.instanceById(instanceId.value))
 
+/** Distro of the selected instance, or null for a local Windows instance. */
+const selectedDistro = computed(() => {
+  const inst = selectedInstance.value
+  if (!inst) return null
+  return store.homeById(inst.home_id)?.wsl ?? null
+})
+
 /**
  * 版本号显示：alpha（开发版）是 Git commit 哈希，只显示前 7 位；提交安装
  * 时仍使用完整的哈希（state.version.version 原样传给后端）。
@@ -195,6 +202,14 @@ async function startInstall() {
             </a-option>
           </a-select>
 
+          <!-- WSL (issue #49): dependencies are installed inside the distro,
+               so native modules resolve to Linux binaries. Say so up front —
+               the resulting node_modules is not interchangeable with a
+               Windows instance's. -->
+          <a-alert v-if="selectedDistro" type="info" class="wsl-install-hint">
+            {{ t('plugins.wslInstallHint', { distro: selectedDistro }) }}
+          </a-alert>
+
           <div class="profile-section">
             <div class="profile-label">{{ t('plugins.chooseProfile') }}</div>
             <a-select
@@ -309,6 +324,10 @@ async function startInstall() {
 
 .no-instance {
   padding: 8px 0;
+}
+
+.wsl-install-hint {
+  margin: 12px 0;
 }
 
 .profile-section {
