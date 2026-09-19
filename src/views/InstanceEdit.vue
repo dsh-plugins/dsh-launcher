@@ -1861,8 +1861,16 @@ const terminalRunning = ref(false)
               <HintIcon :content="t('instanceEdit.storageDesc')" />
             </h4>
 
+            <!-- WSL (issue #49 G4): storage redirection is not implemented for
+                 WSL HOMEs — the backend rejects it outright (links.rs). Surface
+                 that as a scoped capability notice here instead of letting the
+                 user click through to a raw backend error. -->
+            <a-alert v-if="isWsl" type="info" class="storage-caveat">
+              {{ t('instanceEdit.storageWslUnsupported') }}
+            </a-alert>
+
             <template v-if="homeId && homeId !== DEDICATED">
-              <a-alert type="warning" class="storage-caveat">
+              <a-alert v-if="!isWsl" type="warning" class="storage-caveat">
                 {{ t('instanceEdit.storageCaveat') }}
               </a-alert>
               <a-table
@@ -1886,7 +1894,7 @@ const terminalRunning = ref(false)
                   <span v-else>-</span>
                 </template>
                 <template #storageActions="{ record }">
-                  <a-button size="mini" :disabled="linkBusy" @click="openLinkDialog(record)">
+                  <a-button size="mini" :disabled="linkBusy || isWsl" @click="openLinkDialog(record)">
                     {{ record.target ? t('instanceEdit.storageModify') : t('instanceEdit.storageSet') }}
                   </a-button>
                   <a-popconfirm
@@ -1894,7 +1902,7 @@ const terminalRunning = ref(false)
                     :content="t('instanceEdit.storageClearConfirm')"
                     @ok="clearLink(record)"
                   >
-                    <a-button size="mini" status="danger" :disabled="linkBusy">
+                    <a-button size="mini" status="danger" :disabled="linkBusy || isWsl">
                       {{ t('instanceEdit.storageClear') }}
                     </a-button>
                   </a-popconfirm>
