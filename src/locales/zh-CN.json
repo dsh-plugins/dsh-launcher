@@ -384,6 +384,7 @@
     "envRestartLater": "稍后",
     "storageDesc": "把该 DSH_HOME 下的大体积条目（会话、附件、存储等）重定向到其他位置：HOME 内的条目会被替换为指向目标的链接。仅支持列出的条目；WSL HOME 暂不支持。",
     "storageCaveat": "注意：仅 HOME 根部的全局配置层可重定向（profiles 下的按 Profile 配置不支持）；文件条目在 Windows 上可能退化为硬链接，DSH 原子替换写入可能使其失效，属于实验能力；目标不能位于该 DSH_HOME 内部。",
+    "storageWslUnsupported": "WSL 实例的 DSH_HOME 位于发行版内，存储重定向暂不支持（需要在发行版内创建并校验符号链接）。本地 Windows 实例不受影响。",
     "storageEntry": "条目",
     "storageTarget": "目标路径",
     "storageDefault": "默认（HOME 内）",
