@@ -337,13 +337,24 @@ pub async fn ensure_distro_running(state, distro) -> Result<(), String>;  // TTL
 
 > **落地细节**：`InstallWizard.vue` 新增 `selectedDistro` 计算属性（经 `store.homeById(inst.home_id)?.wsl`），选中 WSL 实例时渲染 `plugins.wslInstallHint` 提示；`ModpackImportDialog.vue` 为 dshhome 形态新增发行版选择器（`onMounted` 拉 `api.listWslDistros()`，失败则静默留空，本地路径不受影响）。i18n 键 `instanceEdit.wslTabUnsupported` 全仓零引用（grep 确认）。**i18n 键对齐已校验**：zh-CN 与 en-US 各 627 个叶子键，双向差集为空。
 
-### 阶段 5：验收（2~3 轮）
+### 阶段 5：验收（2~3 轮）⚠️ 部分（真机待外部执行）
 
-- [ ] 逐条对照 §5 验收标准（含 issue 原文 7 条）
-- [ ] **真机 WSL 冒烟矩阵**（§5.2）逐项执行并留证据（日志/截图）
-- [ ] 离线/发行版未运行降级验证：停掉发行版（`wsl --terminate <distro>`）后调用各命令，确认**自动拉起**或给出**可诊断错误**（而非静默失败）
-- [ ] 回归：本地 Windows 实例的全部功能不受影响（`cargo test` + 手工冒烟）
-- [ ] 文档回填：README 中英文 WSL 段、本文档 §6 日志
+- [x] 逐条对照 §5 验收标准（含 issue 原文 7 条）→ 结论见 §5.1 表
+- [ ] **真机 WSL 冒烟矩阵**（§5.2）逐项执行并留证据（日志/截图）→ ⛔ **本机不可执行**（无 WSL2，见下）
+- [ ] 离线/发行版未运行降级验证：停掉发行版（`wsl --terminate <distro>`）后调用各命令，确认**自动拉起**或给出**可诊断错误**（而非静默失败）→ ⛔ 同上
+- [x] 回归：本地 Windows 实例的全部功能不受影响（`cargo test` + 手工冒烟）→ 全量门禁通过，本地路径全部为恒等映射且有单测锁定
+- [x] 文档回填：README 中英文 WSL 段、本文档 §6 日志
+
+> **⛔ 本机无 WSL2（R4 实际命中）**：`wsl.exe -l -q` 返回 `WSL_E_DISTRO_NOT_FOUND`（系统提示需先安装 WSL），因此 **§5.2 的真机冒烟矩阵与「冷启动/降级」验证在本机无法执行**。
+>
+> **本轮实际做到的替代验证**：
+>
+> 1. **门禁四项全绿**：`cargo fmt --check`=0 · `cargo clippy --workspace --all-targets -- -D warnings`=0 · `cargo test --workspace`=**180 passed / 0 failed / 3 ignored** · `pnpm build`（`vue-tsc --noEmit && vite build`）=0。
+> 2. **把可测逻辑抽成纯函数并单测**（正对应 R4 的缓解措施）：路径映射 4 项、WSL 脚本构造 3 项、`forwarded_pnpm_flags` 2 项、store 比对 2 项、`import_dshhome` 输入/版本选择 3 项、终端探针 2 项、TUI 顺序契约 1 项。
+> 3. **源码序断言**：`wsl_boot_precedes_unc_probe`（tui.rs）与 `wsl_probe_uses_non_empty_test`（terminal.rs）把"顺序/参数"这类真机才暴露的契约固化成测试。
+> 4. **i18n 双向对齐校验**：zh-CN / en-US 各 627 叶子键，差集为空。
+>
+> **留给评审方的必做项**（PR 描述中已列）：在具备 WSL2 的机器上跑 §5.2 矩阵，尤其是「冷启动」列（`wsl --terminate <distro>` 后逐项调用，验证 `ensure_distro_running` 的自动拉起）与「tgz/仓库/Skill 安装」的 Linux 产物校验。
 
 ---
 
