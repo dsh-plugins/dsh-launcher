@@ -164,11 +164,17 @@ pub async fn start_tui_session(
     if let Some(distro) = &wsl_distro {
         let bin = crate::process::version_bin(&linux_version);
         if !crate::wsl::wsl_test(distro, "-s", &bin.to_string_lossy()).await {
-            return Err(crate::process::version_missing_message(&version_label, &bin));
+            return Err(crate::process::version_missing_message(
+                &version_label,
+                &bin,
+            ));
         }
     } else if !crate::process::version_bin_ready(&version_dir) {
         let bin = crate::process::version_bin(&version_dir);
-        return Err(crate::process::version_missing_message(&version_label, &bin));
+        return Err(crate::process::version_missing_message(
+            &version_label,
+            &bin,
+        ));
     }
 
     let env = crate::process::build_env(&cfg, instance_id)?;
