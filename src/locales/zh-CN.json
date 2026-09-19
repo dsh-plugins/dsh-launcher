@@ -61,8 +61,7 @@
       "warnTitle": "依赖树提示",
       "errorTitle": "依赖树异常"
     },
-    "noProfile": "该实例的 DSH_HOME 下没有可用 Profile",
-    "wslInstallHint": "该实例位于 WSL 发行版「{distro}」内：依赖将在发行版内安装（拉取 Linux 二进制），请确保发行版可用"
+    "noProfile": "该实例的 DSH_HOME 下没有可用 Profile"
   },
   "tui": {
     "starting": "正在启动 TUI 会话…"
@@ -165,6 +164,7 @@
     "chooseProfile": "选择 Profile",
     "noInstance": "没有可用实例，请先创建实例",
     "noProfile": "该实例的 DSH_HOME 下没有 Profile，请先创建",
+    "wslInstallHint": "该实例位于 WSL 发行版「{distro}」内：依赖将在发行版内安装（拉取 Linux 二进制），请确保发行版可用",
     "goDownload": "前往创建实例",
     "startInstall": "开始安装",
     "installTaskAdded": "已创建安装任务，可在任务页查看进度",

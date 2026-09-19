@@ -143,6 +143,44 @@ pub async fn ensure_distro_running(
     Ok(())
 }
 
+/// The WSL distro an instance runs in, or `None` for a local instance
+/// (issue #49 S4): the launch path needs to boot it before any `\\wsl$\` read.
+pub fn home_distro_of(
+    state: &tauri::State<'_, crate::AppState>,
+    instance_id: &str,
+) -> Option<String> {
+    let cfg = state.config.lock().unwrap();
+    let inst = cfg.instances.iter().find(|i| i.id == instance_id)?;
+    cfg.homes
+        .iter()
+        .find(|h| h.id == inst.home_id)
+        .and_then(|h| h.wsl.clone())
+}
+/// Boots the distro backing a WSL home so `\\wsl$\` reads succeed (issue #49
+/// S3). A local home is a no-op.
+///
+/// Every command that reads a HOME through the Windows filesystem must call
+/// this first: the share is unreachable while the distro is stopped, and the
+/// resulting `read_dir`/`exists` failure is indistinguishable from "empty", so
+/// without it a stopped distro looks like a HOME with no profiles / plugins /
+/// skills. Returns the boot error so the caller can surface it instead of
+/// silently reporting an empty result.
+pub async fn ensure_home_running(
+    state: &tauri::State<'_, crate::AppState>,
+    home_id: &str,
+) -> Result<(), String> {
+    let distro = {
+        let cfg = state.config.lock().unwrap();
+        cfg.homes
+            .iter()
+            .find(|h| h.id == home_id)
+            .and_then(|h| h.wsl.clone())
+    };
+    match distro {
+        Some(d) => ensure_distro_running(state, &d).await,
+        None => Ok(()),
+    }
+}
 /// Runs a blocking closure on the async runtime's blocking pool.
 ///
 /// WSL work reaches its files through the `\\wsl$\` share, where one
@@ -359,6 +397,20 @@ pub async fn ensure_pnpm(
     Ok(root.pnpm_exe())
 }
 
+/// Renders env pairs as a bash `export K='V'; …` prologue.
+///
+/// WSL does not forward the Windows process environment into the distro —
+/// that requires `WSLENV` — so any variable a command *inside* the distro must
+/// see has to be written into the script itself. `launch_script` already
+/// inlines env this way; these PTY paths (the embedded terminal and the TUI
+/// session) had been relying on `Command::env`, which only sets the variable on
+/// `wsl.exe` and never reaches bash (issue #49 S2).
+pub fn env_exports(env: &[(String, String)]) -> String {
+    env.iter()
+        .map(|(k, v)| format!("export {k}={}", sh_quote(v)))
+        .collect::<Vec<_>>()
+        .join("; ")
+}
 /// The bash wrapper used to run an instance inside WSL: prints the inner PID
 /// marker, then execs node with the DSH CLI. Everything is single-quoted so
 /// env values and paths with spaces are safe.
@@ -435,6 +487,30 @@ mod tests {
         assert!(s.contains("exec env DSH_HOME='/home/u/.dsh-launcher/homes/x'"));
         assert!(s.contains(r"FOO='it'\''s a value'"));
         assert!(s.ends_with("'--profile' 'web'"));
+    }
+
+    /// issue #49 S2: WSL does not forward the Windows environment into the
+    /// distro (that needs WSLENV), so every variable a command inside the
+    /// distro must see has to be written into the script. `env_exports` is the
+    /// shared builder for the two PTY paths (embedded terminal, TUI session);
+    /// values are single-quoted so an override with spaces or a quote cannot
+    /// break the script.
+    #[test]
+    fn env_exports_inlines_values_with_quoting() {
+        let out = env_exports(&[
+            (
+                "DSH_HOME".to_string(),
+                "/home/u/.dsh-launcher/homes/x".to_string(),
+            ),
+            ("DSH_LAUNCHER_INSTANCE".to_string(), "my app".to_string()),
+            ("FOO".to_string(), "it's".to_string()),
+        ]);
+        assert_eq!(
+            out,
+            "export DSH_HOME='/home/u/.dsh-launcher/homes/x'; export DSH_LAUNCHER_INSTANCE='my app'; export FOO='it'\\''s'"
+        );
+        // No env at all must not leave a dangling separator.
+        assert_eq!(env_exports(&[]), "");
     }
 
     #[test]

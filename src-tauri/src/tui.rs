@@ -201,13 +201,18 @@ pub async fn start_tui_session(
         // the Linux home path from config).
         let bin = crate::process::version_bin(&linux_version);
         let root = crate::wsl::WslRoot::resolve(distro).await?;
+        // The env is inlined into the script: `Command::env` would only set it
+        // on wsl.exe, and WSL does not forward the Windows environment into the
+        // distro (that needs WSLENV), so DSH_HOME would never reach the CLI
+        // (issue #49 S2). `launch_script` already does the same.
         let script = format!(
-            "export PATH={0}:\"$PATH\"; cd {1} && exec {2} {3} --profile {4}",
+            "{env}; export PATH={0}:\"$PATH\"; cd {1} && exec {2} {3} --profile {4}",
             crate::wsl::sh_quote(&root.node_bin_dir()),
             crate::wsl::sh_quote(&linux_home.to_string_lossy()),
             crate::wsl::sh_quote(&root.node_exe()),
             crate::wsl::sh_quote(&bin.to_string_lossy()),
             crate::wsl::sh_quote(&profile),
+            env = crate::wsl::env_exports(&env),
         );
         cmd.args(["-d", distro, "--", "bash", "-lc", &script]);
         cmd.cwd(std::env::temp_dir().as_os_str());
@@ -216,9 +221,9 @@ pub async fn start_tui_session(
         cmd.arg("--profile");
         cmd.arg(&profile);
         cmd.cwd(home_path.as_os_str());
-    }
-    for (k, v) in &env {
-        cmd.env(k, v);
+        for (k, v) in &env {
+            cmd.env(k, v);
+        }
     }
 
     let mut child = pair

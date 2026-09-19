@@ -2333,8 +2333,12 @@ async fn do_import_dshhome(
     };
 
     // Icon: bundled icon.png wins; an http(s) manifest icon stays remote.
+    // WSL (issue #49): `home.path` is the *Linux* path, which Windows would
+    // resolve relative to the current drive (C:\home\u\...) — the icon would
+    // land outside the instance's HOME and silently never show. Write through
+    // the same `fs_home` the rest of this function uses.
     let imported_icon: Option<String> = if unpacked.join("icon.png").exists() {
-        let dest = crate::icons::local_icon_path(&home.path, &instance_id);
+        let dest = crate::icons::local_icon_path(&fs_home, &instance_id);
         if let Some(parent) = dest.parent() {
             std::fs::create_dir_all(parent).ok();
         }
