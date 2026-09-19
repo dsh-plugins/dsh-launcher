@@ -320,7 +320,7 @@ pub async fn ensure_distro_running(state, distro) -> Result<(), String>;  // TTL
 > **其余复核项**
 >
 > - `dsh_plugin_command` 的 `wsl_test` 是 `async fn`，不阻塞 runtime；bin 缺失时报错含**发行版内 Linux 路径**，可诊断。
-> - tgz 复制：`wsl_output(["mkdir","-p",tmp_dir])` 先建目录，再用 `uuid` 唯一化文件名避免并发同名冲突。**开放项**：安装成功后**未**删除发行版临时文件（计划 §7.2 Q3 建议 TTL 清理）——本轮未做，留待产品决策。
+> - tgz 复制：`wsl_output(["mkdir","-p",tmp_dir])` 先建目录，再用 `uuid` 唯一化文件名避免并发同名冲突。**§7.2 Q3 已落地**：`InstallPluginInput` 新增 `wsl_scratch` 字段记录发行版内临时路径，`run_install_plugin_task` 在安装结算后（成功或失败）调用 `cleanup_wsl_scratch` 删除该文件；清理是 best-effort（失败只记 warn，不会把成功安装变成错误），且**不会**为删一个临时文件去唤醒已停止的发行版。
 > - store 一致性：`linux_store` 取自 `WslRoot::pnpm_store()`（Linux 路径），与 `linked_store_dir` 读到的 `.modules.yaml` 值同属 Linux 语义 → 比对正确。新增 `store_paths_match_wsl_linux_store` 锁定（并断言 UNC 形式**不**匹配）。
 > - `relink_profile_store` 的 `node_exe` 在 WSL 分支来自 `WslRoot::node_exe()`（发行版 node），非 `process::node()`。
 > - `forwarded_pnpm_flags` 单测：新增 `forwarded_flags_use_the_supplied_store` 与 `forwarded_flags_registry_only_when_set`（后者含环境变量清理，避免污染其他测试）。
@@ -451,7 +451,7 @@ pnpm build            # vue-tsc --noEmit && vite build
 
 - **Q1**：存储重定向（`links.rs`）是否要支持 WSL HOME？实现需在发行版内建符号链接（`ln -s`）+ 校验，工作量约 1~2 轮。**建议：本轮延期**，UI 给能力提示即可。
 - **Q2**：WSL 实例能否切换 DSH_HOME？当前 `InstanceEdit.vue:1333` 禁用。技术上需要跨发行版迁移 HOME，**建议：保持禁用**。
-- **Q3**：`start_install_plugin_file_task` 复制进发行版的 tgz 是否需要清理策略？当前留在 `~/.dsh-launcher/tmp`。**建议**：加 TTL 清理或安装成功后删除。
+- **Q3**：`start_install_plugin_file_task` 复制进发行版的 tgz 是否需要清理策略？当前留在 `~/.dsh-launcher/tmp`。**建议**：加 TTL 清理或安装成功后删除。 → **✅ 已实现「安装成功后删除」**（见阶段 3 节）。
 - **Q4**：WSL 实例的 alpha（源码构建）版本支持？`tasks.rs:542` 明确不支持。**建议**：保持，issue 未要求。
 
 ### 7.3 关键路径
