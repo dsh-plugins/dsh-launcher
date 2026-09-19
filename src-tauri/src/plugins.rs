@@ -3633,6 +3633,67 @@ mod tests {
         ));
     }
 
+    /// issue #49 phase 3: a WSL profile's `node_modules` is linked from the
+    /// *Linux* store path, so the comparison must be done in Linux terms — a
+    /// Windows UNC form of the same store is a different string and would
+    /// trigger a needless relink on every install.
+    #[test]
+    fn store_paths_match_wsl_linux_store() {
+        let linux = "/home/u/.dsh-launcher/.pnpm-store";
+        // The versioned subdir pnpm records inside the distro.
+        assert!(store_paths_match(&format!("{linux}/v11"), linux));
+        // The UNC form of the same store is a different flavour, not a match.
+        assert!(!store_paths_match(
+            r"\\wsl$\Ubuntu\home\u\.dsh-launcher\.pnpm-store\v11",
+            linux
+        ));
+        // A different distro user's store is a real mismatch.
+        assert!(!store_paths_match(
+            "/home/other/.dsh-launcher/.pnpm-store",
+            linux
+        ));
+    }
+
+    /// `--store-dir` must carry the flavour the CLI will actually use: the
+    /// Linux store inside the distro, the Windows store locally.
+    #[test]
+    fn forwarded_flags_use_the_supplied_store() {
+        let linux = "/home/u/.dsh-launcher/.pnpm-store";
+        let args = forwarded_pnpm_flags("http", "add", linux);
+        let i = args.iter().position(|a| a == "--store-dir").unwrap();
+        assert_eq!(args[i + 1], linux, "args: {args:?}");
+        assert!(args.iter().any(|a| a == "--loglevel=http"));
+        // Download commands carry the network flags; `remove` must not.
+        assert!(args.iter().any(|a| a == "--fetch-timeout"));
+        let rm = forwarded_pnpm_flags("warn", "remove", linux);
+        assert!(!rm.iter().any(|a| a == "--fetch-timeout"), "args: {rm:?}");
+        assert!(rm.iter().any(|a| a == "--loglevel=warn"));
+    }
+
+    /// The registry mirror is opt-in via the environment; a blank value must
+    /// not produce a dangling `--registry`.
+    #[test]
+    fn forwarded_flags_registry_only_when_set() {
+        // The test process controls the variable, so restore it afterwards.
+        let saved = std::env::var("DSH_NPM_REGISTRY").ok();
+        std::env::remove_var("DSH_NPM_REGISTRY");
+        assert!(!forwarded_pnpm_flags("warn", "add", "/s")
+            .iter()
+            .any(|a| a == "--registry"));
+        std::env::set_var("DSH_NPM_REGISTRY", "   ");
+        assert!(!forwarded_pnpm_flags("warn", "add", "/s")
+            .iter()
+            .any(|a| a == "--registry"));
+        std::env::set_var("DSH_NPM_REGISTRY", "https://mirror.example/npm");
+        let args = forwarded_pnpm_flags("warn", "add", "/s");
+        let i = args.iter().position(|a| a == "--registry").unwrap();
+        assert_eq!(args[i + 1], "https://mirror.example/npm");
+        match saved {
+            Some(v) => std::env::set_var("DSH_NPM_REGISTRY", v),
+            None => std::env::remove_var("DSH_NPM_REGISTRY"),
+        }
+    }
+
     #[test]
     fn linked_store_dir_reads_modules_yaml() {
         let dir = std::env::temp_dir().join(format!("dsh-test-modules-{}", new_id("t")));
