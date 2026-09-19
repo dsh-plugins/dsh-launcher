@@ -1579,7 +1579,16 @@ pub async fn list_installed_plugins(
 ) -> Result<Vec<InstalledPlugin>, String> {
     let (home_path, _version) = resolve_instance(&state, &instance_id)?;
     let dir = profile_dir(&home_path, &profile);
-    let manifest = read_profile_manifest(&dir)?;
+    // Reads go through \\wsl$\ for WSL instances, where each call can block for
+    // milliseconds; keep the runtime free while a profile is scanned
+    // (issue #49 G3).
+    let (manifest, disabled) = {
+        let dir = dir.clone();
+        crate::wsl::run_blocking(move || {
+            Ok::<_, String>((read_profile_manifest(&dir)?, read_disabled_ids(&dir)))
+        })
+        .await??
+    };
 
     let mut ids: Vec<String> = Vec::new();
     let mut versions: std::collections::HashMap<String, String> = std::collections::HashMap::new();
@@ -1608,9 +1617,6 @@ pub async fn list_installed_plugins(
     }
     ids.sort();
     ids.dedup();
-
-    // Disabled set from cordis.patch.yml (`- id: <cordis-id>` + `disabled: true`).
-    let disabled = read_disabled_ids(&dir);
 
     let out = ids
         .into_iter()
@@ -1861,7 +1867,12 @@ pub async fn check_plugin_updates(
 ) -> Result<Vec<PluginUpdateInfo>, String> {
     let (home_path, _version) = resolve_instance(&state, &instance_id)?;
     let dir = profile_dir(&home_path, &profile);
-    let manifest = read_profile_manifest(&dir)?;
+    // Manifest + node_modules probes go through \\wsl$\ for WSL instances;
+    // keep them off the runtime workers (issue #49 G3).
+    let manifest = {
+        let dir = dir.clone();
+        crate::wsl::run_blocking(move || read_profile_manifest(&dir)).await??
+    };
 
     let mut npm_deps: Vec<(String, String)> = Vec::new();
     if let Some(deps) = manifest.get("dependencies").and_then(|d| d.as_object()) {
@@ -1883,7 +1894,16 @@ pub async fn check_plugin_updates(
     for (id, spec) in npm_deps {
         let dir = dir.clone();
         set.spawn(async move {
-            let current = installed_version_of(&dir, &id, &spec);
+            let probe_dir = dir.clone();
+            let probe_id = id.clone();
+            let current = crate::wsl::run_blocking(move || {
+                installed_version_of(&probe_dir, &probe_id, &spec)
+            })
+            .await
+            .unwrap_or_else(|e| {
+                crate::log_warn!("读取插件 {id} 已装版本失败: {e}");
+                None
+            });
             let latest = match npm_versions(&id, &PluginChannel::Stable).await {
                 Ok(versions) => versions
                     .iter()
@@ -1934,8 +1954,13 @@ pub async fn set_plugins_enabled(
     let patch_path = dir.join("cordis.patch.yml");
 
     let mut raw = if patch_path.exists() {
-        std::fs::read_to_string(&patch_path)
-            .map_err(|e| format!("读取 cordis.patch.yml 失败: {e}"))?
+        // A WSL profile reaches cordis.patch.yml through \\wsl$\, so the read
+        // goes to the blocking pool (issue #49 G3).
+        let p = patch_path.clone();
+        crate::wsl::run_blocking(move || {
+            std::fs::read_to_string(&p).map_err(|e| format!("读取 cordis.patch.yml 失败: {e}"))
+        })
+        .await??
     } else {
         String::new()
     };
@@ -1945,8 +1970,14 @@ pub async fn set_plugins_enabled(
         raw = set_disabled_row(&raw, &cordis_id, input.enabled);
     }
 
-    std::fs::create_dir_all(&dir).map_err(|e| format!("创建 profile 目录失败: {e}"))?;
-    std::fs::write(&patch_path, raw).map_err(|e| format!("写入 cordis.patch.yml 失败: {e}"))?;
+    // One blocking hop for the whole write-back (mkdir + write) so a UNC round
+    // trip never parks a runtime worker (issue #49 G3).
+    let write = crate::wsl::run_blocking(move || {
+        std::fs::create_dir_all(&dir).map_err(|e| format!("创建 profile 目录失败: {e}"))?;
+        std::fs::write(&patch_path, raw).map_err(|e| format!("写入 cordis.patch.yml 失败: {e}"))
+    })
+    .await?;
+    write?;
     Ok(())
 }
 
@@ -2013,16 +2044,24 @@ pub async fn uninstall_plugin(
     //    plugin; disabled rows gate it). Reuse the block-stripping logic in
     //    set_disabled_row by removing any block whose id matches.
     let patch_path = dir.join("cordis.patch.yml");
-    if patch_path.exists() {
+    // Read + rewrite on the blocking pool: for a WSL profile these are UNC
+    // round trips, not local file operations (issue #49 G3).
+    let plugin_id = input.plugin_id.clone();
+    crate::wsl::run_blocking(move || -> Result<(), String> {
+        if !patch_path.exists() {
+            return Ok(());
+        }
         let raw = std::fs::read_to_string(&patch_path)
             .map_err(|e| format!("读取 cordis.patch.yml 失败: {e}"))?;
-        let cordis_id = cordis_id_of(&input.plugin_id);
-        let cleaned = strip_cordis_rows(&raw, &cordis_id, &input.plugin_id);
+        let cordis_id = cordis_id_of(&plugin_id);
+        let cleaned = strip_cordis_rows(&raw, &cordis_id, &plugin_id);
         if cleaned != raw {
             std::fs::write(&patch_path, &cleaned)
                 .map_err(|e| format!("写入 cordis.patch.yml 失败: {e}"))?;
         }
-    }
+        Ok(())
+    })
+    .await??;
 
     Ok(())
 }

@@ -471,16 +471,21 @@ async fn install_from_clone_wsl(
         commit,
         tag,
     };
-    // Bundle discovery needs real directory reads: go through the share.
+    // Bundle discovery and the copy both read/write through `\\wsl$\`, so the
+    // whole walk runs on the blocking pool (issue #49 G3).
     let clone_fs = crate::wsl::unc_path(distro, clone_dir_linux);
-    let bundles = collect_bundles(&clone_fs, subpath)
-        .map_err(|e| format!("仓库中没有找到 SKILL.md（{e}）"))?;
     let dest_root_fs = crate::wsl::unc_path(distro, &dest_root_linux.to_string_lossy());
-    let mut installed = Vec::new();
-    for bundle in bundles {
-        installed.push(install_bundle(&bundle, &dest_root_fs, Some(&origin))?);
-    }
-    Ok(installed)
+    let subpath = subpath.map(str::to_string);
+    crate::wsl::run_blocking(move || {
+        let bundles = collect_bundles(&clone_fs, subpath.as_deref())
+            .map_err(|e| format!("仓库中没有找到 SKILL.md（{e}）"))?;
+        let mut installed = Vec::new();
+        for bundle in bundles {
+            installed.push(install_bundle(&bundle, &dest_root_fs, Some(&origin))?);
+        }
+        Ok::<_, String>(installed)
+    })
+    .await?
 }
 
 /// A skill discovered in a source repository (not yet installed).

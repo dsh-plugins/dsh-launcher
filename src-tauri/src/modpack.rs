@@ -1997,7 +1997,10 @@ async fn do_import_modpack(
     // 5. pack-structure v2: overrides/ user files land on the profile root
     //    (file-level overwrite, after pnpm's runtime defaults).
     if container == ModpackContainer::Dspack {
-        let count = apply_overrides(&unpacked, &dest)?;
+        let count = {
+            let (u, d) = (unpacked.clone(), dest.clone());
+            crate::wsl::run_blocking(move || apply_overrides(&u, &d)).await??
+        };
         if count > 0 {
             crate::tasks::push_task_log_pub(
                 app,
@@ -2012,7 +2015,10 @@ async fn do_import_modpack(
         // copied onto the $DSH_HOME root with the same overwrite semantics.
         let home_dir = unpacked.join("home");
         if home_dir.is_dir() {
-            let count = copy_tree(&home_dir, &fs_home, None)?;
+            let count = {
+                let (h, f) = (home_dir.clone(), fs_home.clone());
+                crate::wsl::run_blocking(move || copy_tree(&h, &f, None)).await??
+            };
             if count > 0 {
                 crate::tasks::push_task_log_pub(
                     app,
@@ -2385,7 +2391,10 @@ async fn import_dshhome_body(
             .map_err(|e| format!("创建 profile「{name}」目录失败: {e}"))?;
         let profile_overrides = unpacked.join("overrides").join("profiles").join(name);
         if profile_overrides.is_dir() {
-            let count = copy_tree(&profile_overrides, &dest, None)?;
+            let count = {
+                let (o, d) = (profile_overrides.clone(), dest.clone());
+                crate::wsl::run_blocking(move || copy_tree(&o, &d, None)).await??
+            };
             if count > 0 {
                 crate::tasks::push_task_log_pub(
                     app,
@@ -2437,7 +2446,10 @@ async fn import_dshhome_body(
     }
 
     // 3. Home-level overrides: everything except the per-profile subtrees.
-    let count = copy_tree(&unpacked.join("overrides"), home, Some(&["profiles"]))?;
+    let count = {
+        let (o, h) = (unpacked.join("overrides"), home.to_path_buf());
+        crate::wsl::run_blocking(move || copy_tree(&o, &h, Some(&["profiles"]))).await??
+    };
     if count > 0 {
         crate::tasks::push_task_log_pub(
             app,
