@@ -1904,7 +1904,8 @@ async fn do_import_modpack(
         None => {
             // Fresh instance: resolve the pinned version (exact), falling
             // back to the newest installed version; install if missing.
-            let version_record = resolve_import_version(app, state, task_id, &version_str).await?;
+            let version_record =
+                resolve_import_version(app, state, task_id, &version_str, None).await?;
 
             // Dedicated HOME for the new instance (path-based reuse keeps a
             // retry idempotent), then prepare the pristine web template.
@@ -2116,17 +2117,29 @@ async fn do_import_modpack(
 /// (issue #49 G5): shared by the single-profile form (`do_import_modpack`) and
 /// the whole-HOME form (`do_import_dshhome`) so both behave identically when a
 /// pack names a version the machine does not have yet.
+///
+/// `distro` selects the *flavour* of version record: a WSL target must run a
+/// version installed **inside that distro** (the CLI, node and pnpm all come
+/// from there), so a local Windows record with the same version string is not
+/// a match — pairing the two would make the launcher spawn a Linux path with
+/// Windows tooling.
 async fn resolve_import_version(
     app: &AppHandle,
     state: &State<'_, AppState>,
     task_id: &str,
     version_str: &Option<String>,
+    distro: Option<&str>,
 ) -> Result<crate::config::DshVersion, String> {
     let installed = {
         let cfg = state.config.lock().unwrap();
+        let matches = |v: &&crate::config::DshVersion| v.wsl.as_deref() == distro;
         match version_str {
-            Some(v) => cfg.versions.iter().find(|r| r.version == *v).cloned(),
-            None => cfg.versions.last().cloned(),
+            Some(v) => cfg
+                .versions
+                .iter()
+                .find(|r| r.version == *v && matches(r))
+                .cloned(),
+            None => cfg.versions.iter().rev().find(|r| matches(r)).cloned(),
         }
     };
     if let Some(v) = installed {
@@ -2151,10 +2164,18 @@ async fn resolve_import_version(
         app,
         state,
         task_id,
-        &format!("整合包需要 DSH {target}，本机未安装，开始安装…"),
+        &match distro {
+            Some(d) => format!("整合包需要 DSH {target}，发行版「{d}」内未安装，开始安装…"),
+            None => format!("整合包需要 DSH {target}，本机未安装，开始安装…"),
+        },
     )
     .await;
-    crate::tasks::install_version_streamed_pub(app, state, task_id, &target).await
+    match distro {
+        Some(d) => {
+            crate::tasks::install_version_streamed_wsl(app, state, task_id, &target, d).await
+        }
+        None => crate::tasks::install_version_streamed_pub(app, state, task_id, &target).await,
+    }
 }
 
 /// Imports a `type:"dshhome"` pack (pack-structure v3 §9): a fresh instance
@@ -2211,19 +2232,6 @@ async fn do_import_dshhome(
     )
     .await;
 
-    // Resolve the pinned DSH version, installing it when missing (same
-    // behaviour as the profile form).
-    let version_str = manifest
-        .dsh_version
-        .as_deref()
-        .map(|v| {
-            v.trim()
-                .trim_start_matches(['>', '=', '^', '~', ' '])
-                .to_string()
-        })
-        .filter(|v| !v.is_empty());
-    let version_record = resolve_import_version(app, state, task_id, &version_str).await?;
-
     // Fresh dedicated HOME; a leftover directory from a failed earlier
     // attempt is wiped so the snapshot starts clean.
     //
@@ -2236,6 +2244,22 @@ async fn do_import_dshhome(
     if let Some(d) = &distro {
         crate::wsl::ensure_distro_running(state, d).await?;
     }
+
+    // Resolve the pinned DSH version, installing it when missing (same
+    // behaviour as the profile form). A WSL target resolves a version record
+    // installed *inside that distro* — the CLI, node and pnpm all come from
+    // there, so a local Windows record is not interchangeable.
+    let version_str = manifest
+        .dsh_version
+        .as_deref()
+        .map(|v| {
+            v.trim()
+                .trim_start_matches(['>', '=', '^', '~', ' '])
+                .to_string()
+        })
+        .filter(|v| !v.is_empty());
+    let version_record =
+        resolve_import_version(app, state, task_id, &version_str, distro.as_deref()).await?;
     let home_name = crate::config::sanitize_name(&instance_name);
     let (home_linux, fs_home) = match &distro {
         Some(d) => {
@@ -2611,6 +2635,35 @@ mod tests {
         // so a refactor cannot drop it.
         let blank = "   ";
         assert!(blank.trim().is_empty());
+    }
+
+    /// issue #49 G5: a WSL import must resolve a version record installed
+    /// *inside that distro*. Pairing it with a local Windows record of the same
+    /// version string would make the launcher spawn a Linux path with Windows
+    /// tooling. The selection is a pure predicate over the config, so assert
+    /// its shape here.
+    #[test]
+    fn import_version_selection_is_distro_scoped() {
+        let src = include_str!("modpack.rs");
+        let body = src
+            .split("async fn resolve_import_version(")
+            .nth(1)
+            .expect("resolve_import_version must exist")
+            .split("/// Imports a")
+            .next()
+            .unwrap();
+        assert!(
+            body.contains("v.wsl.as_deref() == distro"),
+            "the version lookup must be scoped to the distro flavour"
+        );
+        assert!(
+            body.contains("install_version_streamed_wsl"),
+            "a WSL target must install the version inside the distro"
+        );
+        assert!(
+            body.contains("install_version_streamed_pub"),
+            "a local target must keep the Windows install path"
+        );
     }
 
     /// The single-profile form must stay local-only: it targets an existing
