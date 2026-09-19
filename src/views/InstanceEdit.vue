@@ -996,6 +996,13 @@ const linkBusy = ref(false)
 
 async function loadHomeLinks() {
   if (!homeId.value || homeId.value === DEDICATED) return
+  // WSL (issue #49 G4): the backend hard-rejects storage redirection for WSL
+  // HOMEs (links.rs), so calling it would surface a raw error toast on every
+  // visit. The tab shows a capability notice instead; nothing to load.
+  if (isWsl.value) {
+    homeLinks.value = []
+    return
+  }
   homeLinksLoading.value = true
   try {
     homeLinks.value = await api.listHomeLinks(homeId.value)
@@ -1869,8 +1876,8 @@ const terminalRunning = ref(false)
               {{ t('instanceEdit.storageWslUnsupported') }}
             </a-alert>
 
-            <template v-if="homeId && homeId !== DEDICATED">
-              <a-alert v-if="!isWsl" type="warning" class="storage-caveat">
+            <template v-if="homeId && homeId !== DEDICATED && !isWsl">
+              <a-alert type="warning" class="storage-caveat">
                 {{ t('instanceEdit.storageCaveat') }}
               </a-alert>
               <a-table
@@ -1894,7 +1901,7 @@ const terminalRunning = ref(false)
                   <span v-else>-</span>
                 </template>
                 <template #storageActions="{ record }">
-                  <a-button size="mini" :disabled="linkBusy || isWsl" @click="openLinkDialog(record)">
+                  <a-button size="mini" :disabled="linkBusy" @click="openLinkDialog(record)">
                     {{ record.target ? t('instanceEdit.storageModify') : t('instanceEdit.storageSet') }}
                   </a-button>
                   <a-popconfirm
@@ -1902,7 +1909,7 @@ const terminalRunning = ref(false)
                     :content="t('instanceEdit.storageClearConfirm')"
                     @ok="clearLink(record)"
                   >
-                    <a-button size="mini" status="danger" :disabled="linkBusy || isWsl">
+                    <a-button size="mini" status="danger" :disabled="linkBusy">
                       {{ t('instanceEdit.storageClear') }}
                     </a-button>
                   </a-popconfirm>
@@ -1910,7 +1917,7 @@ const terminalRunning = ref(false)
               </a-table>
             </template>
 
-            <a-alert v-else type="info">
+            <a-alert v-else-if="!isWsl" type="info">
               {{ t('instanceEdit.profilesNeedHome') }}
             </a-alert>
           </div>
