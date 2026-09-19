@@ -288,7 +288,10 @@ async fn spawn_session(
     let (shim_dir, _version_bin) = if let Some(distro) = &wsl_distro {
         let bin = crate::process::version_bin(&version_linux);
         if !wsl_version_bin_ready(distro, &bin).await {
-            return Err(crate::process::version_missing_message(&version_label, &bin));
+            return Err(crate::process::version_missing_message(
+                &version_label,
+                &bin,
+            ));
         }
         (None, bin)
     } else {
@@ -619,15 +622,23 @@ mod tests {
     /// error message must name the in-distro path the probe actually checked.
     #[test]
     fn wsl_version_missing_message_names_the_linux_bin() {
-        let bin = std::path::Path::new("/home/u/.dsh-launcher/versions/0.2.4/node_modules/@deepseek-ai/dsh/lib/bin.js");
+        let bin = std::path::Path::new(
+            "/home/u/.dsh-launcher/versions/0.2.4/node_modules/@deepseek-ai/dsh/lib/bin.js",
+        );
         let msg = crate::process::version_missing_message("0.2.4", bin);
-        assert!(msg.contains("0.2.4"), "message must name the version: {msg}");
+        assert!(
+            msg.contains("0.2.4"),
+            "message must name the version: {msg}"
+        );
         assert!(
             msg.contains("/home/u/.dsh-launcher/versions/0.2.4"),
             "message must name the Linux bin path: {msg}"
         );
         // The UNC form would be a path the user cannot see inside the distro.
-        assert!(!msg.contains(r"\\wsl$"), "must not leak the UNC path: {msg}");
+        assert!(
+            !msg.contains(r"\\wsl$"),
+            "must not leak the UNC path: {msg}"
+        );
     }
 
     /// The probe flag is the safety net for "install incomplete": `-s` (exists
