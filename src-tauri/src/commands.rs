@@ -33,6 +33,28 @@ pub(crate) fn create_home_record(
     name: &str,
     path: &str,
 ) -> Result<DshHome, String> {
+    create_home_record_inner(state, name, path, None)
+}
+
+/// WSL variant of `create_home_record` (issue #49 G5): `path` is a Linux path
+/// inside `distro`, so the directory is *not* created through the Windows
+/// filesystem (that would make a literal `\home\u\...` directory on the
+/// Windows drive). The caller creates it through the `\\wsl$\` share.
+pub(crate) fn create_home_record_wsl(
+    state: &State<'_, AppState>,
+    name: &str,
+    path: &str,
+    distro: &str,
+) -> Result<DshHome, String> {
+    create_home_record_inner(state, name, path, Some(distro))
+}
+
+fn create_home_record_inner(
+    state: &State<'_, AppState>,
+    name: &str,
+    path: &str,
+    wsl: Option<&str>,
+) -> Result<DshHome, String> {
     let name = name.trim();
     let path = path.trim();
     if name.is_empty() {
@@ -49,18 +71,22 @@ pub(crate) fn create_home_record(
         if let Some(existing) = cfg
             .homes
             .iter()
-            .find(|h| crate::config::paths_equal(&h.path, &path_buf))
+            .find(|h| crate::config::paths_equal(&h.path, &path_buf) && h.wsl.as_deref() == wsl)
         {
             return Ok(existing.clone());
         }
     }
 
-    std::fs::create_dir_all(&path_buf).map_err(|e| format!("创建目录失败: {e}"))?;
+    // A Linux path must never be materialized on the Windows drive; WSL
+    // callers create the directory inside the distro themselves.
+    if wsl.is_none() {
+        std::fs::create_dir_all(&path_buf).map_err(|e| format!("创建目录失败: {e}"))?;
+    }
     let home = DshHome {
         id: new_id("h"),
         name: name.to_string(),
         path: path_buf,
-        wsl: None,
+        wsl: wsl.map(str::to_string),
         links: Default::default(),
     };
     let mut cfg = state.config.lock().unwrap();
