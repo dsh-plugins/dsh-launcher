@@ -315,13 +315,19 @@ async fn spawn_session(
         // UNC paths are not valid Windows process working directories; start
         // wsl.exe from a neutral dir and let bash land in the Linux HOME
         // (wsl.exe -- bash -i already starts in $HOME by default).
-        cmd.args(["-d", d, "--", "bash", "-i"]);
+        //
+        // The env must be written into the script: `Command::env` only sets it
+        // on wsl.exe, and WSL does not forward the Windows environment into the
+        // distro (that needs WSLENV), so DSH_HOME / DSH_LAUNCHER_INSTANCE /
+        // overrides / proxy would silently never reach the shell (issue #49 S2).
+        let script = format!("{}; exec bash -i", crate::wsl::env_exports(&env));
+        cmd.args(["-d", d, "--", "bash", "-lc", &script]);
         cmd.cwd(std::env::temp_dir().as_os_str());
     } else {
         cmd.cwd(home_fs.as_os_str());
-    }
-    for (k, v) in &env {
-        cmd.env(k, v);
+        for (k, v) in &env {
+            cmd.env(k, v);
+        }
     }
 
     let child = pair

@@ -61,8 +61,7 @@
       "warnTitle": "Dependency tree notice",
       "errorTitle": "Dependency tree fault"
     },
-    "noProfile": "No profile available under this instance's DSH_HOME",
-    "wslInstallHint": "This instance lives inside the WSL distro \"{distro}\": dependencies are installed there (Linux binaries), so the distro must be available"
+    "noProfile": "No profile available under this instance's DSH_HOME"
   },
   "tui": {
     "starting": "Starting TUI session…"
@@ -165,6 +164,7 @@
     "chooseProfile": "Choose profile",
     "noInstance": "No instance available. Create one first.",
     "noProfile": "No profile under this instance's DSH_HOME. Create one first.",
+    "wslInstallHint": "This instance lives inside the WSL distro \"{distro}\": dependencies are installed there (Linux binaries), so the distro must be available",
     "goDownload": "Create instance",
     "startInstall": "Start install",
     "installTaskAdded": "Install task created. Track progress in Tasks.",
