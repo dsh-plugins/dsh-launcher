@@ -2557,6 +2557,18 @@ async fn cleanup_wsl_scratch(state: &State<'_, AppState>, instance_id: &str, scr
     let Ok((_, _, Some(distro))) = resolve_instance_linux(state, instance_id) else {
         return;
     };
+    // Defence in depth: `scratch_linux` round-trips through an IPC-deserializable
+    // struct, and this function deletes whatever it names inside the distro.
+    // The launcher only ever creates scratch files under `<WslRoot>/tmp`, so
+    // refuse anything else instead of trusting the caller (issue #49 A9).
+    let Ok(root) = crate::wsl::WslRoot::resolve(&distro).await else {
+        return;
+    };
+    let tmp_prefix = format!("{}/tmp/", root.0);
+    if !scratch_linux.starts_with(&tmp_prefix) {
+        crate::log_warn!("拒绝清理发行版内非临时路径: {scratch_linux}");
+        return;
+    }
     // The distro may have been shut down since the copy; do not boot it just to
     // delete a scratch file.
     let script = format!("rm -f {}", crate::wsl::sh_quote(scratch_linux));
@@ -3185,9 +3197,11 @@ async fn dsh_plugin_command(
         None => crate::process::version_bin_ready(version_dir),
     };
     if !bin_ready {
-        return Err(format!(
-            "版本安装不完整（缺少 {}），请重新安装该 DSH 版本",
-            bin.display()
+        // Shared wording (issue #49): `bin` is the Linux path for WSL targets
+        // and the Windows path otherwise, i.e. exactly the path the probe used.
+        return Err(crate::process::version_missing_message(
+            &version_dir.to_string_lossy(),
+            &bin,
         ));
     }
 
