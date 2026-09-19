@@ -38,6 +38,7 @@ Tauri 2 + Vue 3 + TypeScript + Sass + vue-router + vue-i18n + Arco Design Vue.
 - **Close to tray** (can be disabled in Settings).
 - **Launch at login** (Settings toggle, registered for real via the autostart plugin).
 - **i18n**: Simplified Chinese / English; JSON locale files are discovered, hot-reloaded, and precompiled by `@intlify/unplugin-vue-i18n` through Vite.
+- **WSL2 instances (experimental)**: create DSH instances inside a WSL2 distro — Node.js / pnpm / the pinned version are installed inside the distro automatically and the instance's DSH_HOME lives under the distro's `~/.dsh-launcher/homes`. Once created, HOME works like a local instance (profiles CRUD, plugin install/enable/disable/uninstall, skills, MCP, icons, logs, modpack export/import, embedded terminal); files are accessed through the `\\wsl$\` UNC share and a stopped distro is booted automatically.
 
 ## Interface
 
@@ -46,6 +47,10 @@ Tauri 2 + Vue 3 + TypeScript + Sass + vue-router + vue-i18n + Arco Design Vue.
 - **Instances**: name, version, DSH_HOME, profile, runtime status and URL, edit/delete.
 - **Instance settings → Plugins**: filter by profile, enable/disable plugins, multi-select batch enable/disable (`@deepseek-ai/*` core plugins hidden).
 - **Settings**: language, close to tray, launch at login, DSH_HOME management.
+
+> For WSL instances, plugin and modpack dependency installs run pnpm inside the distro (pulling Linux platform binaries), and SKILL repository installs clone with the distro's own `git`; reading/writing files from the Windows side through UNC requires the distro to be running, which the launcher starts automatically.
+>
+> Known limitation: storage redirection (the storage tab) is not supported for WSL HOMEs yet (it would need to create and verify symlinks inside the distro); the page shows a capability notice instead of failing.
 
 ## Development
 

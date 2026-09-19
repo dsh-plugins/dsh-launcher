@@ -55,6 +55,9 @@ pub struct AppState {
     /// created with; keeping the last printed URL here lets an already-open
     /// window re-authenticate instead of rendering the 401 page forever.
     pub window_urls: StdMutex<HashMap<String, String>>,
+    /// WSL distros recently verified running (`wsl.rs::ensure_distro_running`
+    /// TTL cache): distro → last successful boot/probe timestamp.
+    pub distro_ready: tokio::sync::Mutex<HashMap<String, std::time::Instant>>,
 }
 
 /// Extracts a `dsh-launcher://…` deep link from process arguments (Windows
@@ -173,6 +176,7 @@ pub fn run() {
                 terminals: tokio::sync::Mutex::new(HashMap::new()),
                 tui_sessions: tokio::sync::Mutex::new(HashMap::new()),
                 window_urls: StdMutex::new(HashMap::new()),
+                distro_ready: tokio::sync::Mutex::new(HashMap::new()),
             });
 
             // System tray with dynamic menu.

@@ -103,7 +103,7 @@ pub fn kill_all(state: &AppState) {
 fn terminal_env(
     state: &State<'_, AppState>,
     instance_id: &str,
-    shim_dir: &std::path::Path,
+    shim_dir: Option<&std::path::Path>,
 ) -> Result<Vec<(String, String)>, String> {
     let cfg = state.config.lock().unwrap();
     let inst = cfg
@@ -134,12 +134,16 @@ fn terminal_env(
         crate::proxy::override_env(&mut env, &cfg.settings);
     }
 
-    let existing = std::env::var_os("PATH").unwrap_or_default();
-    let mut entries = vec![shim_dir.to_path_buf()];
-    entries.extend(std::env::split_paths(&existing));
-    match std::env::join_paths(entries) {
-        Ok(joined) => env.push(("PATH".to_string(), joined.to_string_lossy().to_string())),
-        Err(e) => crate::log_warn!("拼接 PATH 失败，沿用系统 PATH: {e}"),
+    // WSL terminals (issue #19 follow-up): the Windows `dsh` shim cannot run
+    // inside bash, so PATH is left to the distro.
+    if let Some(shim_dir) = shim_dir {
+        let existing = std::env::var_os("PATH").unwrap_or_default();
+        let mut entries = vec![shim_dir.to_path_buf()];
+        entries.extend(std::env::split_paths(&existing));
+        match std::env::join_paths(entries) {
+            Ok(joined) => env.push(("PATH".to_string(), joined.to_string_lossy().to_string())),
+            Err(e) => crate::log_warn!("拼接 PATH 失败，沿用系统 PATH: {e}"),
+        }
     }
     Ok(env)
 }
@@ -190,6 +194,15 @@ fn prepare_shim(
     Ok(bin_dir)
 }
 
+/// Whether a version's bin.js exists and is non-empty *inside the distro*.
+/// The Linux path is not readable from Windows, so probe with `test -s`
+/// through wsl.exe — the WSL counterpart of `process::version_bin_ready`.
+/// Split out (and taking `distro` rather than `State`) so the WSL-vs-local
+/// decision is unit-testable without a live distro.
+pub(crate) async fn wsl_version_bin_ready(distro: &str, bin: &std::path::Path) -> bool {
+    crate::wsl::wsl_test(distro, "-s", &bin.to_string_lossy()).await
+}
+
 /// The shell program for the platform: PowerShell on Windows (pwsh when
 /// available, else the built-in Windows PowerShell), the user's $SHELL (or
 /// /bin/sh) on unix. portable-pty's CommandBuilder inherits the base env, so
@@ -223,15 +236,68 @@ fn shell_program() -> String {
 
 /// Spawns the shell for an instance inside a fresh PTY, returning the
 /// session (master + child) and the cwd it started in.
-fn spawn_session(
+async fn spawn_session(
     state: &State<'_, AppState>,
     instance_id: &str,
     cols: u16,
     rows: u16,
 ) -> Result<(TerminalSession, PathBuf), String> {
-    let (home_path, version_dir) = crate::plugins::resolve_instance(state, instance_id)?;
-    let shim_dir = prepare_shim(&state.data_dir, &version_dir)?;
-    let env = terminal_env(state, instance_id, &shim_dir)?;
+    // Resolve both path flavours + the distro in one config lock: `_fs` paths
+    // go to Windows file APIs, `_linux` paths go inside the distro (see
+    // `wsl.rs` for the naming convention).
+    let (home_fs, version_fs, wsl_distro, version_linux, version_label) = {
+        let cfg = state.config.lock().unwrap();
+        let inst = cfg
+            .instances
+            .iter()
+            .find(|i| i.id == instance_id)
+            .ok_or_else(|| "实例不存在".to_string())?;
+        let home = cfg
+            .homes
+            .iter()
+            .find(|h| h.id == inst.home_id)
+            .ok_or_else(|| "DSH_HOME 不存在".to_string())?;
+        let version = cfg
+            .versions
+            .iter()
+            .find(|v| v.id == inst.version_id)
+            .ok_or_else(|| "版本不存在".to_string())?;
+        (
+            crate::wsl::home_fs_path(home),
+            crate::wsl::version_fs_path(version),
+            home.wsl.clone(),
+            version.dir.clone(),
+            version.version.clone(),
+        )
+    };
+    // WSL instances (issue #19 follow-up): the terminal shell is the distro's
+    // bash through wsl.exe. The Windows `dsh` shim cannot run inside bash, so
+    // PATH is left to the distro; DSH_HOME is already the Linux path and the
+    // session starts in the Linux HOME.
+    //
+    // The WSL branch deliberately skips `prepare_shim`: that function writes a
+    // Windows `dsh.cmd`/`dsh.bat` shim and validates the version with
+    // `version_bin_ready`, a Windows `exists()` against the *Linux* version
+    // dir that can never succeed. Its validation is replaced by the in-distro
+    // `test -s` probe below (issue #49 G1), which checks the same bin.js
+    // through the only path that can actually see it.
+    let shell: String = match &wsl_distro {
+        Some(_) => "wsl.exe".to_string(),
+        None => shell_program(),
+    };
+    let shim_dir = if let Some(distro) = &wsl_distro {
+        let bin = crate::process::version_bin(&version_linux);
+        if !wsl_version_bin_ready(distro, &bin).await {
+            return Err(crate::process::version_missing_message(
+                &version_label,
+                &bin,
+            ));
+        }
+        None
+    } else {
+        Some(prepare_shim(&state.data_dir, &version_fs)?)
+    };
+    let env = terminal_env(state, instance_id, shim_dir.as_deref())?;
 
     let pty_system = native_pty_system();
     let pair = pty_system
@@ -243,10 +309,24 @@ fn spawn_session(
         })
         .map_err(|e| format!("创建 PTY 失败: {e}"))?;
 
-    let mut cmd = CommandBuilder::new(shell_program());
-    cmd.cwd(home_path.as_os_str());
-    for (k, v) in &env {
-        cmd.env(k, v);
+    let mut cmd = CommandBuilder::new(&shell);
+    if let Some(d) = &wsl_distro {
+        // UNC paths are not valid Windows process working directories; start
+        // wsl.exe from a neutral dir and let bash land in the Linux HOME
+        // (wsl.exe -- bash -i already starts in $HOME by default).
+        //
+        // The env must be written into the script: `Command::env` only sets it
+        // on wsl.exe, and WSL does not forward the Windows environment into the
+        // distro (that needs WSLENV), so DSH_HOME / DSH_LAUNCHER_INSTANCE /
+        // overrides / proxy would silently never reach the shell (issue #49 S2).
+        let script = format!("{}; exec bash -i", crate::wsl::env_exports(&env));
+        cmd.args(["-d", d, "--", "bash", "-lc", &script]);
+        cmd.cwd(std::env::temp_dir().as_os_str());
+    } else {
+        cmd.cwd(home_fs.as_os_str());
+        for (k, v) in &env {
+            cmd.env(k, v);
+        }
     }
 
     let child = pair
@@ -266,7 +346,7 @@ fn spawn_session(
             writer: std::sync::Arc::new(std::sync::Mutex::new(writer)),
             child,
         },
-        home_path,
+        home_fs,
     ))
 }
 
@@ -280,7 +360,8 @@ pub async fn start_terminal_session(
     // Restart semantics: close any existing session first.
     drop_session(&state, &input.instance_id).await;
 
-    let (session, _home) = spawn_session(&state, &input.instance_id, input.cols, input.rows)?;
+    let (session, _home) =
+        spawn_session(&state, &input.instance_id, input.cols, input.rows).await?;
     let id = input.instance_id.clone();
 
     // Register the session before spawning the reader so input arriving
@@ -539,5 +620,45 @@ mod tests {
     fn unix_shell_is_user_shell_or_sh() {
         let shell = super::shell_program();
         assert!(!shell.is_empty());
+    }
+
+    /// issue #49 G1: the WSL terminal must not validate the version through
+    /// the Windows `exists()` path (a Linux dir can never exist there); the
+    /// error message must name the in-distro path the probe actually checked.
+    #[test]
+    fn wsl_version_missing_message_names_the_linux_bin() {
+        let bin = std::path::Path::new(
+            "/home/u/.dsh-launcher/versions/0.2.4/node_modules/@deepseek-ai/dsh/lib/bin.js",
+        );
+        let msg = crate::process::version_missing_message("0.2.4", bin);
+        assert!(
+            msg.contains("0.2.4"),
+            "message must name the version: {msg}"
+        );
+        assert!(
+            msg.contains("/home/u/.dsh-launcher/versions/0.2.4"),
+            "message must name the Linux bin path: {msg}"
+        );
+        // The UNC form would be a path the user cannot see inside the distro.
+        assert!(
+            !msg.contains(r"\\wsl$"),
+            "must not leak the UNC path: {msg}"
+        );
+    }
+
+    /// The probe flag is the safety net for "install incomplete": `-s` (exists
+    /// and is non-empty) rather than `-f`, so a truncated bin.js is caught
+    /// the same way `version_bin_ready` catches it on the Windows side.
+    #[test]
+    fn wsl_probe_uses_non_empty_test() {
+        let src = include_str!("terminal.rs");
+        let call = src
+            .lines()
+            .find(|l| l.contains("crate::wsl::wsl_test(distro, "))
+            .expect("wsl_version_bin_ready must probe through wsl_test");
+        assert!(
+            call.contains(r#""-s""#),
+            "the in-distro probe must use test -s, got: {call}"
+        );
     }
 }

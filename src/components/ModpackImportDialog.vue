@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { Message } from '@arco-design/web-vue'
@@ -28,10 +28,26 @@ const busy = ref(false)
 // Issue #11: import into an existing instance on the same version line.
 const importMode = ref<'new' | 'existing'>('new')
 const existingInstanceId = ref<string | undefined>(undefined)
+// Issue #49 G5: the dshhome form can target a WSL distro, so its profile
+// dependencies are installed inside the distro (Linux native binaries).
+const wslDistro = ref<string | undefined>(undefined)
 
 /** manifest v5 dshhome: a whole-DSH_HOME snapshot — always a fresh instance,
  * profiles come from the manifest (no profileName/force overrides). */
 const isDshhome = computed(() => manifest.value?.type === 'dshhome')
+
+/** Distros available for a dshhome import (only that form supports WSL). */
+const distros = ref<string[]>([])
+
+// WSL is optional (and absent on many machines): a failure just leaves the
+// picker empty, the local-Windows path stays available.
+onMounted(async () => {
+  try {
+    distros.value = await api.listWslDistros()
+  } catch {
+    distros.value = []
+  }
+})
 
 /** Instances whose DSH version shares the manifest's version line. */
 const eligibleInstances = computed(() => {
@@ -57,6 +73,7 @@ watch(
     manifest.value = null
     importMode.value = 'new'
     existingInstanceId.value = undefined
+    wslDistro.value = undefined
     source.value = props.initialSource ?? ''
     force.value = false
     if (source.value) await loadManifest()
@@ -83,6 +100,7 @@ async function loadManifest() {
     profileName.value = m.profileName?.trim() || 'pack'
     existingInstanceId.value = undefined
     importMode.value = 'new'
+    wslDistro.value = undefined
   } catch (e) {
     Message.error(String(e))
   } finally {
@@ -113,6 +131,9 @@ async function confirm() {
       profile_name: isDshhome.value ? undefined : profileName.value.trim() || undefined,
       existing_instance_id:
         !isDshhome.value && importMode.value === 'existing' ? existingInstanceId.value : undefined,
+      // Only the dshhome form honours this (single-profile packs target an
+      // existing instance, whose HOME already fixes the distro).
+      wsl_distro: isDshhome.value ? wslDistro.value : undefined,
     })
     emit('update:visible', false)
     await store.refreshTasks()
@@ -174,6 +195,14 @@ function close() {
               default: manifest.defaultProfile,
             })
           }}
+        </a-alert>
+        <a-form-item v-if="isDshhome && distros.length > 0" :label="t('modpack.wslTarget')">
+          <a-select v-model="wslDistro" allow-clear :placeholder="t('modpack.wslTargetHint')">
+            <a-option v-for="d in distros" :key="d" :value="d">{{ d }}</a-option>
+          </a-select>
+        </a-form-item>
+        <a-alert v-if="isDshhome && wslDistro" type="info" class="modpack-summary">
+          {{ t('modpack.wslInstallHint', { distro: wslDistro }) }}
         </a-alert>
         <a-form-item v-if="!isDshhome" :label="t('modpack.target')">
           <a-radio-group v-model="importMode" type="button">
