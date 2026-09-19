@@ -676,6 +676,13 @@ pub struct InstallPluginInput {
     /// that live in a repo; required for entries found via a live source.
     #[serde(default)]
     pub repo: Option<String>,
+    /// In-distro scratch copy of a `tgz:` tarball (issue #49 Q3). pnpm inside
+    /// the distro cannot read a Windows path, so the launcher copies the file
+    /// into `~/.dsh-launcher/tmp` and references the Linux path; the copy is
+    /// deleted once the install settles (success or failure). `None` for every
+    /// other install source.
+    #[serde(default)]
+    pub wsl_scratch: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -2507,6 +2514,7 @@ pub async fn start_install_plugin_file_task(
     // WSL (issue #19 follow-up): pnpm inside the distro cannot read a Windows
     // path. Copy the tarball into the distro's managed temp dir through the
     // \\wsl$\ UNC share, then reference the Linux path in the spec.
+    let mut scratch: Option<String> = None;
     let spec_path = if let Ok((_, _, Some(distro))) = resolve_instance_linux(&state, &instance_id) {
         crate::wsl::ensure_distro_running(&state, &distro).await?;
         let root = crate::wsl::WslRoot::resolve(&distro).await?;
@@ -2522,6 +2530,7 @@ pub async fn start_install_plugin_file_task(
         let linux_target = format!("{tmp_dir}/{0}-{1}", base, uuid::Uuid::new_v4());
         let unc_target = crate::wsl::unc_path(&distro, &linux_target);
         std::fs::copy(&path, &unc_target).map_err(|e| format!("复制插件包到 WSL 失败: {e}"))?;
+        scratch = Some(linux_target.clone());
         linux_target
     } else {
         // pnpm treats Windows paths more reliably with forward slashes.
@@ -2534,8 +2543,26 @@ pub async fn start_install_plugin_file_task(
         instance_id,
         profile,
         repo: None,
+        wsl_scratch: scratch,
     };
     start_install_plugin_task(app, state, input).await
+}
+
+/// Deletes a `tgz:` install's in-distro scratch copy (issue #49 Q3).
+///
+/// Best-effort: a failure here must never turn a successful install into an
+/// error, and the directory is the launcher's own managed scratch space, so a
+/// leftover file is only wasted space (reclaimed by the next install).
+async fn cleanup_wsl_scratch(state: &State<'_, AppState>, instance_id: &str, scratch_linux: &str) {
+    let Ok((_, _, Some(distro))) = resolve_instance_linux(state, instance_id) else {
+        return;
+    };
+    // The distro may have been shut down since the copy; do not boot it just to
+    // delete a scratch file.
+    let script = format!("rm -f {}", crate::wsl::sh_quote(scratch_linux));
+    if let Err(e) = crate::wsl::wsl_output(&distro, &["bash".into(), "-lc".into(), script]).await {
+        crate::log_warn!("清理 WSL 插件临时包失败（{scratch_linux}）: {e}");
+    }
 }
 
 async fn run_install_plugin_task(
@@ -2545,6 +2572,12 @@ async fn run_install_plugin_task(
     input: InstallPluginInput,
 ) {
     let result = do_install_plugin(app, state, task_id, &input).await;
+    // Issue #49 Q3: drop the in-distro scratch copy of a local tarball once the
+    // install has settled (success or failure). Without this every tgz install
+    // leaves a file behind in ~/.dsh-launcher/tmp inside the distro.
+    if let Some(scratch) = &input.wsl_scratch {
+        cleanup_wsl_scratch(state, &input.instance_id, scratch).await;
+    }
     let mut tasks = state.tasks.lock().await;
     if let Some(task) = tasks.get_mut(task_id) {
         if task.state == crate::tasks::TaskState::Cancelled {
