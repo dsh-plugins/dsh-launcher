@@ -106,6 +106,19 @@ pub fn version_bin_ready(version_dir: &std::path::Path) -> bool {
     bin.exists()
 }
 
+/// The "版本安装不完整" error, shared by every caller that validates an
+/// installed version (issue #49): the terminal (G1) and the TUI session both
+/// need it, and the message must name the path the *probe* used — the Linux
+/// path inside the distro for WSL instances, the UNC path otherwise. Naming
+/// the UNC path for a WSL instance points at a location the user cannot see
+/// from inside the distro.
+pub fn version_missing_message(version: &str, bin: &std::path::Path) -> String {
+    format!(
+        "版本 {version} 安装不完整（缺少 {}），请重新安装",
+        bin.display()
+    )
+}
+
 /// Builds the effective environment for an instance: DSH_HOME (from the
 /// instance's home), the launcher marker, then the user's overrides
 /// (DSH_HOME is reserved and never overridden).

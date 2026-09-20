@@ -996,6 +996,13 @@ const linkBusy = ref(false)
 
 async function loadHomeLinks() {
   if (!homeId.value || homeId.value === DEDICATED) return
+  // WSL (issue #49 G4): the backend hard-rejects storage redirection for WSL
+  // HOMEs (links.rs), so calling it would surface a raw error toast on every
+  // visit. The tab shows a capability notice instead; nothing to load.
+  if (isWsl.value) {
+    homeLinks.value = []
+    return
+  }
   homeLinksLoading.value = true
   try {
     homeLinks.value = await api.listHomeLinks(homeId.value)
@@ -1861,7 +1868,15 @@ const terminalRunning = ref(false)
               <HintIcon :content="t('instanceEdit.storageDesc')" />
             </h4>
 
-            <template v-if="homeId && homeId !== DEDICATED">
+            <!-- WSL (issue #49 G4): storage redirection is not implemented for
+                 WSL HOMEs — the backend rejects it outright (links.rs). Surface
+                 that as a scoped capability notice here instead of letting the
+                 user click through to a raw backend error. -->
+            <a-alert v-if="isWsl" type="info" class="storage-caveat">
+              {{ t('instanceEdit.storageWslUnsupported') }}
+            </a-alert>
+
+            <template v-if="homeId && homeId !== DEDICATED && !isWsl">
               <a-alert type="warning" class="storage-caveat">
                 {{ t('instanceEdit.storageCaveat') }}
               </a-alert>
@@ -1902,7 +1917,7 @@ const terminalRunning = ref(false)
               </a-table>
             </template>
 
-            <a-alert v-else type="info">
+            <a-alert v-else-if="!isWsl" type="info">
               {{ t('instanceEdit.profilesNeedHome') }}
             </a-alert>
           </div>

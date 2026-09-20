@@ -46,6 +46,90 @@ fn home_path_of(state: &AppState, home_id: &str) -> Result<PathBuf, String> {
         .ok_or_else(|| "DSH_HOME 不存在".to_string())
 }
 
+/// Resolves a HOME to `(fs_path, linux_path, distro)` (issue #49 G6).
+///
+/// `fs_path` is what Windows file APIs use (`\\wsl$\…` for WSL homes);
+/// `linux_path` is the in-distro path, only ever handed to wsl.exe. A local
+/// HOME returns the same path for both and `distro = None`.
+fn home_paths_of(
+    state: &AppState,
+    home_id: &str,
+) -> Result<(PathBuf, PathBuf, Option<String>), String> {
+    let cfg = state.config.lock().unwrap();
+    let home = cfg
+        .homes
+        .iter()
+        .find(|h| h.id == home_id)
+        .ok_or_else(|| "DSH_HOME 不存在".to_string())?;
+    Ok((
+        crate::wsl::home_fs_path(home),
+        home.path.clone(),
+        home.wsl.clone(),
+    ))
+}
+
+/// Runs a command inside the distro through `bash -lc`, returning trimmed
+/// stdout. Used for the write-side git work (clone / rev-parse): a Windows
+/// `git.exe` writing into `\\wsl$\` is slow, cannot reach the share while the
+/// distro is stopped, and applies Windows permission semantics (no exec bit,
+/// different symlink handling) to a Linux tree.
+async fn wsl_run(distro: &str, script: &str) -> Result<String, String> {
+    let out = crate::wsl::wsl_bash(distro, script)
+        .output()
+        .await
+        .map_err(|e| format!("wsl.exe 执行失败: {e}"))?;
+    if !out.status.success() {
+        let err = String::from_utf8_lossy(&out.stderr).trim().to_string();
+        return Err(if err.is_empty() {
+            "WSL 命令失败".to_string()
+        } else {
+            format!("WSL 命令失败: {err}")
+        });
+    }
+    Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
+}
+
+/// Script that allocates the in-distro scratch directory used for repo
+/// clones. `mktemp -d` keeps concurrent installs from colliding; the caller
+/// creates and removes it entirely inside the distro so nothing has to cross
+/// the Windows/Linux boundary.
+fn wsl_tmp_dir_script() -> &'static str {
+    "mktemp -d /tmp/dsh-skill-XXXXXX"
+}
+
+/// `git clone` script for the distro (issue #49 G6). Both arguments are
+/// shell-quoted: the URL is user input and the directory comes from `mktemp`,
+/// so neither may be interpolated raw.
+fn wsl_clone_script(clone_url: &str, dir: &str) -> String {
+    format!(
+        "git clone --depth 1 {url} {dir}",
+        url = crate::wsl::sh_quote(clone_url),
+        dir = crate::wsl::sh_quote(dir),
+    )
+}
+
+/// `git rev-parse HEAD` script for an in-distro clone.
+fn wsl_rev_parse_script(dir: &str) -> String {
+    format!(
+        "git -C {dir} rev-parse HEAD",
+        dir = crate::wsl::sh_quote(dir)
+    )
+}
+
+/// `git describe --tags --exact-match` script; the tag is optional, so
+/// stderr is discarded and a non-zero exit is not an error.
+fn wsl_describe_script(dir: &str) -> String {
+    format!(
+        "git -C {dir} describe --tags --exact-match 2>/dev/null",
+        dir = crate::wsl::sh_quote(dir),
+    )
+}
+
+/// `rm -rf` script for the scratch clone (always run, success or not).
+fn wsl_rm_script(dir: &str) -> String {
+    format!("rm -rf {}", crate::wsl::sh_quote(dir))
+}
+
 fn skills_dir(home: &Path) -> PathBuf {
     home.join("skills")
 }
@@ -325,22 +409,83 @@ pub async fn install_skill_repo(
     home_id: String,
     url: String,
 ) -> Result<Vec<String>, String> {
-    let home = home_path_of(&state, &home_id)?;
+    let (home, home_linux, distro) = home_paths_of(&state, &home_id)?;
     let (clone_url, subpath) = parse_skill_repo_url(&url)?;
-    let tmp = std::env::temp_dir().join(format!("dsh-skill-{}", uuid::Uuid::new_v4()));
-    let result = async {
-        git(
-            &["clone", "--depth", "1", &clone_url, &tmp.to_string_lossy()],
-            None,
-        )
-        .await?;
-        install_from_clone(&tmp, url.trim(), subpath.as_deref(), &home).await
-    }
-    .await;
-    let _ = std::fs::remove_dir_all(&tmp);
-    let names = result?;
+    // WSL (issue #49 G6): clone *inside* the distro. Cloning from Windows
+    // into the `\\wsl$\` share works only while the distro runs, is far
+    // slower, and lands Windows permission semantics on a Linux tree. The
+    // clone also has to happen where the skills will live, so the copied
+    // bundles keep their exec bits and symlinks.
+    let names = if let Some(d) = &distro {
+        crate::wsl::ensure_distro_running(&state, d).await?;
+        let tmp = wsl_run(d, wsl_tmp_dir_script()).await?;
+        let tmp = tmp.trim();
+        if tmp.is_empty() {
+            return Err("无法在发行版内创建临时目录".to_string());
+        }
+        let result = async {
+            wsl_run(d, &wsl_clone_script(&clone_url, tmp)).await?;
+            let dest_root = skills_dir(&home_linux);
+            install_from_clone_wsl(d, tmp, url.trim(), subpath.as_deref(), &dest_root).await
+        }
+        .await;
+        // Always drop the scratch clone, success or not.
+        let _ = wsl_run(d, &wsl_rm_script(tmp)).await;
+        result?
+    } else {
+        let tmp = std::env::temp_dir().join(format!("dsh-skill-{}", uuid::Uuid::new_v4()));
+        let result = async {
+            git(
+                &["clone", "--depth", "1", &clone_url, &tmp.to_string_lossy()],
+                None,
+            )
+            .await?;
+            install_from_clone(&tmp, url.trim(), subpath.as_deref(), &home).await
+        }
+        .await;
+        let _ = std::fs::remove_dir_all(&tmp);
+        result?
+    };
     crate::log_info!("已从 {url} 安装 SKILL: {}", names.join(", "));
     Ok(names)
+}
+
+/// WSL counterpart of `install_from_clone` (issue #49 G6): reads the clone
+/// through `\\wsl$\` (bundles are just files) but runs git inside the distro
+/// and copies into the distro's skills dir, so a Windows-side `git` never
+/// touches a Linux tree.
+async fn install_from_clone_wsl(
+    distro: &str,
+    clone_dir_linux: &str,
+    url: &str,
+    subpath: Option<&str>,
+    dest_root_linux: &Path,
+) -> Result<Vec<String>, String> {
+    let commit = wsl_run(distro, &wsl_rev_parse_script(clone_dir_linux)).await?;
+    let tag = wsl_run(distro, &wsl_describe_script(clone_dir_linux))
+        .await
+        .ok()
+        .filter(|t| !t.is_empty());
+    let origin = SkillOrigin {
+        repo: url.to_string(),
+        commit,
+        tag,
+    };
+    // Bundle discovery and the copy both read/write through `\\wsl$\`, so the
+    // whole walk runs on the blocking pool (issue #49 G3).
+    let clone_fs = crate::wsl::unc_path(distro, clone_dir_linux);
+    let dest_root_fs = crate::wsl::unc_path(distro, &dest_root_linux.to_string_lossy());
+    let subpath = subpath.map(str::to_string);
+    crate::wsl::run_blocking(move || {
+        let bundles = collect_bundles(&clone_fs, subpath.as_deref())
+            .map_err(|e| format!("仓库中没有找到 SKILL.md（{e}）"))?;
+        let mut installed = Vec::new();
+        for bundle in bundles {
+            installed.push(install_bundle(&bundle, &dest_root_fs, Some(&origin))?);
+        }
+        Ok::<_, String>(installed)
+    })
+    .await?
 }
 
 /// A skill discovered in a source repository (not yet installed).
@@ -714,5 +859,72 @@ mod tests {
         let (name, desc) = parse_frontmatter(md).unwrap();
         assert_eq!(name, "demo");
         assert_eq!(desc, "第一段折行， 第二行。");
+    }
+
+    /// issue #49 G6: the clone runs inside the distro, so both the URL (user
+    /// input) and the temp dir must be single-quoted — raw interpolation would
+    /// let a crafted repo URL run arbitrary commands in the user's distro.
+    #[test]
+    fn wsl_clone_script_quotes_url_and_dir() {
+        let script = wsl_clone_script("https://github.com/o/r.git", "/tmp/dsh-skill-abc123");
+        assert_eq!(
+            script,
+            "git clone --depth 1 'https://github.com/o/r.git' '/tmp/dsh-skill-abc123'"
+        );
+        // A quote in the URL cannot break out of the single-quoted argument.
+        let evil = wsl_clone_script("https://h/o/r'; rm -rf / #", "/tmp/d");
+        assert!(
+            evil.contains(r"'\''"),
+            "the embedded quote must be escaped, got: {evil}"
+        );
+        assert!(
+            evil.ends_with("'/tmp/d'"),
+            "the directory must stay the last quoted argument: {evil}"
+        );
+    }
+
+    /// The rev-parse/describe/rm scripts all address the scratch clone by its
+    /// in-distro path, which is the only path git inside the distro knows.
+    #[test]
+    fn wsl_git_scripts_target_the_linux_path() {
+        assert_eq!(
+            wsl_rev_parse_script("/tmp/dsh-skill-x"),
+            "git -C '/tmp/dsh-skill-x' rev-parse HEAD"
+        );
+        assert!(wsl_describe_script("/tmp/dsh-skill-x")
+            .starts_with("git -C '/tmp/dsh-skill-x' describe"));
+        assert_eq!(
+            wsl_rm_script("/tmp/dsh-skill-x"),
+            "rm -rf '/tmp/dsh-skill-x'"
+        );
+        assert_eq!(wsl_tmp_dir_script(), "mktemp -d /tmp/dsh-skill-XXXXXX");
+    }
+
+    /// A WSL home must resolve to a UNC fs path plus its Linux path and
+    /// distro; a local home returns the same path twice and no distro.
+    #[test]
+    fn home_paths_of_separates_fs_and_linux_flavours() {
+        let home = crate::config::DshHome {
+            id: "h1".into(),
+            name: "local".into(),
+            path: std::path::PathBuf::from(r"C:\homes\l"),
+            wsl: None,
+            links: Default::default(),
+        };
+        assert_eq!(crate::wsl::home_fs_path(&home), home.path);
+        assert_eq!(home.wsl, None);
+
+        let wsl_home = crate::config::DshHome {
+            id: "h2".into(),
+            name: "wsl".into(),
+            path: std::path::PathBuf::from("/home/u/.dsh-launcher/homes/w"),
+            wsl: Some("Ubuntu".into()),
+            links: Default::default(),
+        };
+        assert_eq!(
+            crate::wsl::home_fs_path(&wsl_home),
+            std::path::PathBuf::from(r"\\wsl$\Ubuntu\home\u\.dsh-launcher\homes\w")
+        );
+        assert_eq!(wsl_home.wsl.as_deref(), Some("Ubuntu"));
     }
 }

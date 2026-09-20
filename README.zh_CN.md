@@ -48,7 +48,9 @@ Tauri 2 + Vue 3 + TypeScript + Sass + vue-router + vue-i18n + Arco Design Vue。
 - **实例设置 → 插件页**：筛选 Profile 查看插件、启用/禁用、多选批量启用/禁用（`@deepseek-ai/*` 核心插件不显示）。
 - **设置页**：语言、关闭到托盘、开机自启、DSH_HOME 管理。
 
-> WSL 实例的插件安装/整合包依赖安装会在发行版内执行 pnpm（拉取 Linux 平台二进制）；从 Windows 侧经 UNC 读写文件要求发行版处于运行状态，启动器会自动拉起。
+> WSL 实例的插件安装/整合包依赖安装会在发行版内执行 pnpm（拉取 Linux 平台二进制），SKILL 仓库安装同样在发行版内 `git clone`；从 Windows 侧经 UNC 读写文件要求发行版处于运行状态，启动器会自动拉起。
+>
+> 已知限制：存储重定向（存储路径 tab）暂不支持 WSL HOME（需在发行版内创建并校验符号链接），页面给出能力提示而非报错。
 
 ## 开发
 

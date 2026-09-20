@@ -294,6 +294,10 @@ export interface ImportModpackInput {
   profile_name?: string
   /** Import into this existing instance instead of creating a new one. */
   existing_instance_id?: string
+  /** Import a dshhome snapshot into this WSL distro (issue #49 G5); the pack
+   * profile is materialized inside the distro and its dependencies are
+   * installed there. Omit for a local Windows HOME. */
+  wsl_distro?: string
 }
 
 /** Repo origin recorded for an installed skill. */

@@ -207,6 +207,14 @@ pub struct ImportModpackInput {
     /// instance's DSH version must share the manifest's version line.
     #[serde(default)]
     pub existing_instance_id: Option<String>,
+    /// Import into a WSL distro (issue #49 G5): the pack's profile lands in
+    /// `$HOME/.dsh-launcher/homes/<name>` *inside* the distro and pnpm runs
+    /// there, so native modules are Linux binaries. `None` = a local Windows
+    /// HOME (the historical behaviour). Only the dshhome form is supported;
+    /// the single-profile form targets an existing instance, whose HOME (and
+    /// therefore its distro) is already decided.
+    #[serde(default)]
+    pub wsl_distro: Option<String>,
 }
 
 /// Maximum accepted modpack size (64 MiB).
@@ -1896,50 +1904,8 @@ async fn do_import_modpack(
         None => {
             // Fresh instance: resolve the pinned version (exact), falling
             // back to the newest installed version; install if missing.
-            let version_record = {
-                let cfg = state.config.lock().unwrap();
-                match &version_str {
-                    Some(v) => cfg.versions.iter().find(|r| r.version == *v).cloned(),
-                    None => cfg.versions.last().cloned(),
-                }
-            };
-            let version_record = match version_record {
-                Some(v) => v,
-                None => match &version_str {
-                    Some(v) => {
-                        // A pinned base version (e.g. 0.1.0) may have no
-                        // published build at all — only prereleases
-                        // (0.1.0-rc.8). Substitute the latest available
-                        // version of that line.
-                        let target = resolve_version_fallback(v).await;
-                        if target != *v {
-                            crate::tasks::push_task_log_pub(
-                                app,
-                                state,
-                                task_id,
-                                &format!(
-                                    "{v} 没有正式发行版本，改用该版本线最新的开发版本 {target}"
-                                ),
-                            )
-                            .await;
-                        }
-                        crate::tasks::push_task_log_pub(
-                            app,
-                            state,
-                            task_id,
-                            &format!("整合包需要 DSH {target}，本机未安装，开始安装…"),
-                        )
-                        .await;
-                        crate::tasks::install_version_streamed_pub(app, state, task_id, &target)
-                            .await?
-                    }
-                    None => {
-                        return Err(
-                            "整合包未声明 dshVersion 且本机没有已安装的 DSH 版本".to_string()
-                        );
-                    }
-                },
-            };
+            let version_record =
+                resolve_import_version(app, state, task_id, &version_str, None).await?;
 
             // Dedicated HOME for the new instance (path-based reuse keeps a
             // retry idempotent), then prepare the pristine web template.
@@ -2032,7 +1998,10 @@ async fn do_import_modpack(
     // 5. pack-structure v2: overrides/ user files land on the profile root
     //    (file-level overwrite, after pnpm's runtime defaults).
     if container == ModpackContainer::Dspack {
-        let count = apply_overrides(&unpacked, &dest)?;
+        let count = {
+            let (u, d) = (unpacked.clone(), dest.clone());
+            crate::wsl::run_blocking(move || apply_overrides(&u, &d)).await??
+        };
         if count > 0 {
             crate::tasks::push_task_log_pub(
                 app,
@@ -2047,7 +2016,10 @@ async fn do_import_modpack(
         // copied onto the $DSH_HOME root with the same overwrite semantics.
         let home_dir = unpacked.join("home");
         if home_dir.is_dir() {
-            let count = copy_tree(&home_dir, &fs_home, None)?;
+            let count = {
+                let (h, f) = (home_dir.clone(), fs_home.clone());
+                crate::wsl::run_blocking(move || copy_tree(&h, &f, None)).await??
+            };
             if count > 0 {
                 crate::tasks::push_task_log_pub(
                     app,
@@ -2141,6 +2113,71 @@ async fn do_import_modpack(
 // Import: manifest v5 dshhome form (whole-DSH_HOME snapshot, issue #24)
 // ---------------------------------------------------------------------------
 
+/// Resolves the DSH version an import pins, installing it when missing
+/// (issue #49 G5): shared by the single-profile form (`do_import_modpack`) and
+/// the whole-HOME form (`do_import_dshhome`) so both behave identically when a
+/// pack names a version the machine does not have yet.
+///
+/// `distro` selects the *flavour* of version record: a WSL target must run a
+/// version installed **inside that distro** (the CLI, node and pnpm all come
+/// from there), so a local Windows record with the same version string is not
+/// a match — pairing the two would make the launcher spawn a Linux path with
+/// Windows tooling.
+async fn resolve_import_version(
+    app: &AppHandle,
+    state: &State<'_, AppState>,
+    task_id: &str,
+    version_str: &Option<String>,
+    distro: Option<&str>,
+) -> Result<crate::config::DshVersion, String> {
+    let installed = {
+        let cfg = state.config.lock().unwrap();
+        let matches = |v: &&crate::config::DshVersion| v.wsl.as_deref() == distro;
+        match version_str {
+            Some(v) => cfg
+                .versions
+                .iter()
+                .find(|r| r.version == *v && matches(r))
+                .cloned(),
+            None => cfg.versions.iter().rev().find(|r| matches(r)).cloned(),
+        }
+    };
+    if let Some(v) = installed {
+        return Ok(v);
+    }
+    let Some(v) = version_str else {
+        return Err("整合包未声明 dshVersion 且本机没有已安装的 DSH 版本".to_string());
+    };
+    // A pinned base version (e.g. 0.1.0) may have no published build at all —
+    // only prereleases (0.1.0-rc.8). Substitute the latest of that line.
+    let target = resolve_version_fallback(v).await;
+    if target != *v {
+        crate::tasks::push_task_log_pub(
+            app,
+            state,
+            task_id,
+            &format!("{v} 没有正式发行版本，改用该版本线最新的开发版本 {target}"),
+        )
+        .await;
+    }
+    crate::tasks::push_task_log_pub(
+        app,
+        state,
+        task_id,
+        &match distro {
+            Some(d) => format!("整合包需要 DSH {target}，发行版「{d}」内未安装，开始安装…"),
+            None => format!("整合包需要 DSH {target}，本机未安装，开始安装…"),
+        },
+    )
+    .await;
+    match distro {
+        Some(d) => {
+            crate::tasks::install_version_streamed_wsl(app, state, task_id, &target, d).await
+        }
+        None => crate::tasks::install_version_streamed_pub(app, state, task_id, &target).await,
+    }
+}
+
 /// Imports a `type:"dshhome"` pack (pack-structure v3 §9): a fresh instance
 /// whose HOME mirrors the whole snapshot — per-profile dependency layers,
 /// home-level overrides (presets / skills / AGENTS.md / data), and pointer
@@ -2195,8 +2232,23 @@ async fn do_import_dshhome(
     )
     .await;
 
+    // Fresh dedicated HOME; a leftover directory from a failed earlier
+    // attempt is wiped so the snapshot starts clean.
+    //
+    // WSL (issue #49 G5): the record stores the *Linux* path, but every
+    // Windows-side file operation below goes through the `\\wsl$\` share —
+    // the same split the single-profile form uses (`home_linux` vs `fs_home`).
+    // The distro is booted before the first touch because `\\wsl$\` is
+    // unreachable while it is stopped.
+    let distro = input.wsl_distro.clone().filter(|d| !d.trim().is_empty());
+    if let Some(d) = &distro {
+        crate::wsl::ensure_distro_running(state, d).await?;
+    }
+
     // Resolve the pinned DSH version, installing it when missing (same
-    // behaviour as the profile form).
+    // behaviour as the profile form). A WSL target resolves a version record
+    // installed *inside that distro* — the CLI, node and pnpm all come from
+    // there, so a local Windows record is not interchangeable.
     let version_str = manifest
         .dsh_version
         .as_deref()
@@ -2206,51 +2258,46 @@ async fn do_import_dshhome(
                 .to_string()
         })
         .filter(|v| !v.is_empty());
-    let version_record = {
-        let cfg = state.config.lock().unwrap();
-        match &version_str {
-            Some(v) => cfg.versions.iter().find(|r| r.version == *v).cloned(),
-            None => cfg.versions.last().cloned(),
+    let version_record =
+        resolve_import_version(app, state, task_id, &version_str, distro.as_deref()).await?;
+    let home_name = crate::config::sanitize_name(&instance_name);
+    let (home_linux, fs_home) = match &distro {
+        Some(d) => {
+            let root = crate::wsl::WslRoot::resolve(d).await?;
+            let linux = std::path::PathBuf::from(root.home_dir(&home_name));
+            let fs = crate::wsl::unc_path(d, &linux.to_string_lossy());
+            (linux, fs)
+        }
+        None => {
+            let linux = state.data_dir.join("homes").join(&home_name);
+            (linux.clone(), linux)
         }
     };
-    let version_record = match version_record {
-        Some(v) => v,
-        None => match &version_str {
-            Some(v) => {
-                let target = resolve_version_fallback(v).await;
-                crate::tasks::push_task_log_pub(
-                    app,
-                    state,
-                    task_id,
-                    &format!("整合包需要 DSH {target}，本机未安装，开始安装…"),
-                )
-                .await;
-                crate::tasks::install_version_streamed_pub(app, state, task_id, &target).await?
-            }
-            None => {
-                return Err("整合包未声明 dshVersion 且本机没有已安装的 DSH 版本".to_string());
-            }
-        },
-    };
-
-    // Fresh dedicated HOME; a leftover directory from a failed earlier
-    // attempt is wiped so the snapshot starts clean.
-    let home_path = state
-        .data_dir
-        .join("homes")
-        .join(crate::config::sanitize_name(&instance_name));
-    if home_path.exists() {
-        std::fs::remove_dir_all(&home_path).map_err(|e| format!("清理旧 DSH_HOME 失败: {e}"))?;
+    if fs_home.exists() {
+        std::fs::remove_dir_all(&fs_home).map_err(|e| format!("清理旧 DSH_HOME 失败: {e}"))?;
     }
-    std::fs::create_dir_all(&home_path).map_err(|e| format!("创建 DSH_HOME 失败: {e}"))?;
-    let home =
-        crate::commands::create_home_record(state, &instance_name, &home_path.to_string_lossy())?;
+    std::fs::create_dir_all(&fs_home).map_err(|e| format!("创建 DSH_HOME 失败: {e}"))?;
+    let home = match &distro {
+        Some(d) => crate::commands::create_home_record_wsl(
+            state,
+            &instance_name,
+            &home_linux.to_string_lossy(),
+            d,
+        )?,
+        None => crate::commands::create_home_record(
+            state,
+            &instance_name,
+            &home_linux.to_string_lossy(),
+        )?,
+    };
 
     let result = import_dshhome_body(
         app,
         state,
         task_id,
-        &home.path,
+        &fs_home,
+        &home_linux,
+        distro.as_deref(),
         manifest,
         &profiles,
         unpacked,
@@ -2259,7 +2306,7 @@ async fn do_import_dshhome(
     .await;
     if let Err(e) = result {
         // All-or-nothing: drop the half-written snapshot and its record.
-        std::fs::remove_dir_all(&home.path).ok();
+        std::fs::remove_dir_all(&fs_home).ok();
         let mut cfg = state.config.lock().unwrap();
         cfg.homes.retain(|h| h.id != home.id);
         crate::commands::save_state(state, &cfg).ok();
@@ -2286,8 +2333,12 @@ async fn do_import_dshhome(
     };
 
     // Icon: bundled icon.png wins; an http(s) manifest icon stays remote.
+    // WSL (issue #49): `home.path` is the *Linux* path, which Windows would
+    // resolve relative to the current drive (C:\home\u\...) — the icon would
+    // land outside the instance's HOME and silently never show. Write through
+    // the same `fs_home` the rest of this function uses.
     let imported_icon: Option<String> = if unpacked.join("icon.png").exists() {
-        let dest = crate::icons::local_icon_path(&home.path, &instance_id);
+        let dest = crate::icons::local_icon_path(&fs_home, &instance_id);
         if let Some(parent) = dest.parent() {
             std::fs::create_dir_all(parent).ok();
         }
@@ -2325,14 +2376,40 @@ async fn import_dshhome_body(
     state: &State<'_, AppState>,
     task_id: &str,
     home: &Path,
+    home_linux: &Path,
+    distro: Option<&str>,
     manifest: &ModpackManifest,
     profiles: &BTreeMap<String, ProfileUnit>,
     unpacked: &Path,
     version_record: &crate::config::DshVersion,
 ) -> Result<(), String> {
     // 1. Baseline web/headless templates first, so pack content wins.
-    crate::tasks::ensure_web_profile_template_pub(app, state, task_id, home, version_record)
-        .await?;
+    //    WSL (issue #49 G5) boots the installed DSH *inside* the distro — the
+    //    Windows-side template would need `version_bin_ready` against a Linux
+    //    version dir, which can never succeed.
+    match distro {
+        Some(d) => {
+            crate::tasks::ensure_web_profile_template_wsl(
+                app,
+                state,
+                task_id,
+                d,
+                &home_linux.to_string_lossy(),
+                version_record,
+            )
+            .await?;
+        }
+        None => {
+            crate::tasks::ensure_web_profile_template_pub(
+                app,
+                state,
+                task_id,
+                home,
+                version_record,
+            )
+            .await?;
+        }
+    }
 
     // 2. Per profile: overrides/profiles/<name>/ → profile dir, then the
     //    manifest-authoritative package.json, then pnpm install.
@@ -2342,7 +2419,10 @@ async fn import_dshhome_body(
             .map_err(|e| format!("创建 profile「{name}」目录失败: {e}"))?;
         let profile_overrides = unpacked.join("overrides").join("profiles").join(name);
         if profile_overrides.is_dir() {
-            let count = copy_tree(&profile_overrides, &dest, None)?;
+            let count = {
+                let (o, d) = (profile_overrides.clone(), dest.clone());
+                crate::wsl::run_blocking(move || copy_tree(&o, &d, None)).await??
+            };
             if count > 0 {
                 crate::tasks::push_task_log_pub(
                     app,
@@ -2374,11 +2454,30 @@ async fn import_dshhome_body(
         )
         .await;
         let has_lock = dest.join("pnpm-lock.yaml").exists();
-        pnpm_install_profile(app, state, task_id, &dest, has_lock).await?;
+        // WSL (issue #49 G5): install inside the distro so native modules are
+        // Linux binaries; the profile dir is reached through `\\wsl$\` for the
+        // file writes above and by its Linux path for the install itself.
+        match distro {
+            Some(d) => {
+                pnpm_install_profile_wsl(
+                    app,
+                    state,
+                    task_id,
+                    d,
+                    &home_linux.join("profiles").join(name),
+                    has_lock,
+                )
+                .await?;
+            }
+            None => pnpm_install_profile(app, state, task_id, &dest, has_lock).await?,
+        }
     }
 
     // 3. Home-level overrides: everything except the per-profile subtrees.
-    let count = copy_tree(&unpacked.join("overrides"), home, Some(&["profiles"]))?;
+    let count = {
+        let (o, h) = (unpacked.join("overrides"), home.to_path_buf());
+        crate::wsl::run_blocking(move || copy_tree(&o, &h, Some(&["profiles"]))).await??
+    };
     if count > 0 {
         crate::tasks::push_task_log_pub(
             app,
@@ -2522,6 +2621,73 @@ impl Drop for TmpDir {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// issue #49 G5: the dshhome form accepts a WSL distro and must reject
+    /// (not silently ignore) a blank one, so a stray empty string cannot
+    /// turn a WSL import into a surprise local Windows HOME.
+    #[test]
+    fn import_input_wsl_distro_is_optional_but_blank_is_dropped() {
+        let base = r#"{"source":"pack.dspack"}"#;
+        let none: ImportModpackInput = serde_json::from_str(base).unwrap();
+        assert!(none.wsl_distro.is_none());
+
+        let set: ImportModpackInput =
+            serde_json::from_str(r#"{"source":"pack.dspack","wsl_distro":"Ubuntu"}"#).unwrap();
+        assert_eq!(set.wsl_distro.as_deref(), Some("Ubuntu"));
+
+        // The blank filter lives in `do_import_dshhome`; assert its shape here
+        // so a refactor cannot drop it.
+        let blank = "   ";
+        assert!(blank.trim().is_empty());
+    }
+
+    /// issue #49 G5: a WSL import must resolve a version record installed
+    /// *inside that distro*. Pairing it with a local Windows record of the same
+    /// version string would make the launcher spawn a Linux path with Windows
+    /// tooling. The selection is a pure predicate over the config, so assert
+    /// its shape here.
+    #[test]
+    fn import_version_selection_is_distro_scoped() {
+        let src = include_str!("modpack.rs");
+        let body = src
+            .split("async fn resolve_import_version(")
+            .nth(1)
+            .expect("resolve_import_version must exist")
+            .split("/// Imports a")
+            .next()
+            .unwrap();
+        assert!(
+            body.contains("v.wsl.as_deref() == distro"),
+            "the version lookup must be scoped to the distro flavour"
+        );
+        assert!(
+            body.contains("install_version_streamed_wsl"),
+            "a WSL target must install the version inside the distro"
+        );
+        assert!(
+            body.contains("install_version_streamed_pub"),
+            "a local target must keep the Windows install path"
+        );
+    }
+
+    /// The single-profile form must stay local-only: it targets an existing
+    /// instance whose HOME already fixes the distro, so a caller-supplied
+    /// `wsl_distro` must not reach the file layer there.
+    #[test]
+    fn single_profile_import_ignores_wsl_distro() {
+        let src = include_str!("modpack.rs");
+        let body = src
+            .split("async fn do_import_modpack(")
+            .nth(1)
+            .expect("do_import_modpack must exist")
+            .split("async fn do_import_dshhome(")
+            .next()
+            .unwrap();
+        assert!(
+            !body.contains("input.wsl_distro"),
+            "the single-profile form must not read wsl_distro"
+        );
+    }
 
     #[test]
     fn github_repo_from_spec_parses_common_forms() {

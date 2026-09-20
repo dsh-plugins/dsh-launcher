@@ -48,7 +48,9 @@ Tauri 2 + Vue 3 + TypeScript + Sass + vue-router + vue-i18n + Arco Design Vue.
 - **Instance settings → Plugins**: filter by profile, enable/disable plugins, multi-select batch enable/disable (`@deepseek-ai/*` core plugins hidden).
 - **Settings**: language, close to tray, launch at login, DSH_HOME management.
 
-> For WSL instances, plugin and modpack dependency installs run pnpm inside the distro (pulling Linux platform binaries); reading/writing files from the Windows side through UNC requires the distro to be running, which the launcher starts automatically.
+> For WSL instances, plugin and modpack dependency installs run pnpm inside the distro (pulling Linux platform binaries), and SKILL repository installs clone with the distro's own `git`; reading/writing files from the Windows side through UNC requires the distro to be running, which the launcher starts automatically.
+>
+> Known limitation: storage redirection (the storage tab) is not supported for WSL HOMEs yet (it would need to create and verify symlinks inside the distro); the page shows a capability notice instead of failing.
 
 ## Development
 

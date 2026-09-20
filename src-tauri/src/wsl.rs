@@ -143,6 +143,60 @@ pub async fn ensure_distro_running(
     Ok(())
 }
 
+/// The WSL distro an instance runs in, or `None` for a local instance
+/// (issue #49 S4): the launch path needs to boot it before any `\\wsl$\` read.
+pub fn home_distro_of(
+    state: &tauri::State<'_, crate::AppState>,
+    instance_id: &str,
+) -> Option<String> {
+    let cfg = state.config.lock().unwrap();
+    let inst = cfg.instances.iter().find(|i| i.id == instance_id)?;
+    cfg.homes
+        .iter()
+        .find(|h| h.id == inst.home_id)
+        .and_then(|h| h.wsl.clone())
+}
+/// Boots the distro backing a WSL home so `\\wsl$\` reads succeed (issue #49
+/// S3). A local home is a no-op.
+///
+/// Every command that reads a HOME through the Windows filesystem must call
+/// this first: the share is unreachable while the distro is stopped, and the
+/// resulting `read_dir`/`exists` failure is indistinguishable from "empty", so
+/// without it a stopped distro looks like a HOME with no profiles / plugins /
+/// skills. Returns the boot error so the caller can surface it instead of
+/// silently reporting an empty result.
+pub async fn ensure_home_running(
+    state: &tauri::State<'_, crate::AppState>,
+    home_id: &str,
+) -> Result<(), String> {
+    let distro = {
+        let cfg = state.config.lock().unwrap();
+        cfg.homes
+            .iter()
+            .find(|h| h.id == home_id)
+            .and_then(|h| h.wsl.clone())
+    };
+    match distro {
+        Some(d) => ensure_distro_running(state, &d).await,
+        None => Ok(()),
+    }
+}
+/// Runs a blocking closure on the async runtime's blocking pool.
+///
+/// WSL work reaches its files through the `\\wsl$\` share, where one
+/// `std::fs` call can block for milliseconds rather than microseconds; running
+/// those inline in an `async fn` parks a runtime worker and stalls every other
+/// command while a tree is walked (issue #49 G3). Shared by the modules that
+/// touch UNC paths (`modpack`, `skills`, `plugins`).
+pub async fn run_blocking<T, F>(f: F) -> Result<T, String>
+where
+    T: Send + 'static,
+    F: FnOnce() -> T + Send + 'static,
+{
+    tauri::async_runtime::spawn_blocking(f)
+        .await
+        .map_err(|e| format!("后台线程失败: {e}"))
+}
 /// Lists installed WSL distros (`wsl.exe -l -q`), excluding the internal
 /// docker-desktop distros. Empty when WSL is unavailable.
 #[cfg(windows)]
@@ -343,6 +397,20 @@ pub async fn ensure_pnpm(
     Ok(root.pnpm_exe())
 }
 
+/// Renders env pairs as a bash `export K='V'; …` prologue.
+///
+/// WSL does not forward the Windows process environment into the distro —
+/// that requires `WSLENV` — so any variable a command *inside* the distro must
+/// see has to be written into the script itself. `launch_script` already
+/// inlines env this way; these PTY paths (the embedded terminal and the TUI
+/// session) had been relying on `Command::env`, which only sets the variable on
+/// `wsl.exe` and never reaches bash (issue #49 S2).
+pub fn env_exports(env: &[(String, String)]) -> String {
+    env.iter()
+        .map(|(k, v)| format!("export {k}={}", sh_quote(v)))
+        .collect::<Vec<_>>()
+        .join("; ")
+}
 /// The bash wrapper used to run an instance inside WSL: prints the inner PID
 /// marker, then execs node with the DSH CLI. Everything is single-quoted so
 /// env values and paths with spaces are safe.
@@ -421,6 +489,30 @@ mod tests {
         assert!(s.ends_with("'--profile' 'web'"));
     }
 
+    /// issue #49 S2: WSL does not forward the Windows environment into the
+    /// distro (that needs WSLENV), so every variable a command inside the
+    /// distro must see has to be written into the script. `env_exports` is the
+    /// shared builder for the two PTY paths (embedded terminal, TUI session);
+    /// values are single-quoted so an override with spaces or a quote cannot
+    /// break the script.
+    #[test]
+    fn env_exports_inlines_values_with_quoting() {
+        let out = env_exports(&[
+            (
+                "DSH_HOME".to_string(),
+                "/home/u/.dsh-launcher/homes/x".to_string(),
+            ),
+            ("DSH_LAUNCHER_INSTANCE".to_string(), "my app".to_string()),
+            ("FOO".to_string(), "it's".to_string()),
+        ]);
+        assert_eq!(
+            out,
+            "export DSH_HOME='/home/u/.dsh-launcher/homes/x'; export DSH_LAUNCHER_INSTANCE='my app'; export FOO='it'\\''s'"
+        );
+        // No env at all must not leave a dangling separator.
+        assert_eq!(env_exports(&[]), "");
+    }
+
     #[test]
     fn unc_path_maps_linux_to_wsl_share() {
         assert_eq!(
@@ -491,5 +583,48 @@ mod tests {
             version_fs_path(&wsl_ver),
             std::path::PathBuf::from(r"\\wsl$\Debian\home\u\.dsh-launcher\versions\0.1.0")
         );
+    }
+
+    /// issue #49 §2.2 boundary cases for the path bridge: the root path, a
+    /// trailing slash, spaces and an embedded single quote must all survive the
+    /// Linux -> UNC mapping (and `sh_quote` must keep the Linux form usable in
+    /// a script).
+    #[test]
+    fn fs_path_handles_boundary_linux_paths() {
+        // The filesystem root: trim_start_matches('/') leaves "", so the UNC
+        // path is the share root with no trailing separator.
+        assert_eq!(
+            fs_path(Some("Ubuntu"), std::path::Path::new("/")),
+            std::path::PathBuf::from(r"\\wsl$\Ubuntu\")
+        );
+        // A trailing slash must not produce an empty path component.
+        assert_eq!(
+            fs_path(Some("Ubuntu"), std::path::Path::new("/home/u/")),
+            std::path::PathBuf::from(r"\\wsl$\Ubuntu\home\u\")
+        );
+        // Spaces are literal in both flavours.
+        let spaced = std::path::Path::new("/home/u/my homes/x");
+        assert_eq!(
+            fs_path(Some("Ubuntu"), spaced),
+            std::path::PathBuf::from(r"\\wsl$\Ubuntu\home\u\my homes\x")
+        );
+        assert_eq!(sh_quote("/home/u/my homes/x"), "'/home/u/my homes/x'");
+        // A single quote in a Linux path is shell-escaped, not dropped.
+        let quoted = "/home/u/it's/x";
+        assert_eq!(
+            fs_path(Some("Ubuntu"), std::path::Path::new(quoted)),
+            std::path::PathBuf::from(r"\\wsl$\Ubuntu\home\u\it's\x")
+        );
+        assert_eq!(sh_quote(quoted), r"'/home/u/it'\''s/x'");
+    }
+
+    /// A local path must never be rewritten: `fs_path(None, ...)` is the
+    /// identity even for a Linux-looking path (the caller decides the flavour).
+    #[test]
+    fn fs_path_is_identity_for_local_homes() {
+        for raw in ["/", "/home/u/", "/home/u/it's/x", r"C:\homes\l"] {
+            let p = std::path::Path::new(raw);
+            assert_eq!(fs_path(None, p), p.to_path_buf(), "raw: {raw}");
+        }
     }
 }

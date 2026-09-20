@@ -676,6 +676,13 @@ pub struct InstallPluginInput {
     /// that live in a repo; required for entries found via a live source.
     #[serde(default)]
     pub repo: Option<String>,
+    /// In-distro scratch copy of a `tgz:` tarball (issue #49 Q3). pnpm inside
+    /// the distro cannot read a Windows path, so the launcher copies the file
+    /// into `~/.dsh-launcher/tmp` and references the Linux path; the copy is
+    /// deleted once the install settles (success or failure). `None` for every
+    /// other install source.
+    #[serde(default)]
+    pub wsl_scratch: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -1579,7 +1586,16 @@ pub async fn list_installed_plugins(
 ) -> Result<Vec<InstalledPlugin>, String> {
     let (home_path, _version) = resolve_instance(&state, &instance_id)?;
     let dir = profile_dir(&home_path, &profile);
-    let manifest = read_profile_manifest(&dir)?;
+    // Reads go through \\wsl$\ for WSL instances, where each call can block for
+    // milliseconds; keep the runtime free while a profile is scanned
+    // (issue #49 G3).
+    let (manifest, disabled) = {
+        let dir = dir.clone();
+        crate::wsl::run_blocking(move || {
+            Ok::<_, String>((read_profile_manifest(&dir)?, read_disabled_ids(&dir)))
+        })
+        .await??
+    };
 
     let mut ids: Vec<String> = Vec::new();
     let mut versions: std::collections::HashMap<String, String> = std::collections::HashMap::new();
@@ -1608,9 +1624,6 @@ pub async fn list_installed_plugins(
     }
     ids.sort();
     ids.dedup();
-
-    // Disabled set from cordis.patch.yml (`- id: <cordis-id>` + `disabled: true`).
-    let disabled = read_disabled_ids(&dir);
 
     let out = ids
         .into_iter()
@@ -1861,7 +1874,12 @@ pub async fn check_plugin_updates(
 ) -> Result<Vec<PluginUpdateInfo>, String> {
     let (home_path, _version) = resolve_instance(&state, &instance_id)?;
     let dir = profile_dir(&home_path, &profile);
-    let manifest = read_profile_manifest(&dir)?;
+    // Manifest + node_modules probes go through \\wsl$\ for WSL instances;
+    // keep them off the runtime workers (issue #49 G3).
+    let manifest = {
+        let dir = dir.clone();
+        crate::wsl::run_blocking(move || read_profile_manifest(&dir)).await??
+    };
 
     let mut npm_deps: Vec<(String, String)> = Vec::new();
     if let Some(deps) = manifest.get("dependencies").and_then(|d| d.as_object()) {
@@ -1883,7 +1901,16 @@ pub async fn check_plugin_updates(
     for (id, spec) in npm_deps {
         let dir = dir.clone();
         set.spawn(async move {
-            let current = installed_version_of(&dir, &id, &spec);
+            let probe_dir = dir.clone();
+            let probe_id = id.clone();
+            let current = crate::wsl::run_blocking(move || {
+                installed_version_of(&probe_dir, &probe_id, &spec)
+            })
+            .await
+            .unwrap_or_else(|e| {
+                crate::log_warn!("读取插件 {id} 已装版本失败: {e}");
+                None
+            });
             let latest = match npm_versions(&id, &PluginChannel::Stable).await {
                 Ok(versions) => versions
                     .iter()
@@ -1934,8 +1961,13 @@ pub async fn set_plugins_enabled(
     let patch_path = dir.join("cordis.patch.yml");
 
     let mut raw = if patch_path.exists() {
-        std::fs::read_to_string(&patch_path)
-            .map_err(|e| format!("读取 cordis.patch.yml 失败: {e}"))?
+        // A WSL profile reaches cordis.patch.yml through \\wsl$\, so the read
+        // goes to the blocking pool (issue #49 G3).
+        let p = patch_path.clone();
+        crate::wsl::run_blocking(move || {
+            std::fs::read_to_string(&p).map_err(|e| format!("读取 cordis.patch.yml 失败: {e}"))
+        })
+        .await??
     } else {
         String::new()
     };
@@ -1945,8 +1977,14 @@ pub async fn set_plugins_enabled(
         raw = set_disabled_row(&raw, &cordis_id, input.enabled);
     }
 
-    std::fs::create_dir_all(&dir).map_err(|e| format!("创建 profile 目录失败: {e}"))?;
-    std::fs::write(&patch_path, raw).map_err(|e| format!("写入 cordis.patch.yml 失败: {e}"))?;
+    // One blocking hop for the whole write-back (mkdir + write) so a UNC round
+    // trip never parks a runtime worker (issue #49 G3).
+    let write = crate::wsl::run_blocking(move || {
+        std::fs::create_dir_all(&dir).map_err(|e| format!("创建 profile 目录失败: {e}"))?;
+        std::fs::write(&patch_path, raw).map_err(|e| format!("写入 cordis.patch.yml 失败: {e}"))
+    })
+    .await?;
+    write?;
     Ok(())
 }
 
@@ -2013,16 +2051,24 @@ pub async fn uninstall_plugin(
     //    plugin; disabled rows gate it). Reuse the block-stripping logic in
     //    set_disabled_row by removing any block whose id matches.
     let patch_path = dir.join("cordis.patch.yml");
-    if patch_path.exists() {
+    // Read + rewrite on the blocking pool: for a WSL profile these are UNC
+    // round trips, not local file operations (issue #49 G3).
+    let plugin_id = input.plugin_id.clone();
+    crate::wsl::run_blocking(move || -> Result<(), String> {
+        if !patch_path.exists() {
+            return Ok(());
+        }
         let raw = std::fs::read_to_string(&patch_path)
             .map_err(|e| format!("读取 cordis.patch.yml 失败: {e}"))?;
-        let cordis_id = cordis_id_of(&input.plugin_id);
-        let cleaned = strip_cordis_rows(&raw, &cordis_id, &input.plugin_id);
+        let cordis_id = cordis_id_of(&plugin_id);
+        let cleaned = strip_cordis_rows(&raw, &cordis_id, &plugin_id);
         if cleaned != raw {
             std::fs::write(&patch_path, &cleaned)
                 .map_err(|e| format!("写入 cordis.patch.yml 失败: {e}"))?;
         }
-    }
+        Ok(())
+    })
+    .await??;
 
     Ok(())
 }
@@ -2468,6 +2514,7 @@ pub async fn start_install_plugin_file_task(
     // WSL (issue #19 follow-up): pnpm inside the distro cannot read a Windows
     // path. Copy the tarball into the distro's managed temp dir through the
     // \\wsl$\ UNC share, then reference the Linux path in the spec.
+    let mut scratch: Option<String> = None;
     let spec_path = if let Ok((_, _, Some(distro))) = resolve_instance_linux(&state, &instance_id) {
         crate::wsl::ensure_distro_running(&state, &distro).await?;
         let root = crate::wsl::WslRoot::resolve(&distro).await?;
@@ -2483,6 +2530,7 @@ pub async fn start_install_plugin_file_task(
         let linux_target = format!("{tmp_dir}/{0}-{1}", base, uuid::Uuid::new_v4());
         let unc_target = crate::wsl::unc_path(&distro, &linux_target);
         std::fs::copy(&path, &unc_target).map_err(|e| format!("复制插件包到 WSL 失败: {e}"))?;
+        scratch = Some(linux_target.clone());
         linux_target
     } else {
         // pnpm treats Windows paths more reliably with forward slashes.
@@ -2495,8 +2543,38 @@ pub async fn start_install_plugin_file_task(
         instance_id,
         profile,
         repo: None,
+        wsl_scratch: scratch,
     };
     start_install_plugin_task(app, state, input).await
+}
+
+/// Deletes a `tgz:` install's in-distro scratch copy (issue #49 Q3).
+///
+/// Best-effort: a failure here must never turn a successful install into an
+/// error, and the directory is the launcher's own managed scratch space, so a
+/// leftover file is only wasted space (reclaimed by the next install).
+async fn cleanup_wsl_scratch(state: &State<'_, AppState>, instance_id: &str, scratch_linux: &str) {
+    let Ok((_, _, Some(distro))) = resolve_instance_linux(state, instance_id) else {
+        return;
+    };
+    // Defence in depth: `scratch_linux` round-trips through an IPC-deserializable
+    // struct, and this function deletes whatever it names inside the distro.
+    // The launcher only ever creates scratch files under `<WslRoot>/tmp`, so
+    // refuse anything else instead of trusting the caller (issue #49 A9).
+    let Ok(root) = crate::wsl::WslRoot::resolve(&distro).await else {
+        return;
+    };
+    let tmp_prefix = format!("{}/tmp/", root.0);
+    if !scratch_linux.starts_with(&tmp_prefix) {
+        crate::log_warn!("拒绝清理发行版内非临时路径: {scratch_linux}");
+        return;
+    }
+    // The distro may have been shut down since the copy; do not boot it just to
+    // delete a scratch file.
+    let script = format!("rm -f {}", crate::wsl::sh_quote(scratch_linux));
+    if let Err(e) = crate::wsl::wsl_output(&distro, &["bash".into(), "-lc".into(), script]).await {
+        crate::log_warn!("清理 WSL 插件临时包失败（{scratch_linux}）: {e}");
+    }
 }
 
 async fn run_install_plugin_task(
@@ -2506,6 +2584,12 @@ async fn run_install_plugin_task(
     input: InstallPluginInput,
 ) {
     let result = do_install_plugin(app, state, task_id, &input).await;
+    // Issue #49 Q3: drop the in-distro scratch copy of a local tarball once the
+    // install has settled (success or failure). Without this every tgz install
+    // leaves a file behind in ~/.dsh-launcher/tmp inside the distro.
+    if let Some(scratch) = &input.wsl_scratch {
+        cleanup_wsl_scratch(state, &input.instance_id, scratch).await;
+    }
     let mut tasks = state.tasks.lock().await;
     if let Some(task) = tasks.get_mut(task_id) {
         if task.state == crate::tasks::TaskState::Cancelled {
@@ -3113,9 +3197,11 @@ async fn dsh_plugin_command(
         None => crate::process::version_bin_ready(version_dir),
     };
     if !bin_ready {
-        return Err(format!(
-            "版本安装不完整（缺少 {}），请重新安装该 DSH 版本",
-            bin.display()
+        // Shared wording (issue #49): `bin` is the Linux path for WSL targets
+        // and the Windows path otherwise, i.e. exactly the path the probe used.
+        return Err(crate::process::version_missing_message(
+            &version_dir.to_string_lossy(),
+            &bin,
         ));
     }
 
@@ -3592,6 +3678,67 @@ mod tests {
             "C:\\Users\\x\\AppData\\Local\\pnpm\\store\\v11",
             base
         ));
+    }
+
+    /// issue #49 phase 3: a WSL profile's `node_modules` is linked from the
+    /// *Linux* store path, so the comparison must be done in Linux terms — a
+    /// Windows UNC form of the same store is a different string and would
+    /// trigger a needless relink on every install.
+    #[test]
+    fn store_paths_match_wsl_linux_store() {
+        let linux = "/home/u/.dsh-launcher/.pnpm-store";
+        // The versioned subdir pnpm records inside the distro.
+        assert!(store_paths_match(&format!("{linux}/v11"), linux));
+        // The UNC form of the same store is a different flavour, not a match.
+        assert!(!store_paths_match(
+            r"\\wsl$\Ubuntu\home\u\.dsh-launcher\.pnpm-store\v11",
+            linux
+        ));
+        // A different distro user's store is a real mismatch.
+        assert!(!store_paths_match(
+            "/home/other/.dsh-launcher/.pnpm-store",
+            linux
+        ));
+    }
+
+    /// `--store-dir` must carry the flavour the CLI will actually use: the
+    /// Linux store inside the distro, the Windows store locally.
+    #[test]
+    fn forwarded_flags_use_the_supplied_store() {
+        let linux = "/home/u/.dsh-launcher/.pnpm-store";
+        let args = forwarded_pnpm_flags("http", "add", linux);
+        let i = args.iter().position(|a| a == "--store-dir").unwrap();
+        assert_eq!(args[i + 1], linux, "args: {args:?}");
+        assert!(args.iter().any(|a| a == "--loglevel=http"));
+        // Download commands carry the network flags; `remove` must not.
+        assert!(args.iter().any(|a| a == "--fetch-timeout"));
+        let rm = forwarded_pnpm_flags("warn", "remove", linux);
+        assert!(!rm.iter().any(|a| a == "--fetch-timeout"), "args: {rm:?}");
+        assert!(rm.iter().any(|a| a == "--loglevel=warn"));
+    }
+
+    /// The registry mirror is opt-in via the environment; a blank value must
+    /// not produce a dangling `--registry`.
+    #[test]
+    fn forwarded_flags_registry_only_when_set() {
+        // The test process controls the variable, so restore it afterwards.
+        let saved = std::env::var("DSH_NPM_REGISTRY").ok();
+        std::env::remove_var("DSH_NPM_REGISTRY");
+        assert!(!forwarded_pnpm_flags("warn", "add", "/s")
+            .iter()
+            .any(|a| a == "--registry"));
+        std::env::set_var("DSH_NPM_REGISTRY", "   ");
+        assert!(!forwarded_pnpm_flags("warn", "add", "/s")
+            .iter()
+            .any(|a| a == "--registry"));
+        std::env::set_var("DSH_NPM_REGISTRY", "https://mirror.example/npm");
+        let args = forwarded_pnpm_flags("warn", "add", "/s");
+        let i = args.iter().position(|a| a == "--registry").unwrap();
+        assert_eq!(args[i + 1], "https://mirror.example/npm");
+        match saved {
+            Some(v) => std::env::set_var("DSH_NPM_REGISTRY", v),
+            None => std::env::remove_var("DSH_NPM_REGISTRY"),
+        }
     }
 
     #[test]

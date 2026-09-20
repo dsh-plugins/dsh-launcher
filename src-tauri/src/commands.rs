@@ -33,6 +33,28 @@ pub(crate) fn create_home_record(
     name: &str,
     path: &str,
 ) -> Result<DshHome, String> {
+    create_home_record_inner(state, name, path, None)
+}
+
+/// WSL variant of `create_home_record` (issue #49 G5): `path` is a Linux path
+/// inside `distro`, so the directory is *not* created through the Windows
+/// filesystem (that would make a literal `\home\u\...` directory on the
+/// Windows drive). The caller creates it through the `\\wsl$\` share.
+pub(crate) fn create_home_record_wsl(
+    state: &State<'_, AppState>,
+    name: &str,
+    path: &str,
+    distro: &str,
+) -> Result<DshHome, String> {
+    create_home_record_inner(state, name, path, Some(distro))
+}
+
+fn create_home_record_inner(
+    state: &State<'_, AppState>,
+    name: &str,
+    path: &str,
+    wsl: Option<&str>,
+) -> Result<DshHome, String> {
     let name = name.trim();
     let path = path.trim();
     if name.is_empty() {
@@ -49,18 +71,22 @@ pub(crate) fn create_home_record(
         if let Some(existing) = cfg
             .homes
             .iter()
-            .find(|h| crate::config::paths_equal(&h.path, &path_buf))
+            .find(|h| crate::config::paths_equal(&h.path, &path_buf) && h.wsl.as_deref() == wsl)
         {
             return Ok(existing.clone());
         }
     }
 
-    std::fs::create_dir_all(&path_buf).map_err(|e| format!("创建目录失败: {e}"))?;
+    // A Linux path must never be materialized on the Windows drive; WSL
+    // callers create the directory inside the distro themselves.
+    if wsl.is_none() {
+        std::fs::create_dir_all(&path_buf).map_err(|e| format!("创建目录失败: {e}"))?;
+    }
     let home = DshHome {
         id: new_id("h"),
         name: name.to_string(),
         path: path_buf,
-        wsl: None,
+        wsl: wsl.map(str::to_string),
         links: Default::default(),
     };
     let mut cfg = state.config.lock().unwrap();
@@ -492,16 +518,26 @@ pub fn copy_instance(
 }
 
 #[tauri::command(rename_all = "snake_case")]
-pub fn list_profiles(state: State<'_, AppState>, home_id: String) -> Result<Vec<String>, String> {
-    let cfg = state.config.lock().unwrap();
-    let home = cfg
-        .homes
-        .iter()
-        .find(|h| h.id == home_id)
-        .ok_or_else(|| "DSH_HOME 不存在".to_string())?;
-    // WSL homes map through \\wsl$\ (issue #19 follow-up): the fs APIs below
-    // operate on the Windows-visible path.
-    let profiles_dir = crate::wsl::home_fs_path(home).join("profiles");
+pub async fn list_profiles(
+    state: State<'_, AppState>,
+    home_id: String,
+) -> Result<Vec<String>, String> {
+    // WSL (issue #49 S3): boot the distro first — `\\wsl$\` is unreachable
+    // while it is stopped and the read below would silently report "no
+    // profiles".
+    crate::wsl::ensure_home_running(&state, &home_id).await?;
+    let home_dir = {
+        let cfg = state.config.lock().unwrap();
+        let home = cfg
+            .homes
+            .iter()
+            .find(|h| h.id == home_id)
+            .ok_or_else(|| "DSH_HOME 不存在".to_string())?;
+        // WSL homes map through \\wsl$\ (issue #19 follow-up): the fs APIs
+        // below operate on the Windows-visible path.
+        crate::wsl::home_fs_path(home)
+    };
+    let profiles_dir = home_dir.join("profiles");
     let mut out = Vec::new();
     if let Ok(entries) = std::fs::read_dir(&profiles_dir) {
         for entry in entries.flatten() {
@@ -532,19 +568,24 @@ pub struct ProfileInfo {
 /// Like `list_profiles` but annotated with the profile kind, so the UI can
 /// mark TUI profiles instead of offering a launch path that cannot work.
 #[tauri::command(rename_all = "snake_case")]
-pub fn list_profile_infos(
+pub async fn list_profile_infos(
     state: State<'_, AppState>,
     home_id: String,
 ) -> Result<Vec<ProfileInfo>, String> {
-    let cfg = state.config.lock().unwrap();
-    let home = cfg
-        .homes
-        .iter()
-        .find(|h| h.id == home_id)
-        .ok_or_else(|| "DSH_HOME 不存在".to_string())?;
-    // WSL homes map through \\wsl$\ (issue #19 follow-up): the fs APIs below
-    // operate on the Windows-visible path.
-    let home_dir = crate::wsl::home_fs_path(home);
+    // WSL (issue #49 S3): the profile-kind probe reads package.json through
+    // \\wsl$\, which needs the distro running.
+    crate::wsl::ensure_home_running(&state, &home_id).await?;
+    let home_dir = {
+        let cfg = state.config.lock().unwrap();
+        let home = cfg
+            .homes
+            .iter()
+            .find(|h| h.id == home_id)
+            .ok_or_else(|| "DSH_HOME 不存在".to_string())?;
+        // WSL homes map through \\wsl$\ (issue #19 follow-up): the fs APIs
+        // below operate on the Windows-visible path.
+        crate::wsl::home_fs_path(home)
+    };
     let profiles_dir = home_dir.join("profiles");
     let mut out = Vec::new();
     if let Ok(entries) = std::fs::read_dir(&profiles_dir) {
@@ -574,13 +615,15 @@ pub fn list_profile_infos(
 /// Creates a new profile by copying the `__temp__` template inside the
 /// given HOME. Returns the created profile name.
 #[tauri::command(rename_all = "snake_case")]
-pub fn create_profile(
+pub async fn create_profile(
     state: State<'_, AppState>,
     home_id: String,
     name: String,
 ) -> Result<String, String> {
     let name = name.trim().to_string();
     validate_profile_name(&name)?;
+    // WSL (issue #49 S3): the template copy below walks \\wsl$\.
+    crate::wsl::ensure_home_running(&state, &home_id).await?;
 
     let profiles_dir = {
         let cfg = state.config.lock().unwrap();
@@ -609,7 +652,7 @@ pub fn create_profile(
 /// The copy is only materialized after the new name is validated, mirroring
 /// create_profile's copy-from-template behavior.
 #[tauri::command(rename_all = "snake_case")]
-pub fn copy_profile(
+pub async fn copy_profile(
     state: State<'_, AppState>,
     home_id: String,
     source: String,
@@ -617,6 +660,8 @@ pub fn copy_profile(
 ) -> Result<String, String> {
     let name = name.trim().to_string();
     validate_profile_name(&name)?;
+    // WSL (issue #49 S3): the recursive copy below walks \\wsl$\.
+    crate::wsl::ensure_home_running(&state, &home_id).await?;
 
     let profiles_dir = {
         let cfg = state.config.lock().unwrap();
@@ -661,7 +706,7 @@ fn validate_profile_name(name: &str) -> Result<(), String> {
 
 /// Renames a profile directory inside the given HOME.
 #[tauri::command(rename_all = "snake_case")]
-pub fn rename_profile(
+pub async fn rename_profile(
     state: State<'_, AppState>,
     home_id: String,
     old_name: String,
@@ -669,6 +714,8 @@ pub fn rename_profile(
 ) -> Result<String, String> {
     validate_profile_name(&new_name)?;
     let new_name = new_name.trim().to_string();
+    // WSL (issue #49 S3): the rename below touches \\wsl$\.
+    crate::wsl::ensure_home_running(&state, &home_id).await?;
 
     let profiles_dir = {
         let cfg = state.config.lock().unwrap();
@@ -714,11 +761,13 @@ pub fn rename_profile(
 /// references on instances using this HOME are cleared when they point at the
 /// removed profile.
 #[tauri::command(rename_all = "snake_case")]
-pub fn delete_profile(
+pub async fn delete_profile(
     state: State<'_, AppState>,
     home_id: String,
     name: String,
 ) -> Result<(), String> {
+    // WSL (issue #49 S3): the recursive delete below walks \\wsl$\.
+    crate::wsl::ensure_home_running(&state, &home_id).await?;
     let profiles_dir = {
         let cfg = state.config.lock().unwrap();
         let home = cfg
@@ -991,6 +1040,17 @@ pub async fn start_instance(
     id: String,
     profile: String,
 ) -> Result<(), String> {
+    // WSL (issue #49 S4): the preflight and the TUI kind check below read the
+    // profile through \\wsl$\, so the distro must be running *before* them.
+    // Otherwise a cold start classifies the profile as `Other` and pipes a TUI
+    // profile into a normal spawn (the CLI then refuses with "requires an
+    // interactive terminal"), and the doctor report comes back empty.
+    // Best-effort: a failure here is reported by the real launch path.
+    if let Ok((_, _, _)) = resolve_instance_paths(&state, &id) {
+        if let Some(distro) = crate::wsl::home_distro_of(&state, &id) {
+            crate::wsl::ensure_distro_running(&state, &distro).await?;
+        }
+    }
     // Preflight the dependency tree before spawning: a duplicated core copy
     // in the profile breaks every tool call at runtime with no load-time
     // error, so it is reported up front instead of being debugged later.
