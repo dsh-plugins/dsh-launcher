@@ -448,6 +448,7 @@ mod tests {
             name: "local".into(),
             path: std::path::PathBuf::from(r"C:\homes\l"),
             wsl: None,
+            links: Default::default(),
         };
         assert_eq!(
             home_fs_path(&local),
@@ -459,6 +460,7 @@ mod tests {
             name: "wsl".into(),
             path: std::path::PathBuf::from("/home/u/.dsh-launcher/homes/w"),
             wsl: Some("Ubuntu".into()),
+            links: Default::default(),
         };
         assert_eq!(
             home_fs_path(&wsl_home),
