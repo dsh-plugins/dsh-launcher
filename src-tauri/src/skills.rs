@@ -92,7 +92,9 @@ fn sanitize_skill_name(name: &str) -> Result<String, String> {
 pub(crate) fn parse_skill_repo_url(url: &str) -> Result<(String, Option<String>), String> {
     let url = url.trim();
     let (base, sub) = match url.split_once('#') {
-        Some((b, s)) => (b, Some(s.trim_start_matches('/').trim().to_string())),
+        // `#/path/` and `#path` both mean the same sub path; normalize the
+        // slashes away (issue #53).
+        Some((b, s)) => (b, Some(s.trim().trim_matches('/').to_string())),
         None => (url, None),
     };
     if !(base.starts_with("https://") || base.starts_with("http://")) {
@@ -216,14 +218,32 @@ fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<(), String> {
 
 /// Finds skill bundles under a root directory: the `#/sub` path, the root
 /// itself when it carries SKILL.md, or every top-level directory that does.
+/// A `#/sub` path may name a single skill (SKILL.md inside) or a container
+/// directory holding several skills (issue #53, e.g. `#/.agents/skills/`).
 fn collect_bundles(root: &Path, subpath: Option<&str>) -> Result<Vec<PathBuf>, String> {
     let mut bundles: Vec<PathBuf> = Vec::new();
     if let Some(sub) = subpath {
         let dir = root.join(sub);
-        if !dir.join("SKILL.md").exists() {
+        if dir.join("SKILL.md").exists() {
+            bundles.push(dir);
+        } else if dir.is_dir() {
+            // The sub path is a multi-skill container: collect every direct
+            // child that is a skill.
+            for entry in std::fs::read_dir(&dir)
+                .map_err(|e| e.to_string())?
+                .flatten()
+            {
+                let p = entry.path();
+                if p.is_dir() && p.join("SKILL.md").exists() {
+                    bundles.push(p);
+                }
+            }
+            if bundles.is_empty() {
+                return Err(format!("子目录 {sub} 及其下没有找到 SKILL.md"));
+            }
+        } else {
             return Err(format!("子目录 {sub} 中没有 SKILL.md"));
         }
-        bundles.push(dir);
     } else if root.join("SKILL.md").exists() {
         bundles.push(root.to_path_buf());
     } else {
@@ -633,8 +653,45 @@ mod tests {
             parse_skill_repo_url("https://user:pass@github.com/Gu-ZT/skills.git").unwrap();
         assert_eq!(clone, "https://user:pass@github.com/Gu-ZT/skills.git");
 
+        // Issue #53: `#/path/` with leading AND trailing slashes normalizes.
+        let (_, sub) =
+            parse_skill_repo_url("https://git.example.com/user/repo#/.agents/skills/").unwrap();
+        assert_eq!(sub.as_deref(), Some(".agents/skills"));
+
         assert!(parse_skill_repo_url("github.com/Gu-ZT/skills").is_err());
         assert!(parse_skill_repo_url("https://github.com/Gu-ZT").is_err());
+    }
+
+    #[test]
+    fn collect_bundles_accepts_multi_skill_container_subpath() {
+        let tmp = std::env::temp_dir().join(format!("dsh-skill-test-{}", uuid::Uuid::new_v4()));
+        let skill_md = "---\nname: x\ndescription: y\n---\nbody";
+        // Sub path naming a single skill directly.
+        std::fs::create_dir_all(tmp.join("single")).unwrap();
+        std::fs::write(tmp.join("single/SKILL.md"), skill_md).unwrap();
+        let bundles = collect_bundles(&tmp, Some("single")).unwrap();
+        assert_eq!(bundles, vec![tmp.join("single")]);
+        // Sub path naming a container of several skills (issue #53).
+        std::fs::create_dir_all(tmp.join(".agents/skills/one")).unwrap();
+        std::fs::create_dir_all(tmp.join(".agents/skills/two")).unwrap();
+        std::fs::create_dir_all(tmp.join(".agents/skills/not-a-skill")).unwrap();
+        std::fs::write(tmp.join(".agents/skills/one/SKILL.md"), skill_md).unwrap();
+        std::fs::write(tmp.join(".agents/skills/two/SKILL.md"), skill_md).unwrap();
+        let mut bundles = collect_bundles(&tmp, Some(".agents/skills")).unwrap();
+        bundles.sort();
+        assert_eq!(
+            bundles,
+            vec![
+                tmp.join(".agents/skills/one"),
+                tmp.join(".agents/skills/two")
+            ]
+        );
+        // Empty container still errors.
+        std::fs::create_dir_all(tmp.join("empty")).unwrap();
+        assert!(collect_bundles(&tmp, Some("empty")).is_err());
+        // Missing dir errors.
+        assert!(collect_bundles(&tmp, Some("nope")).is_err());
+        std::fs::remove_dir_all(&tmp).unwrap();
     }
 
     #[test]

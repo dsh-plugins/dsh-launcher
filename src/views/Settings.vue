@@ -3,7 +3,14 @@ import { computed, onMounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { Message } from '@arco-design/web-vue'
 import { api } from '@/api'
-import type { LauncherUpdateInfo, LogLevel, ThemeMode } from '@/api/types'
+import type {
+  Confidence,
+  LauncherUpdateInfo,
+  LogLevel,
+  PluginSourceConfig,
+  SourceKind,
+  ThemeMode,
+} from '@/api/types'
 import { SUPPORTED_LOCALES } from '@/i18n'
 import { useLauncherStore } from '@/stores/launcher'
 import ImportScanDialog from '@/components/ImportScanDialog.vue'
@@ -71,6 +78,7 @@ onMounted(async () => {
   } catch {
     dataDir.value = ''
   }
+  refreshDataDirSource()
 })
 
 async function onCheckUpdate() {
@@ -93,9 +101,56 @@ async function onUpdateChannelChange(value: string | number | boolean | Record<s
   updateInfo.value = null
 }
 
-// --- Data directory ---------------------------------------------------------
+// --- Data directory (issue #43) ---------------------------------------------
 
 const dataDir = ref('')
+const dataDirSource = ref<'env' | 'pointer' | 'default'>('default')
+const moveTarget = ref('')
+const moveModalVisible = ref(false)
+const moveBusy = ref(false)
+
+async function refreshDataDirSource() {
+  try {
+    const info = await api.getDataDirSource()
+    dataDir.value = info.path
+    dataDirSource.value = info.source as 'env' | 'pointer' | 'default'
+    if (info.notice) Message.warning(info.notice)
+  } catch {
+    /* source 未知时保持默认展示 */
+  }
+}
+
+async function onMoveDataDir() {
+  try {
+    const dir = await api.pickDataDir()
+    if (!dir) return
+    moveTarget.value = dir
+    moveModalVisible.value = true
+  } catch (e) {
+    Message.error(String(e))
+  }
+}
+
+async function onConfirmMove() {
+  moveBusy.value = true
+  try {
+    const committed = await api.commitDataDir(moveTarget.value)
+    moveModalVisible.value = false
+    Message.success(t('settings.dataDir.migratedToast', [committed]))
+    // 指针已写入:迁移在下次启动时发生
+    refreshDataDirSource()
+  } catch (e) {
+    Message.error(String(e))
+  } finally {
+    moveBusy.value = false
+  }
+}
+
+const dataDirSourceTip = computed(() => {
+  if (dataDirSource.value === 'env') return t('settings.dataDir.sourceEnv')
+  if (dataDirSource.value === 'pointer') return t('settings.dataDir.sourcePointer')
+  return t('settings.dataDir.sourceDefault')
+})
 
 async function onOpenDataDir() {
   try {
@@ -173,6 +228,104 @@ async function onAddSkillRepo() {
 
 async function onRemoveSkillRepo(url: string) {
   await patchSettings({ skill_repos: store.settings.skill_repos.filter((r) => r !== url) })
+}
+
+// --- Plugin sources -----------------------------------------------------------
+
+const SOURCE_KIND_OPTIONS = computed<{ value: SourceKind; label: string }[]>(() => [
+  { value: 'primary', label: t('settings.pluginSources.sourceKinds.primary') },
+  { value: 'awesome', label: t('settings.pluginSources.sourceKinds.awesome') },
+  { value: 'dsh-get', label: t('settings.pluginSources.sourceKinds.dshGet') },
+  { value: 'github-topic', label: t('settings.pluginSources.sourceKinds.githubTopic') },
+])
+
+const CONFIDENCE_TAG_COLORS: Record<Confidence, string> = {
+  official: 'green',
+  curated: 'purple',
+  aggregated: 'blue',
+  unverified: 'orangered',
+}
+
+const newSourceId = ref('')
+const newSourceKind = ref<SourceKind>('primary')
+const newSourceUrl = ref('')
+const pluginSourceBusy = ref(false)
+
+/** Order is the array index; renumber on every mutation. */
+function renumberSources(list: PluginSourceConfig[]): PluginSourceConfig[] {
+  return list.map((s, i) => ({ ...s, order: i }))
+}
+
+async function savePluginSources(list: PluginSourceConfig[]) {
+  pluginSourceBusy.value = true
+  try {
+    await patchSettings({ plugin_sources: renumberSources(list) })
+    // The market's source filter reads a cached copy; invalidate it so edits
+    // here are reflected there without a reload.
+    store.pluginSourcesLoadedAt = null
+  } finally {
+    pluginSourceBusy.value = false
+  }
+}
+
+async function onAddPluginSource() {
+  const id = newSourceId.value.trim()
+  const url = newSourceUrl.value.trim()
+  if (!id) {
+    Message.warning(t('settings.pluginSources.invalidId'))
+    return
+  }
+  // github-topic sources are discovered dynamically and have no static URL.
+  if (newSourceKind.value !== 'github-topic' && !/^https?:\/\//i.test(url)) {
+    Message.warning(t('settings.pluginSources.invalidUrl'))
+    return
+  }
+  if (store.settings.plugin_sources.some((s) => s.id === id)) {
+    Message.warning(t('settings.pluginSources.duplicateId'))
+    return
+  }
+  await savePluginSources([
+    ...store.settings.plugin_sources,
+    {
+      id,
+      url,
+      kind: newSourceKind.value,
+      enabled: true,
+      // Trust is launcher-assigned: custom sources are always unverified
+      // (the backend locks this in sanitize_plugin_sources regardless).
+      confidence: 'unverified' as Confidence,
+      order: store.settings.plugin_sources.length,
+    },
+  ])
+  // The save swallows backend errors, so only clear the form once the source
+  // actually landed in the refreshed settings.
+  if (!store.settings.plugin_sources.some((s) => s.id === id)) return
+  newSourceId.value = ''
+  newSourceUrl.value = ''
+}
+
+async function onPluginSourceEnabledChange(
+  source: PluginSourceConfig,
+  value: string | number | boolean | Record<string, unknown> | (string | number | boolean | Record<string, unknown>)[],
+) {
+  if (pluginSourceBusy.value) return
+  await savePluginSources(
+    store.settings.plugin_sources.map((s) => (s.id === source.id ? { ...s, enabled: Boolean(value) } : s)),
+  )
+}
+
+async function onRemovePluginSource(id: string) {
+  if (pluginSourceBusy.value) return
+  await savePluginSources(store.settings.plugin_sources.filter((s) => s.id !== id))
+}
+
+async function onMovePluginSource(index: number, delta: number) {
+  if (pluginSourceBusy.value) return
+  const list = [...store.settings.plugin_sources]
+  const target = index + delta
+  if (target < 0 || target >= list.length) return
+  ;[list[index], list[target]] = [list[target], list[index]]
+  await savePluginSources(list)
 }
 
 // --- Proxy settings -----------------------------------------------------------
@@ -438,6 +591,91 @@ const homeColumns = computed(() => [
 
     <div class="dl-card">
       <div class="dl-card-title">
+        <h3>{{ t('settings.pluginSources.title') }}<HintIcon :content="t('settings.pluginSources.hint')" /></h3>
+      </div>
+      <div class="plugin-source-add">
+        <a-input
+          v-model="newSourceId"
+          :placeholder="t('settings.pluginSources.id')"
+          allow-clear
+          style="width: 170px"
+        />
+        <a-select v-model="newSourceKind" style="width: 150px">
+          <a-option v-for="o in SOURCE_KIND_OPTIONS" :key="o.value" :value="o.value">
+            {{ o.label }}
+          </a-option>
+        </a-select>
+        <a-input
+          v-model="newSourceUrl"
+          :placeholder="t('settings.pluginSources.url')"
+          allow-clear
+          class="plugin-source-url-input"
+        />
+        <a-button
+          :loading="pluginSourceBusy"
+          :disabled="!newSourceId.trim() || (newSourceKind !== 'github-topic' && !newSourceUrl.trim())"
+          @click="onAddPluginSource"
+        >
+          {{ t('settings.pluginSources.add') }}
+        </a-button>
+      </div>
+      <div v-if="store.settings.plugin_sources.length" class="plugin-source-head">
+        <span class="ps-col-enable">{{ t('settings.pluginSources.enable') }}</span>
+        <span class="ps-col-id">{{ t('settings.pluginSources.id') }}</span>
+        <span class="ps-col-kind">{{ t('settings.pluginSources.kind') }}</span>
+        <span class="ps-col-conf">{{ t('settings.pluginSources.confidence') }}</span>
+        <span class="ps-col-url">{{ t('settings.pluginSources.url') }}</span>
+      </div>
+      <a-list :data="store.settings.plugin_sources" size="small">
+        <template #item="{ item, index }">
+          <a-list-item>
+            <div class="plugin-source-row">
+              <span class="ps-col-enable">
+                <a-switch
+                  :model-value="item.enabled"
+                  :disabled="pluginSourceBusy"
+                  @change="(v) => onPluginSourceEnabledChange(item, v)"
+                />
+              </span>
+              <span class="ps-col-id plugin-source-id">{{ item.id }}</span>
+              <span class="ps-col-kind">
+                <a-tag size="small">{{ t(`settings.pluginSources.sourceKinds.${
+                  item.kind === 'dsh-get' ? 'dshGet' : item.kind === 'github-topic' ? 'githubTopic' : item.kind
+                }`) }}</a-tag>
+              </span>
+              <span class="ps-col-conf">
+                <a-tag size="small" :color="CONFIDENCE_TAG_COLORS[item.confidence as Confidence]">
+                  {{ t(`plugins.confidence.${item.confidence}`) }}
+                </a-tag>
+              </span>
+              <span class="ps-col-url plugin-source-url" :title="item.url">{{ item.url }}</span>
+            </div>
+            <template #actions>
+              <a-button size="mini" type="text" :disabled="pluginSourceBusy || index === 0" @click="onMovePluginSource(index, -1)">
+                ↑
+              </a-button>
+              <a-button
+                size="mini"
+                type="text"
+                :disabled="pluginSourceBusy || index === store.settings.plugin_sources.length - 1"
+                @click="onMovePluginSource(index, 1)"
+              >
+                ↓
+              </a-button>
+              <a-button size="mini" status="danger" type="text" :disabled="pluginSourceBusy" @click="onRemovePluginSource(item.id)">
+                {{ t('settings.pluginSources.delete') }}
+              </a-button>
+            </template>
+          </a-list-item>
+        </template>
+        <template #empty>
+          <a-empty :description="t('settings.pluginSources.empty')" />
+        </template>
+      </a-list>
+    </div>
+
+    <div class="dl-card">
+      <div class="dl-card-title">
         <h3>{{ t('settings.update.title') }}<HintIcon :content="t('settings.update.channelHint')" /></h3>
       </div>
       <div class="update-row">
@@ -482,7 +720,22 @@ const homeColumns = computed(() => [
         <span class="data-dir-path" :title="dataDir">{{ dataDir || t('settings.dataDir.unknown') }}</span>
         <a-button size="small" @click="onOpenDataDir">{{ t('settings.dataDir.open') }}</a-button>
         <a-button size="small" @click="onOpenLauncherLog">{{ t('settings.dataDir.viewLog') }}</a-button>
+        <a-button size="small" type="primary" @click="onMoveDataDir">{{ t('settings.dataDir.moveTo') }}</a-button>
       </div>
+      <div class="data-dir-source" :class="`source-${dataDirSource}`">
+        {{ dataDirSourceTip }}
+      </div>
+      <a-modal
+        v-model:visible="moveModalVisible"
+        :title="t('settings.dataDir.moveTo')"
+        :ok-text="t('common.confirm')"
+        :cancel-text="t('common.cancel')"
+        :confirm-loading="moveBusy"
+        @ok="onConfirmMove"
+      >
+        <p class="move-target">{{ moveTarget }}</p>
+        <p class="move-hint">{{ t('settings.dataDir.restartHint') }}</p>
+      </a-modal>
     </div>
 
     <div class="dl-card">
@@ -526,6 +779,72 @@ const homeColumns = computed(() => [
   font-size: 13px;
   word-break: break-all;
 }
+
+.plugin-source-add {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 12px 0;
+}
+
+.plugin-source-url-input {
+  flex: 1;
+  min-width: 220px;
+}
+
+.plugin-source-head,
+.plugin-source-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.plugin-source-head {
+  color: var(--color-text-3);
+  font-size: 12px;
+  padding: 0 12px 6px;
+}
+
+.ps-col-enable {
+  width: 60px;
+  flex-shrink: 0;
+}
+
+.ps-col-id {
+  width: 160px;
+  flex-shrink: 0;
+}
+
+.ps-col-kind {
+  width: 110px;
+  flex-shrink: 0;
+}
+
+.ps-col-conf {
+  width: 110px;
+  flex-shrink: 0;
+}
+
+.ps-col-url {
+  flex: 1;
+  min-width: 0;
+}
+
+.plugin-source-id {
+  font-size: 13px;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.plugin-source-url {
+  font-size: 12px;
+  color: var(--color-text-3);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .settings-form {
   max-width: 560px;
 }
@@ -565,6 +884,25 @@ const homeColumns = computed(() => [
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.data-dir-source {
+  font-size: 12px;
+  color: var(--color-text-3);
+  margin-top: 4px;
+}
+
+.move-target {
+  font-family: monospace;
+  word-break: break-all;
+  background: var(--color-fill-2);
+  padding: 8px;
+  border-radius: 4px;
+}
+
+.move-hint {
+  color: var(--color-text-3);
+  font-size: 13px;
 }
 
 .update-current {

@@ -3,7 +3,9 @@ mod commands;
 mod config;
 mod doctor;
 mod icons;
+mod links;
 mod mcp;
+mod migrate;
 mod modpack;
 mod plugins;
 mod process;
@@ -27,6 +29,11 @@ pub struct AppState {
     pub config_path: std::path::PathBuf,
     pub data_dir: std::path::PathBuf,
     pub config: StdMutex<config::Config>,
+    /// Startup notice from the data-dir bootstrap (fallback / failed
+    /// migration); the frontend surfaces it as a toast once.
+    pub data_dir_notice: StdMutex<Option<String>>,
+    /// Where the effective data dir came from ("env" | "pointer" | "default").
+    pub data_dir_source: crate::migrate::DataDirSource,
     pub running: tokio::sync::Mutex<HashMap<String, process::RunningInstance>>,
     pub tasks: tokio::sync::Mutex<HashMap<String, tasks::TaskInfo>>,
     /// One mutex per profile directory, serializing plugin installs and
@@ -46,6 +53,11 @@ pub struct AppState {
     /// WSL distros recently verified running (`wsl.rs::ensure_distro_running`
     /// TTL cache): distro → last successful boot/probe timestamp.
     pub distro_ready: tokio::sync::Mutex<HashMap<String, std::time::Instant>>,
+    /// URL of each open instance window's page. DSH mints a fresh launch
+    /// token per process, so every restart invalidates the token a window was
+    /// created with; keeping the last printed URL here lets an already-open
+    /// window re-authenticate instead of rendering the 401 page forever.
+    pub window_urls: StdMutex<HashMap<String, String>>,
 }
 
 /// Extracts a `dsh-launcher://…` deep link from process arguments (Windows
@@ -122,8 +134,15 @@ pub fn run() {
                     let _ = win.hide();
                 }
             }
-            let data_dir = app.path().app_data_dir()?;
+            // Data-directory bootstrap (issue #43): resolve the effective
+            // data dir (env var > pointer file > default) and run a pending
+            // migration before the log handle is opened, so `logs/` and the
+            // rest can be moved freely.
+            let bootstrap = crate::migrate::bootstrap(app);
+            let data_dir = bootstrap.data_dir.clone();
             std::fs::create_dir_all(&data_dir)?;
+            let data_dir_notice = bootstrap.notice;
+            let data_dir_source = bootstrap.source;
             // A managed Node.js installed by a previous one-click install
             // (issue #23) joins PATH for everything the launcher spawns.
             runtime::ensure_local_node_on_path(&data_dir);
@@ -147,6 +166,8 @@ pub fn run() {
             app.manage(AppState {
                 config_path,
                 data_dir: data_dir.clone(),
+                data_dir_notice: StdMutex::new(data_dir_notice),
+                data_dir_source,
                 config: StdMutex::new(cfg),
                 running: tokio::sync::Mutex::new(HashMap::new()),
                 tasks: tokio::sync::Mutex::new(HashMap::new()),
@@ -155,6 +176,7 @@ pub fn run() {
                 terminals: tokio::sync::Mutex::new(HashMap::new()),
                 tui_sessions: tokio::sync::Mutex::new(HashMap::new()),
                 distro_ready: tokio::sync::Mutex::new(HashMap::new()),
+                window_urls: StdMutex::new(HashMap::new()),
             });
 
             // System tray with dynamic menu.
@@ -188,6 +210,9 @@ pub fn run() {
             commands::create_home,
             commands::default_dedicated_home_path,
             commands::remove_home,
+            links::list_home_links,
+            links::set_home_link,
+            links::clear_home_link,
             commands::list_wsl_distros,
             commands::list_versions,
             commands::fetch_available_versions,
@@ -228,6 +253,9 @@ pub fn run() {
             commands::read_instance_log_tail,
             commands::open_instance_directory,
             commands::get_launcher_directory,
+            migrate::pick_data_dir,
+            migrate::commit_data_dir,
+            migrate::get_data_dir_source,
             commands::create_launch_shortcut,
             pending_deep_link,
             icons::set_instance_icon,
@@ -250,6 +278,7 @@ pub fn run() {
             commands::fetch_news,
             update::check_launcher_update,
             plugins::fetch_plugin_market,
+            plugins::list_plugin_sources,
             plugins::fetch_plugin_versions,
             plugins::list_installed_plugins,
             plugins::check_plugin_updates,

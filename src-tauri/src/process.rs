@@ -476,8 +476,17 @@ pub async fn start_instance_process(
         let reader_wsl = wsl_proc.clone();
         tauri::async_runtime::spawn(async move {
             let state = reader_app.state::<AppState>();
-            let mut lines = BufReader::new(out).lines();
-            while let Ok(Some(line)) = lines.next_line().await {
+            let mut reader = BufReader::new(out);
+            let mut buf = Vec::new();
+            loop {
+                let line = match read_line_lossy(&mut reader, &mut buf).await {
+                    Ok(Some(line)) => line,
+                    Ok(None) => break,
+                    Err(e) => {
+                        crate::log_warn!("实例 {reader_id} stdout 读取终止: {e}");
+                        break;
+                    }
+                };
                 // WSL launch wrapper marker: capture the inner PID, keep it
                 // out of the instance log.
                 if let Some((_, pid_slot)) = &reader_wsl {
@@ -514,10 +523,19 @@ pub async fn start_instance_process(
     // stderr watcher: forward to the log (diagnostics).
     if let Some(err) = stderr {
         let reader_log = log_file.clone();
+        let reader_id = instance_id.to_string();
         tauri::async_runtime::spawn(async move {
-            let mut lines = BufReader::new(err).lines();
-            while let Ok(Some(line)) = lines.next_line().await {
-                log_line(&reader_log, &line).await;
+            let mut reader = BufReader::new(err);
+            let mut buf = Vec::new();
+            loop {
+                match read_line_lossy(&mut reader, &mut buf).await {
+                    Ok(Some(line)) => log_line(&reader_log, &line).await,
+                    Ok(None) => break,
+                    Err(e) => {
+                        crate::log_warn!("实例 {reader_id} stderr 读取终止: {e}");
+                        break;
+                    }
+                }
             }
         });
     }
@@ -607,6 +625,30 @@ async fn log_line(log: &Arc<Mutex<std::fs::File>>, line: &str) {
     let _ = f.flush();
 }
 
+/// Reads one line from a child-process pipe, tolerating non-UTF-8 bytes
+/// (issue #42). `BufRead::lines()` aborts with `InvalidData` on the first
+/// non-UTF-8 byte and, in a `while let Ok(Some(..))` loop, silently drops
+/// the read end — the next write by the child then hits EPIPE and the
+/// instance dies with no trace. Reading raw bytes with `read_until` and
+/// lossy-decoding keeps the reader (and the pipe) alive and preserves the
+/// line's content (replacement chars for invalid bytes).
+///
+/// Returns `Ok(None)` on EOF. A genuine IO error is returned to the caller,
+/// which must log it — a dying reader that leaves no trace is what made
+/// issue #42 so expensive to diagnose.
+pub(crate) async fn read_line_lossy<R: AsyncBufReadExt + Unpin>(
+    reader: &mut R,
+    buf: &mut Vec<u8>,
+) -> std::io::Result<Option<String>> {
+    buf.clear();
+    let n = reader.read_until(b'\n', buf).await?;
+    if n == 0 {
+        return Ok(None);
+    }
+    let line = String::from_utf8_lossy(buf);
+    Ok(Some(line.trim_end_matches(['\r', '\n']).to_string()))
+}
+
 pub fn emit_status(app: &AppHandle, status: &InstanceStatus) {
     let _ = app.emit(STATUS_EVENT, status);
 }
@@ -625,6 +667,103 @@ pub fn tui_active_profile(cfg: &Config, instance_id: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Minimal Config with one home + one instance carrying env overrides.
+    fn cfg_with_env(overrides: &[(&str, &str)]) -> Config {
+        let mut cfg = Config::default();
+        cfg.homes.push(crate::config::DshHome {
+            id: "h1".to_string(),
+            name: "h1".to_string(),
+            path: PathBuf::from("C:/homes/h1"),
+            wsl: None,
+            links: Default::default(),
+        });
+        cfg.instances.push(crate::config::DshInstance {
+            id: "i1".to_string(),
+            name: "demo".to_string(),
+            version_id: "v1".to_string(),
+            home_id: "h1".to_string(),
+            env_overrides: overrides
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect(),
+            default_profile: None,
+            last_profile: None,
+            icon: None,
+            port: None,
+        });
+        cfg
+    }
+
+    #[test]
+    fn build_env_carries_overrides_and_reserves_dsh_home() {
+        let cfg = cfg_with_env(&[
+            ("MY_FLAG", "1"),
+            ("DSH_HOME", "C:/evil"),
+            ("DSH_LAUNCHER_INSTANCE", "spoofed"),
+        ]);
+        let env = build_env(&cfg, "i1").unwrap();
+        let get = |k: &str| env.iter().find(|(key, _)| key == k).map(|(_, v)| v.clone());
+        assert_eq!(get("MY_FLAG").as_deref(), Some("1"));
+        // DSH_HOME always comes from the instance's home, never the payload.
+        assert_eq!(get("DSH_HOME").as_deref(), Some("C:/homes/h1"));
+        assert_eq!(get("DSH_LAUNCHER_INSTANCE").as_deref(), Some("demo"));
+        // Exactly one DSH_HOME entry.
+        assert_eq!(env.iter().filter(|(k, _)| k == "DSH_HOME").count(), 1);
+    }
+
+    #[test]
+    fn build_env_errors_for_unknown_instance() {
+        let cfg = cfg_with_env(&[]);
+        assert!(build_env(&cfg, "nope").is_err());
+    }
+
+    #[tokio::test]
+    async fn read_line_lossy_survives_invalid_utf8() {
+        // Issue #42: 'a' + GBK「…」+ 'b' is not valid UTF-8; Lines::next_line
+        // would Err out and silently end the loop here, killing the pipe.
+        let bytes: &[u8] = b"ascii line OK\na\xa1\xadb\nafter the bad line\n";
+        let mut reader = BufReader::new(bytes);
+        let mut buf = Vec::new();
+        let first = read_line_lossy(&mut reader, &mut buf).await.unwrap();
+        assert_eq!(first.as_deref(), Some("ascii line OK"));
+        let bad = read_line_lossy(&mut reader, &mut buf).await.unwrap();
+        assert_eq!(bad.as_deref(), Some("a\u{FFFD}\u{FFFD}b"));
+        // The reader must still be alive for subsequent lines.
+        let third = read_line_lossy(&mut reader, &mut buf).await.unwrap();
+        assert_eq!(third.as_deref(), Some("after the bad line"));
+        let eof = read_line_lossy(&mut reader, &mut buf).await.unwrap();
+        assert_eq!(eof, None);
+    }
+
+    #[tokio::test]
+    async fn read_line_lossy_handles_crlf_and_unterminated_tail() {
+        let bytes: &[u8] = b"one\r\ntwo\r\nthree";
+        let mut reader = BufReader::new(bytes);
+        let mut buf = Vec::new();
+        assert_eq!(
+            read_line_lossy(&mut reader, &mut buf)
+                .await
+                .unwrap()
+                .as_deref(),
+            Some("one")
+        );
+        assert_eq!(
+            read_line_lossy(&mut reader, &mut buf)
+                .await
+                .unwrap()
+                .as_deref(),
+            Some("two")
+        );
+        assert_eq!(
+            read_line_lossy(&mut reader, &mut buf)
+                .await
+                .unwrap()
+                .as_deref(),
+            Some("three")
+        );
+        assert_eq!(read_line_lossy(&mut reader, &mut buf).await.unwrap(), None);
+    }
 
     #[test]
     fn profile_kind_classifies_web_tui_other() {

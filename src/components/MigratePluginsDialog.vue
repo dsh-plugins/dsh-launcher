@@ -193,7 +193,10 @@ async function confirm() {
     @ok="confirm"
     @cancel="close"
   >
-    <a-form layout="vertical" :model="{}">
+    <a-form layout="vertical" :model="{}" class="migrate-body">
+      <!-- CSS grid (not flex): the three controls must never wrap into a
+           vertical stack (issue #41). minmax(0,…) keeps the selects
+           shrinkable so the row holds at any width. -->
       <div class="migrate-source-row">
         <a-form-item :label="t('plugins.migrateSourceInstance')" class="migrate-source-col">
           <a-select v-model="sourceInstanceId" :placeholder="t('plugins.migrateSourceInstanceHint')">
@@ -211,11 +214,14 @@ async function confirm() {
             <a-option v-for="p in sourceProfiles" :key="p" :value="p">{{ p }}</a-option>
           </a-select>
         </a-form-item>
-        <a-form-item label=" ">
-          <a-button :loading="loading" :disabled="!sourceProfile" @click="loadPlugins">
-            {{ t('plugins.migrateLoad') }}
-          </a-button>
-        </a-form-item>
+        <a-button
+          class="migrate-load-btn"
+          :loading="loading"
+          :disabled="!sourceProfile"
+          @click="loadPlugins"
+        >
+          {{ t('plugins.migrateLoad') }}
+        </a-button>
       </div>
 
       <div v-if="plugins.length > 0" class="migrate-list">
@@ -234,14 +240,14 @@ async function confirm() {
           <HintIcon v-if="isUnmigratable(p)" :content="t('plugins.migrateUnmigratableHint')" />
         </div>
       </div>
-      <a-empty v-else-if="!loading" :description="t('plugins.migrateEmpty')" />
+      <a-empty v-else-if="!loading" class="migrate-empty" :description="t('plugins.migrateEmpty')" />
 
       <a-form-item>
         <template #label>
           {{ t('plugins.migrateVersionStrategy') }}
           <HintIcon :content="t('plugins.migrateVersionStrategyHint')" />
         </template>
-        <a-radio-group v-model="versionStrategy" type="button">
+        <a-radio-group v-model="versionStrategy" type="button" class="migrate-radios">
           <a-radio value="source">{{ t('plugins.migrateKeepSource') }}</a-radio>
           <a-radio value="latest">{{ t('plugins.migrateUseLatest') }}</a-radio>
         </a-radio-group>
@@ -251,12 +257,12 @@ async function confirm() {
           {{ t('plugins.migrateConflictStrategy') }}
           <HintIcon :content="t('plugins.migrateConflictStrategyHint')" />
         </template>
-        <a-radio-group v-model="conflictStrategy" type="button">
+        <a-radio-group v-model="conflictStrategy" type="button" class="migrate-radios">
           <a-radio value="skip">{{ t('plugins.migrateConflictSkip') }}</a-radio>
           <a-radio value="reinstall">{{ t('plugins.migrateConflictReinstall') }}</a-radio>
         </a-radio-group>
       </a-form-item>
-      <a-form-item>
+      <a-form-item class="migrate-sync-item">
         <a-checkbox v-model="syncDisabled">
           {{ t('plugins.migrateSyncDisabled') }}
           <HintIcon :content="t('plugins.migrateSyncDisabledHint')" />
@@ -267,15 +273,30 @@ async function confirm() {
 </template>
 
 <style scoped>
+/* Keep the footer reachable: the body scrolls instead of growing the modal
+   past the viewport (issue #41). */
+.migrate-body {
+  max-height: 60vh;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding-right: 4px;
+}
+
 .migrate-source-row {
-  display: flex;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto;
   gap: 12px;
-  align-items: flex-end;
+  align-items: end;
 }
 
 .migrate-source-col {
-  flex: 1;
   min-width: 0;
+}
+
+/* Align with the selects, which sit under one line of vertical-form label. */
+.migrate-load-btn {
+  margin-bottom: 20px;
+  white-space: nowrap;
 }
 
 .migrate-list {
@@ -287,11 +308,25 @@ async function confirm() {
   margin-bottom: 12px;
 }
 
+.migrate-empty {
+  margin-bottom: 12px;
+}
+
 .migrate-row {
   display: flex;
   align-items: center;
   gap: 8px;
   padding: 6px 0;
+}
+
+.migrate-radios {
+  white-space: nowrap;
+  max-width: 100%;
+  overflow-x: auto;
+}
+
+.migrate-sync-item {
+  margin-bottom: 0;
 }
 
 .migrate-id {

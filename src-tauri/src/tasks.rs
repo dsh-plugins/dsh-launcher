@@ -4,7 +4,7 @@ use serde::Serialize;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tauri::{AppHandle, Emitter, Manager, State};
-use tokio::io::{AsyncBufReadExt, BufReader};
+use tokio::io::BufReader;
 use tokio::sync::Mutex;
 
 pub const TASK_PROGRESS_EVENT: &str = "task://progress";
@@ -453,10 +453,11 @@ async fn ensure_web_profile_template(
     let mut attempts = 0;
     let mut ready = false;
     if let Some(out) = child.stdout.take() {
-        let mut reader = BufReader::new(out).lines();
+        let mut reader = BufReader::new(out);
+        let mut buf = Vec::new();
         loop {
             tokio::select! {
-                line = reader.next_line() => {
+                line = crate::process::read_line_lossy(&mut reader, &mut buf) => {
                     match line {
                         Ok(Some(l)) => {
                             let l = l.trim().to_string();
@@ -468,7 +469,11 @@ async fn ensure_web_profile_template(
                                 break;
                             }
                         }
-                        _ => break,
+                        Ok(None) => break,
+                        Err(e) => {
+                            crate::log_warn!("临时 DSH 输出读取终止: {e}");
+                            break;
+                        }
                     }
                 }
                 _ = timer.tick() => {
@@ -656,10 +661,11 @@ pub(crate) async fn ensure_web_profile_template_wsl(
     let mut timer = tokio::time::interval(std::time::Duration::from_millis(300));
     let mut attempts = 0;
     if let Some(out) = child.stdout.take() {
-        let mut reader = BufReader::new(out).lines();
+        let mut reader = BufReader::new(out);
+        let mut buf = Vec::new();
         loop {
             tokio::select! {
-                line = reader.next_line() => {
+                line = crate::process::read_line_lossy(&mut reader, &mut buf) => {
                     match line {
                         Ok(Some(l)) => {
                             let l = l.trim().to_string();
@@ -675,7 +681,11 @@ pub(crate) async fn ensure_web_profile_template_wsl(
                                 break;
                             }
                         }
-                        _ => break,
+                        Ok(None) => break,
+                        Err(e) => {
+                            crate::log_warn!("WSL 临时 DSH 输出读取终止: {e}");
+                            break;
+                        }
                     }
                 }
                 _ = timer.tick() => {
@@ -857,6 +867,7 @@ async fn do_create_wsl_instance(
                 name: name.to_string(),
                 path: path_buf,
                 wsl: Some(distro.to_string()),
+                links: Default::default(),
             };
             cfg.homes.push(home.clone());
             crate::commands::save_state(state, &cfg)?;
@@ -1387,8 +1398,19 @@ impl tokio::io::AsyncRead for StreamPipe {
 
 async fn stream_pipe(app: AppHandle, task_id: String, pipe: StreamPipe) {
     let state = app.state::<AppState>();
-    let mut lines = BufReader::new(pipe).lines();
-    while let Ok(Some(line)) = lines.next_line().await {
+    let mut reader = BufReader::new(pipe);
+    let mut buf = Vec::new();
+    loop {
+        // Lossy read (issue #42): a non-UTF-8 byte must not silently kill
+        // the reader and truncate the task log mid-stream.
+        let line = match crate::process::read_line_lossy(&mut reader, &mut buf).await {
+            Ok(Some(line)) => line,
+            Ok(None) => break,
+            Err(e) => {
+                crate::log_warn!("任务 {task_id} 子进程输出读取终止: {e}");
+                break;
+            }
+        };
         let line = line.trim_end_matches(['\r', '\n']).to_string();
         if line.is_empty() {
             continue;
@@ -1878,14 +1900,38 @@ async fn do_copy_instance(
         .join("homes")
         .join(crate::config::sanitize_name(name));
 
-    // Pass 1: count files for a meaningful percent.
+    // Pass 1: count entries for a meaningful percent. The count follows the
+    // same link-preserving rules as the copy (linked directory subtrees are
+    // one entry), so it is cheap; it still runs on a blocking thread with a
+    // heartbeat so a large tree never looks frozen (复制实例无进度显示).
     push_task_log(app, state, task_id, "正在统计源 DSH_HOME 文件…").await;
-    let total = crate::commands::count_tree_files(&src_fs).max(1);
+    let scanned = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let count_handle = {
+        let src = src_fs.clone();
+        let counter = scanned.clone();
+        tauri::async_runtime::spawn_blocking(move || {
+            crate::commands::count_tree_entries(&src, &move || {
+                counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            })
+        })
+    };
+    let mut count_handle = count_handle;
+    let total = loop {
+        tokio::select! {
+            res = &mut count_handle => {
+                break res.map_err(|e| format!("统计线程失败: {e}"))?.max(1);
+            }
+            _ = tokio::time::sleep(std::time::Duration::from_millis(500)) => {
+                let n = scanned.load(std::sync::atomic::Ordering::Relaxed);
+                push_task_log(app, state, task_id, &format!("正在统计源 DSH_HOME 文件…已扫描 {n} 项")).await;
+            }
+        }
+    };
     push_task_log(
         app,
         state,
         task_id,
-        &format!("共 {total} 个文件，开始复制（链接目标将解引用复制）…"),
+        &format!("共 {total} 个文件，开始复制（目录链接将保留为链接）…"),
     )
     .await;
 
@@ -1940,6 +1986,7 @@ async fn do_copy_instance(
         name: home_name,
         path: dest.clone(),
         wsl: None,
+        links: Default::default(),
     };
     let inst = {
         let mut cfg = state.config.lock().unwrap();

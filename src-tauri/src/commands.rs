@@ -1,10 +1,10 @@
 use crate::config::{
-    new_id, sanitize_name, DshHome, DshInstance, DshVersion, LauncherSettings, NewInstanceInput,
-    RemoteVersion, SettingsPatch,
+    new_id, sanitize_name, sanitize_plugin_sources, DshHome, DshInstance, DshVersion,
+    LauncherSettings, NewInstanceInput, RemoteVersion, SettingsPatch,
 };
 use crate::{process, AppState};
 use std::collections::BTreeMap;
-use tauri::{AppHandle, State};
+use tauri::{AppHandle, Manager, State};
 
 // ---------------------------------------------------------------------------
 // DSH_HOME
@@ -61,6 +61,7 @@ pub(crate) fn create_home_record(
         name: name.to_string(),
         path: path_buf,
         wsl: None,
+        links: Default::default(),
     };
     let mut cfg = state.config.lock().unwrap();
     cfg.homes.push(home.clone());
@@ -351,6 +352,9 @@ pub async fn delete_instance(
     if state.running.lock().await.contains_key(&id) {
         let _ = process::stop_instance_process(&app, &state, &id).await;
     }
+    // Drop the instance's WebView2 store: it holds a browser-session cookie
+    // signed by this process only, so nothing can reuse it afterwards.
+    crate::windows::clear_instance_webview_data(&state, &id);
     let mut cfg = state.config.lock().unwrap();
     cfg.instances.retain(|i| i.id != id);
     if cfg.settings.last_instance_id.as_deref() == Some(id.as_str()) {
@@ -433,6 +437,7 @@ pub fn copy_instance(
                 name: home_name,
                 path: path_buf,
                 wsl: None,
+                links: Default::default(),
             };
             cfg.homes.push(home.clone());
             home.id
@@ -763,50 +768,45 @@ pub(crate) fn copy_dir_recursive(
     src: &std::path::Path,
     dst: &std::path::Path,
 ) -> std::io::Result<()> {
-    copy_dir_recursive_at(src, dst, 0, None)
+    copy_dir_recursive_at(src, dst, 0, None, LinkMode::Dereference)
 }
 
 /// Copy with a per-file progress callback (used by the copy-instance task).
+/// Links are preserved (recreated as links pointing at the same target):
+/// a full-HOME copy stays on the same machine, so dereferencing would only
+/// multiply gigabytes of pnpm junctions into redundant physical copies.
 pub(crate) fn copy_dir_recursive_progress(
     src: &std::path::Path,
     dst: &std::path::Path,
     on_file: &dyn Fn(),
 ) -> std::io::Result<()> {
-    copy_dir_recursive_at(src, dst, 0, Some(on_file))
+    copy_dir_recursive_at(src, dst, 0, Some(on_file), LinkMode::Preserve)
 }
 
-/// Counts files under `src` following the same dereference rules as the
-/// copy (for progress percent).
-pub(crate) fn count_tree_files(src: &std::path::Path) -> u64 {
-    count_tree_files_at(src, 0)
-}
-
-const COPY_MAX_DEPTH: u32 = 64;
-
-fn count_tree_files_at(src: &std::path::Path, depth: u32) -> u64 {
-    if depth > COPY_MAX_DEPTH {
-        return 0;
-    }
+/// Counts copyable entries under `src` following the same link-preserving
+/// rules as the copy-instance copy (for progress percent): linked directory
+/// subtrees count as one entry (the recreated link), not their contents.
+/// `on_entry` fires for every visited entry so the caller can heartbeat.
+pub(crate) fn count_tree_entries(src: &std::path::Path, on_entry: &dyn Fn()) -> u64 {
+    let mut n = 0u64;
     let Ok(entries) = std::fs::read_dir(src) else {
         return 0;
     };
-    let mut n = 0u64;
     for entry in entries.flatten() {
+        on_entry();
+        let from = entry.path();
+        if entry_is_dir_link(&from) {
+            n += 1;
+            continue;
+        }
         let Ok(ty) = entry.file_type() else {
             continue;
         };
-        let from = entry.path();
         if ty.is_symlink() {
-            let Ok(target) = std::fs::canonicalize(&from) else {
-                continue;
-            };
-            if target.is_dir() {
-                n += count_tree_files_at(&target, depth + 1);
-            } else if target.is_file() {
-                n += 1;
-            }
+            // Dangling / file link: one entry, target untouched.
+            n += 1;
         } else if ty.is_dir() {
-            n += count_tree_files_at(&from, depth + 1);
+            n += count_tree_entries(&from, on_entry);
         } else if ty.is_file() {
             n += 1;
         }
@@ -814,11 +814,75 @@ fn count_tree_files_at(src: &std::path::Path, depth: u32) -> u64 {
     n
 }
 
+const COPY_MAX_DEPTH: u32 = 64;
+
+/// How directory links (junctions on Windows, symlinks on Unix) are copied.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum LinkMode {
+    /// Copy the link target's content (self-contained result; used for
+    /// profile copies and modpack export where links must not escape).
+    Dereference,
+    /// Recreate the link pointing at the same target (fast + dedup-safe;
+    /// only valid for same-machine copies like the copy-instance task).
+    Preserve,
+}
+
+/// True when the path is a directory link: a reparse point (junction or
+/// symlink) on Windows, a symlink on Unix. Detection never follows the link.
+pub(crate) fn entry_is_dir_link(path: &std::path::Path) -> bool {
+    let Ok(md) = std::fs::symlink_metadata(path) else {
+        return false;
+    };
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        // FILE_ATTRIBUTE_REPARSE_POINT: junctions and symlinks alike.
+        md.file_attributes() & 0x400 != 0
+    }
+    #[cfg(not(windows))]
+    {
+        md.file_type().is_symlink()
+    }
+}
+
+/// Creates a directory link at `link` pointing at `target`: a junction on
+/// Windows (`mklink /J`, no privileges needed), a symlink elsewhere.
+pub(crate) fn create_dir_link(
+    target: &std::path::Path,
+    link: &std::path::Path,
+) -> std::io::Result<()> {
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        // canonicalize() yields \\?\-prefixed paths that mklink rejects.
+        let target_str = target.to_string_lossy().replace(r"\\?\", "");
+        let status = std::process::Command::new("cmd")
+            .args(["/c", "mklink", "/J"])
+            .arg(link)
+            .arg(&target_str)
+            .creation_flags(0x0800_0000) // CREATE_NO_WINDOW
+            .status()?;
+        if status.success() {
+            Ok(())
+        } else {
+            Err(std::io::Error::other(format!(
+                "创建目录链接失败（mklink /J 退出码 {status}）: {}",
+                link.display()
+            )))
+        }
+    }
+    #[cfg(unix)]
+    {
+        std::os::unix::fs::symlink(target, link)
+    }
+}
+
 fn copy_dir_recursive_at(
     src: &std::path::Path,
     dst: &std::path::Path,
     depth: u32,
     on_file: Option<&dyn Fn()>,
+    link_mode: LinkMode,
 ) -> std::io::Result<()> {
     if depth > COPY_MAX_DEPTH {
         crate::log_warn!(
@@ -830,26 +894,38 @@ fn copy_dir_recursive_at(
     std::fs::create_dir_all(dst)?;
     for entry in std::fs::read_dir(src)? {
         let entry = entry?;
-        let ty = entry.file_type()?;
         let from = entry.path();
         let to = dst.join(entry.file_name());
-        if ty.is_symlink() {
-            // Dereference: copy the target's content (dir → recurse, file →
-            // copy). Skip gracefully when the target is gone.
+        let is_link = entry_is_dir_link(&from);
+        if is_link || entry.file_type()?.is_symlink() {
+            // Resolve the target; skip gracefully when it is gone.
             let Ok(target) = std::fs::canonicalize(&from) else {
                 crate::log_warn!("复制时跳过失效链接: {}", from.display());
                 continue;
             };
             if target.is_dir() {
-                copy_dir_recursive_at(&target, &to, depth + 1, on_file)?;
+                match link_mode {
+                    LinkMode::Dereference => {
+                        copy_dir_recursive_at(&target, &to, depth + 1, on_file, link_mode)?;
+                    }
+                    LinkMode::Preserve => {
+                        create_dir_link(&target, &to)?;
+                        if let Some(f) = on_file {
+                            f();
+                        }
+                    }
+                }
             } else if target.is_file() {
                 std::fs::copy(&target, &to)?;
                 if let Some(f) = on_file {
                     f();
                 }
             }
-        } else if ty.is_dir() {
-            copy_dir_recursive_at(&from, &to, depth + 1, on_file)?;
+            continue;
+        }
+        let ty = entry.file_type()?;
+        if ty.is_dir() {
+            copy_dir_recursive_at(&from, &to, depth + 1, on_file, link_mode)?;
         } else if ty.is_file() {
             std::fs::copy(&from, &to)?;
             if let Some(f) = on_file {
@@ -990,10 +1066,18 @@ pub async fn open_instance_window(
     if state.tui_sessions.lock().await.contains_key(&id) {
         return crate::windows::open_tui_window(&app, &id);
     }
-    let entry = state.running.lock().await.get(&id).map(|r| r.url.clone());
-    let Some(url) = entry.flatten() else {
+    let url = state
+        .running
+        .lock()
+        .await
+        .get(&id)
+        .and_then(|r| r.url.clone());
+    // A window can outlive the URL record: the registry entry is removed the
+    // moment the child process exits. An open window stays authoritative for
+    // its own page, so re-navigating it does not need a fresh URL.
+    if url.is_none() && app.get_webview_window(&format!("instance-{id}")).is_none() {
         return Err("实例未在运行或尚未就绪".to_string());
-    };
+    }
     let name = state
         .config
         .lock()
@@ -1003,7 +1087,7 @@ pub async fn open_instance_window(
         .find(|i| i.id == id)
         .map(|i| i.name.clone())
         .unwrap_or_else(|| id.clone());
-    crate::windows::open_instance_window(&app, &id, &name, &url)
+    crate::windows::open_instance_window(&app, &id, &name, url.as_deref().unwrap_or_default())
 }
 
 // ---------------------------------------------------------------------------
@@ -1077,6 +1161,9 @@ pub fn update_settings(
             .map(|u| u.trim().to_string())
             .filter(|u| !u.is_empty())
             .collect();
+    }
+    if let Some(v) = settings.plugin_sources {
+        cfg.settings.plugin_sources = sanitize_plugin_sources(v);
     }
     if let Some(v) = settings.proxy_enabled {
         cfg.settings.proxy_enabled = v;
@@ -1531,6 +1618,46 @@ mod tests {
         copy_dir_recursive(&src, &dst).unwrap();
         assert!(dst.join("real.txt").is_file());
         assert!(!dst.join("broken").exists());
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn copy_progress_preserves_dir_links() {
+        let root = unique_temp("preserve");
+        let store_pkg = root.join("store").join("pkg");
+        std::fs::create_dir_all(&store_pkg).unwrap();
+        std::fs::write(store_pkg.join("index.js"), "hello").unwrap();
+        let src = root.join("src");
+        std::fs::create_dir_all(src.join("sub")).unwrap();
+        std::fs::write(src.join("sub/real.txt"), "x").unwrap();
+        if !make_dir_link(&store_pkg, &src.join("pkg")) {
+            eprintln!("skipping: cannot create directory links on this platform");
+            return;
+        }
+
+        let dst = root.join("dst");
+        let copied = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let counter = copied.clone();
+        copy_dir_recursive_progress(&src, &dst, &move || {
+            counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        })
+        .unwrap();
+
+        // The link must be recreated as a link, not expanded into content.
+        let link = dst.join("pkg");
+        assert!(
+            entry_is_dir_link(&link),
+            "preserved copy must recreate the dir link"
+        );
+        // The recreated link still resolves to the shared target.
+        assert_eq!(
+            std::fs::read_to_string(link.join("index.js")).unwrap(),
+            "hello"
+        );
+        // Counted: 1 real file + 1 link. The count matches the tick total.
+        assert_eq!(copied.load(std::sync::atomic::Ordering::Relaxed), 2);
+        let total = count_tree_entries(&src, &|| {});
+        assert_eq!(total, 2);
         std::fs::remove_dir_all(&root).ok();
     }
 

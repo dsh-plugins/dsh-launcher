@@ -17,6 +17,11 @@ pub struct DshHome {
     /// Windows HOME.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub wsl: Option<String>,
+    /// Storage redirections (issue #51): whitelisted entry name → absolute
+    /// target path. The entry inside this HOME is replaced by a link to the
+    /// target, so bulky data (sessions, attachments, …) can live elsewhere.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub links: std::collections::BTreeMap<String, String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -50,6 +55,150 @@ pub struct DshInstance {
     /// a random free port (`--port 0`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub port: Option<u16>,
+}
+
+// ---------------------------------------------------------------------------
+// Plugin catalog sources (issue #46)
+// ---------------------------------------------------------------------------
+
+/// How a configured plugin source is fetched/parsed. The launcher dispatches
+/// to one adapter per kind.
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum SourceKind {
+    /// dsh-plug.in's native schema (array of MarketPlugin).
+    Primary,
+    /// awesome-dsh-plugin.com's schema (plugins[] with an `install` line).
+    Awesome,
+    /// DSH Get's aggregated catalog (plugins[] with an `install` line).
+    DshGet,
+    /// GitHub `topic:dsh-plugin` search (live discovery, no static URL).
+    GithubTopic,
+}
+
+/// How trustworthy a source is. Ordered from least to most trustworthy so
+/// duplicate ids can keep the highest tier.
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
+#[serde(rename_all = "lowercase")]
+pub enum Confidence {
+    /// Live/community discovery; the code has not been reviewed.
+    #[default]
+    Unverified,
+    /// Third-party directory that aggregates other catalogs.
+    Aggregated,
+    /// Curated community directory (PR gate + CI validation).
+    Curated,
+    /// The official dsh-plug.in catalog.
+    Official,
+}
+
+/// One configured plugin catalog source. Persisted in launcher settings so the
+/// user can enable/disable, reorder, and add mirrors or private catalogs.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct PluginSourceConfig {
+    /// Stable id; also stamped onto every entry as `MarketPlugin.source`.
+    pub id: String,
+    /// Catalog JSON URL (http/https). Empty for live-only kinds.
+    pub url: String,
+    pub kind: SourceKind,
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    #[serde(default)]
+    pub confidence: Confidence,
+    #[serde(default)]
+    pub order: u32,
+}
+
+/// The built-in catalog sources, in display/dedup priority order. The live
+/// GitHub topic channel ships disabled: it is rate-limited and unverified, so
+/// the user opts in from Settings.
+pub fn default_plugin_sources() -> Vec<PluginSourceConfig> {
+    vec![
+        PluginSourceConfig {
+            id: "dsh-plugins".to_string(),
+            url: "https://dsh-plug.in/api/plugins.json".to_string(),
+            kind: SourceKind::Primary,
+            enabled: true,
+            confidence: Confidence::Official,
+            order: 0,
+        },
+        PluginSourceConfig {
+            id: "awesome-dsh-plugin".to_string(),
+            url: "https://awesome-dsh-plugin.com/plugins.json".to_string(),
+            kind: SourceKind::Awesome,
+            enabled: true,
+            confidence: Confidence::Curated,
+            order: 1,
+        },
+        PluginSourceConfig {
+            id: "dshget".to_string(),
+            // Served through the jsDelivr CDN: raw.githubusercontent.com is
+            // unreachable on some networks (observed in CN), while the CDN
+            // mirror serves the identical snapshot. Users can point this at
+            // raw.githubusercontent.com or another mirror in Settings.
+            url: "https://cdn.jsdelivr.net/gh/bobby-sheng/dshget-data@main/catalog.json"
+                .to_string(),
+            kind: SourceKind::DshGet,
+            enabled: true,
+            confidence: Confidence::Aggregated,
+            order: 2,
+        },
+        PluginSourceConfig {
+            id: "github-topic".to_string(),
+            url: String::new(),
+            kind: SourceKind::GithubTopic,
+            enabled: false,
+            confidence: Confidence::Unverified,
+            order: 3,
+        },
+    ]
+}
+
+/// Returns the built-in definition for a source id, when it is one of the
+/// launcher-shipped catalogs.
+fn builtin_source(id: &str) -> Option<PluginSourceConfig> {
+    default_plugin_sources().into_iter().find(|s| s.id == id)
+}
+
+/// Drops user-supplied source entries that cannot be driven (empty id, or a
+/// non-http(s) URL for a static kind), de-duplicates ids, and renumbers `order`
+/// to the list index so the persisted list is always a coherent priority order.
+///
+/// Trust is launcher-assigned, never self-attested (issue #46 review): entries
+/// reusing a built-in id keep their customized URL/enabled state but have
+/// `kind`/`confidence` restored to the built-in values, and custom sources are
+/// always forced to `Confidence::Unverified` no matter what the payload claims
+/// — otherwise a custom catalog could attest itself "official", overwrite the
+/// official entry's repo hint in dedup, and bypass the unverified-install ack.
+pub fn sanitize_plugin_sources(list: Vec<PluginSourceConfig>) -> Vec<PluginSourceConfig> {
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    list.into_iter()
+        .filter(|s| {
+            let id = s.id.trim().to_string();
+            let url = s.url.trim();
+            !id.is_empty()
+                && (s.kind == SourceKind::GithubTopic
+                    || url.starts_with("https://")
+                    || url.starts_with("http://"))
+                && seen.insert(id)
+        })
+        .enumerate()
+        .map(|(i, mut s)| {
+            s.id = s.id.trim().to_string();
+            s.url = s.url.trim().to_string();
+            s.order = i as u32;
+            match builtin_source(&s.id) {
+                Some(builtin) => {
+                    s.kind = builtin.kind;
+                    s.confidence = builtin.confidence;
+                }
+                None => {
+                    s.confidence = Confidence::Unverified;
+                }
+            }
+            s
+        })
+        .collect()
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -98,6 +247,10 @@ pub struct LauncherSettings {
     /// TUI terminal) is opened/focused.
     #[serde(default)]
     pub hide_launcher_on_window_open: bool,
+    /// Plugin marketplace catalog sources (issue #46). Defaults to the built-in
+    /// three catalogs plus the (disabled) live GitHub topic channel.
+    #[serde(default = "default_plugin_sources")]
+    pub plugin_sources: Vec<PluginSourceConfig>,
 }
 
 fn default_locale() -> String {
@@ -151,6 +304,7 @@ impl Default for LauncherSettings {
             proxy_apply_dsh: false,
             auto_open_on_launch: true,
             hide_launcher_on_window_open: false,
+            plugin_sources: default_plugin_sources(),
         }
     }
 }
@@ -222,6 +376,8 @@ pub struct SettingsPatch {
     pub no_proxy: Option<String>,
     #[serde(default)]
     pub proxy_apply_dsh: Option<bool>,
+    #[serde(default)]
+    pub plugin_sources: Option<Vec<PluginSourceConfig>>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -254,6 +410,10 @@ pub fn load_config(path: &Path) -> Config {
                 cleanup_orphan_homes(&mut cfg);
                 ensure_user_dsh_home(&mut cfg);
                 migrate_news_source(&mut cfg);
+                // Self-heal configs persisted before trust locking existed:
+                // strip self-attested confidence/kind from stored sources.
+                cfg.settings.plugin_sources =
+                    sanitize_plugin_sources(std::mem::take(&mut cfg.settings.plugin_sources));
                 cfg
             }
             Err(err) => {
@@ -315,6 +475,7 @@ pub fn ensure_user_dsh_home(cfg: &mut Config) {
         name: "用户默认 (~/.dsh)".to_string(),
         path: dsh,
         wsl: None,
+        links: Default::default(),
     });
 }
 
@@ -381,4 +542,79 @@ pub fn sanitize_name(name: &str) -> String {
 
 pub fn new_id(prefix: &str) -> String {
     format!("{prefix}-{}", uuid::Uuid::new_v4())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn source(id: &str, kind: SourceKind, confidence: Confidence) -> PluginSourceConfig {
+        PluginSourceConfig {
+            id: id.to_string(),
+            url: "https://example.com/catalog.json".to_string(),
+            kind,
+            enabled: true,
+            confidence,
+            order: 99,
+        }
+    }
+
+    #[test]
+    fn sanitize_locks_builtin_kind_and_confidence() {
+        // A payload reusing the dshget id but claiming to be an official
+        // primary catalog must be reverted to the built-in definition; the
+        // customized URL (mirror use case) survives.
+        let out = sanitize_plugin_sources(vec![source(
+            "dshget",
+            SourceKind::Primary,
+            Confidence::Official,
+        )]);
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].kind, SourceKind::DshGet);
+        assert_eq!(out[0].confidence, Confidence::Aggregated);
+        assert_eq!(out[0].url, "https://example.com/catalog.json");
+        assert_eq!(out[0].order, 0);
+    }
+
+    #[test]
+    fn sanitize_forces_custom_sources_unverified() {
+        let out = sanitize_plugin_sources(vec![
+            source("my-mirror", SourceKind::Primary, Confidence::Official),
+            source("corp-hub", SourceKind::Awesome, Confidence::Curated),
+        ]);
+        assert_eq!(out.len(), 2);
+        // Custom sources keep their schema kind (it drives parsing) but never
+        // their self-attested trust tier.
+        assert_eq!(out[0].kind, SourceKind::Primary);
+        assert_eq!(out[0].confidence, Confidence::Unverified);
+        assert_eq!(out[1].kind, SourceKind::Awesome);
+        assert_eq!(out[1].confidence, Confidence::Unverified);
+    }
+
+    #[test]
+    fn sanitize_drops_undrivable_and_dedupes() {
+        let mut bad_url = source("bad", SourceKind::Primary, Confidence::Unverified);
+        bad_url.url = "ftp://nope".to_string();
+        let empty_id = source("  ", SourceKind::Primary, Confidence::Unverified);
+        let dup = source("my-mirror", SourceKind::Primary, Confidence::Unverified);
+        let out = sanitize_plugin_sources(vec![
+            bad_url,
+            empty_id,
+            source("my-mirror", SourceKind::Primary, Confidence::Unverified),
+            dup,
+        ]);
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].id, "my-mirror");
+        assert_eq!(out[0].order, 0);
+    }
+
+    #[test]
+    fn sanitize_keeps_builtin_defaults_intact() {
+        let out = sanitize_plugin_sources(default_plugin_sources());
+        assert_eq!(out.len(), 4);
+        assert_eq!(out[0].id, "dsh-plugins");
+        assert_eq!(out[0].confidence, Confidence::Official);
+        assert_eq!(out[3].id, "github-topic");
+        assert!(!out[3].enabled);
+    }
 }

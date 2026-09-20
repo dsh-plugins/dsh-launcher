@@ -6,6 +6,18 @@ export interface DshHome {
   path: string
   /** WSL distro name when this HOME lives inside WSL (issue #19); `path` is then a Linux path. */
   wsl?: string | null
+  /** Storage redirections (issue #51): entry name → absolute target path. */
+  links?: Record<string, string>
+}
+
+/** One redirectable HOME entry's redirection state (issue #51). */
+export interface HomeLinkInfo {
+  entry: string
+  is_dir: boolean
+  /** Configured target (empty = not redirected). */
+  target: string
+  /** The entry currently IS a link resolving to `target`. */
+  active: boolean
 }
 
 export interface DshVersion {
@@ -40,6 +52,8 @@ export interface LauncherSettings {
   log_level: LogLevel
   /** SKILL source repos: https://[user:password@]github.com/user/repo[.git][#/path/to/skill] */
   skill_repos: string[]
+  /** Plugin marketplace catalog sources. */
+  plugin_sources: PluginSourceConfig[]
   /** Route the launcher's own HTTP requests through a proxy. */
   proxy_enabled: boolean
   /** Proxy URL without port (PROXY_URL), e.g. http://127.0.0.1 */
@@ -389,7 +403,23 @@ export interface MarketPluginRelationship {
 }
 
 /** Which catalog a market entry came from (serialised kebab-case). */
-export type PluginSource = 'dsh-plugins' | 'awesome-dsh-plugin'
+export type PluginSource = string
+
+/** How a marketplace source is maintained. */
+export type SourceKind = 'primary' | 'awesome' | 'dsh-get' | 'github-topic'
+
+/** Trust tier of a marketplace entry: official > curated > aggregated > unverified. */
+export type Confidence = 'official' | 'curated' | 'aggregated' | 'unverified'
+
+/** One configurable plugin catalog source (issue #plugin-sources). */
+export interface PluginSourceConfig {
+  id: string
+  url: string
+  kind: SourceKind
+  enabled: boolean
+  confidence: Confidence
+  order: number
+}
 
 export interface MarketPlugin {
   id: string
@@ -400,6 +430,14 @@ export interface MarketPlugin {
   relationship?: MarketPluginRelationship[]
   /** Absent on old payloads: treated as the primary dsh-plugins catalog. */
   source?: PluginSource
+  /** Credibility tier of this entry; absent = unknown. */
+  confidence?: Confidence
+  /** Source ids this entry was found in. */
+  sources?: string[]
+  /** GitHub "owner/repo" hint used by the alpha channel. */
+  repo?: string | null
+  /** Free-form verification note (e.g. reviewer / date). */
+  verification?: string | null
   /** Community-catalog extras. */
   category?: string
   stars?: number
@@ -446,6 +484,8 @@ export interface InstallPluginInput {
   channel: PluginChannel
   instanceId: string
   profile: string
+  /** GitHub repo hint for sources not in the static catalog (live/unverified). */
+  repo?: string | null
 }
 
 export interface SetPluginsEnabledInput {
@@ -569,6 +609,17 @@ export interface ImportHomeInput {
 export interface ImportScannedInput {
   homes: ImportHomeInput[]
   versions: { dir: string }[]
+  /** Version directory picked as the default for newly created instances (issue #39). */
+  preferredVersionDir?: string | null
+}
+
+/** One import item's outcome; the wizard renders these line by line. */
+export interface ImportItem {
+  kind: 'home' | 'version' | 'instance'
+  name: string
+  status: 'added' | 'skipped' | 'failed'
+  /** Reason for skipped/failed items. */
+  reason?: string | null
 }
 
 export interface ImportReport {
@@ -576,6 +627,8 @@ export interface ImportReport {
   versions_added: number
   instances_added: number
   skipped_known: number
+  /** Per-item breakdown of the import. */
+  items: ImportItem[]
 }
 
 /** An instance running outside the launcher (pinned port answers, not tracked). */
@@ -584,4 +637,13 @@ export interface ExternalStatus {
   name: string
   port: number
   profile: string | null
+}
+
+/** Data-directory resolution info (issue #43). */
+export interface DataDirInfo {
+  path: string
+  /** "env" | "pointer" | "default" */
+  source: string
+  /** Non-empty when the launcher fell back to the default directory. */
+  notice: string | null
 }

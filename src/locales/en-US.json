@@ -9,8 +9,14 @@
     "addVersion": "Add",
     "versionAlreadyAdded": "That version directory is already in the list",
     "needsBuild": "needs build",
+    "removeVersion": "Remove",
     "summary": "Import finished: {homes_added} homes, {versions_added} versions, {instances_added} instances added; {skipped_known} already known",
     "done": "Imported {instances} instance(s)",
+    "doneWithFailures": "Import finished: {instances} instance(s) added, {failed} item(s) failed (see details)",
+    "itemAdded": "added",
+    "itemSkipped": "skipped",
+    "itemFailed": "failed",
+    "versionNotInstance": "The version was registered, but a version alone is not an instance; pick a HOME profile to create instances",
     "rescan": "Rescan",
     "import": "Import selected"
   },
@@ -65,6 +71,8 @@
     "newInstance": "New instance",
     "emptyTitle": "No instances yet",
     "emptyDesc": "Create an instance to get started: pick a DSH version, a DSH_HOME and a profile.",
+    "homesWithoutInstancesTitle": "These DSH_HOMEs are registered but have no instances:",
+    "homesWithoutInstancesAction": "Create instances for them in Settings → Import local environments",
     "deleted": "Instance deleted",
     "confirmDelete": "Delete instance \"{name}\"?",
     "copied": "Instance \"{name}\" copied",
@@ -192,7 +200,21 @@
     "issues": "Issues",
     "viewLinks": "Links",
     "marketError": "Failed to load plugin market",
-    "retry": "Retry"
+    "retry": "Retry",
+    "source": {
+      "dsh-plugins": "Official source",
+      "awesome-dsh-plugin": "Awesome curated",
+      "dshget": "dshget aggregated",
+      "github-topic": "GitHub topic (community)"
+    },
+    "confidence": {
+      "official": "Official",
+      "curated": "Curated",
+      "aggregated": "Aggregated",
+      "unverified": "Unverified"
+    },
+    "unverifiedConfirm": "This plugin comes from an unreviewed source and its code is provided by a third party; it may contain harmful behavior. Only install it if you trust the source.",
+    "unverifiedAck": "I understand the risk and want to install anyway"
   },
   "settings": {
     "title": "Settings",
@@ -238,6 +260,27 @@
       "empty": "No SKILL repositories yet"
     },
     "skillRepoExists": "This repo is already listed",
+    "pluginSources": {
+      "title": "Plugin sources",
+      "hint": "Marketplace catalog sources: enable/disable, reorder, or add custom sources. github-topic is a dynamically discovered community channel whose contents are not reviewed. Confidence is assigned by the launcher: built-in sources keep their preset tier, and custom sources are always treated as unverified.",
+      "id": "Source ID",
+      "kind": "Kind",
+      "confidence": "Confidence",
+      "url": "Catalog URL",
+      "add": "Add",
+      "empty": "No plugin sources yet",
+      "enable": "Enabled",
+      "delete": "Delete",
+      "invalidId": "Source ID must not be empty",
+      "invalidUrl": "Source URL must start with http(s)://",
+      "duplicateId": "This source ID already exists",
+      "sourceKinds": {
+        "primary": "Primary",
+        "awesome": "Awesome curated",
+        "dshGet": "dshget aggregated",
+        "githubTopic": "GitHub topic"
+      }
+    },
     "proxy": {
       "title": "Proxy",
       "enabled": "Enable proxy",
@@ -281,7 +324,16 @@
       "hint": "The launcher's data directory (config, logs, versions and HOME directories)",
       "open": "Open directory",
       "viewLog": "View log",
-      "unknown": "Unknown"
+      "unknown": "Unknown",
+      "moveTo": "Change location",
+      "restartHint": "The change takes effect after a restart. On the next launch the launcher migrates your existing data to the new location automatically.",
+      "migrating": "Migrating data directory…",
+      "migratedToast": "Data directory migrated to {0}",
+      "sourceEnv": "Data directory is set by the DSH_LAUNCHER_DATA_HOME environment variable",
+      "sourcePointer": "Data directory relocated to a custom location",
+      "sourceDefault": "Using the default data directory",
+      "rollback": "Restore previous data directory",
+      "confirmMove": "Set the data directory to:\n{0}\n\nThe change takes effect after a restart, when your data is migrated automatically."
     },
     "logOpened": "Log revealed in file manager: {path}"
   },
@@ -295,7 +347,8 @@
       "plugins": "Plugins",
       "terminal": "Terminal",
       "skills": "SKILL",
-      "mcp": "MCP"
+      "mcp": "MCP",
+      "storage": "Storage"
     },
     "name": "Instance name",
     "namePlaceholder": "e.g. Main instance",
@@ -324,6 +377,29 @@
     "envAdd": "Add row",
     "envKeyInvalid": "Variable name must match [A-Za-z_][A-Za-z0-9_]*",
     "envKeyReserved": "DSH_HOME is managed by the launcher and cannot be overridden",
+    "envRestartTitle": "Restart the instance to apply environment variables?",
+    "envRestartHint": "Environment variables are injected when the instance starts. This instance is running (profile: {profile}) with the old variables. Restart it now to apply the changes?",
+    "envRestartNoProfile": "Environment variables are injected when the instance starts. This instance is running and has no recorded profile; restart it manually later to apply the new variables.",
+    "envRestartNow": "Restart now",
+    "envRestartLater": "Later",
+    "storageDesc": "Redirect bulky entries of this DSH_HOME (sessions, attachments, storage, …) to another location: the entry inside the HOME is replaced by a link to the target. Only the listed entries are supported; WSL HOMEs are not supported yet.",
+    "storageCaveat": "Note: only the HOME-root global config layer is redirectable (per-profile config under profiles/ is not); file entries may fall back to hard links on Windows and can break when DSH rewrites them atomically — experimental; the target must not live inside this DSH_HOME.",
+    "storageEntry": "Entry",
+    "storageTarget": "Target path",
+    "storageDefault": "Default (inside HOME)",
+    "storageStatus": "Status",
+    "storageActive": "Active",
+    "storageInactive": "Inactive",
+    "storageSet": "Redirect",
+    "storageModify": "Modify",
+    "storageClear": "Clear",
+    "storageSetTitle": "Redirect \"{entry}\"",
+    "storageTargetPath": "Target path",
+    "storageTargetPlaceholder": "e.g. D:\\dsh-data\\sessions",
+    "storageSetHint": "If the entry exists and the target directory is empty, its content is migrated to the target; otherwise it is backed up as .bak-<timestamp>. Stop instances using this HOME first.",
+    "storageClearConfirm": "Only the link is removed; the data stays at the target. Clear this redirection?",
+    "storageSetDone": "Redirection applied",
+    "storageClearDone": "Redirection cleared",
     "profilesDesc": "Manage profiles under this instance's DSH_HOME. The default profile is used when starting the instance.",
     "profilesEmpty": "No profiles yet — add one with the button below",
     "profilesNeedHome": "Pick a DSH_HOME (non-dedicated) in Basic first to manage its profiles.",

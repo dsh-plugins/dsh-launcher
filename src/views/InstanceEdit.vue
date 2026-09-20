@@ -2,11 +2,12 @@
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
-import { Message } from '@arco-design/web-vue'
+import { Message, Modal } from '@arco-design/web-vue'
 import { api } from '@/api'
 import { useLauncherStore } from '@/stores/launcher'
 import type {
   DshInstance,
+  HomeLinkInfo,
   InstalledPlugin,
   McpKv,
   McpServer,
@@ -44,7 +45,7 @@ const homeOptions = computed(() =>
 
 // --- Sidebar tabs ---------------------------------------------------------------
 
-type TabKey = 'basic' | 'env' | 'profiles' | 'plugins' | 'skills' | 'mcp' | 'terminal'
+type TabKey = 'basic' | 'env' | 'profiles' | 'plugins' | 'skills' | 'mcp' | 'storage' | 'terminal'
 const activeTab = ref<TabKey>('basic')
 
 // --- Form state ---------------------------------------------------------------
@@ -252,6 +253,32 @@ async function onViewLog() {
   }
 }
 
+/** Env overrides apply at process launch only (issue #52): when the user
+ * edits them on a running instance, offer an immediate restart so the change
+ * visibly takes effect instead of looking broken. */
+function maybePromptEnvRestart(previous: DshInstance | null, envChanged: boolean) {
+  if (!previous || !envChanged) return
+  if (store.statusOf(previous.id).state !== 'running') return
+  const profile = previous.last_profile ?? previous.default_profile
+  Modal.confirm({
+    title: t('instanceEdit.envRestartTitle'),
+    content: profile
+      ? t('instanceEdit.envRestartHint', { profile })
+      : t('instanceEdit.envRestartNoProfile'),
+    okText: profile ? t('instanceEdit.envRestartNow') : t('common.confirm'),
+    cancelText: t('instanceEdit.envRestartLater'),
+    async onOk() {
+      if (!profile) return
+      try {
+        await api.stopInstance(previous.id)
+        await api.startInstance(previous.id, profile)
+      } catch (e) {
+        Message.error(String(e))
+      }
+    },
+  })
+}
+
 // --- Save ----------------------------------------------------------------------
 
 const formValid = computed(
@@ -273,6 +300,12 @@ async function onSave() {
       resolvedHomeId = home.id
       await store.refreshHomes()
     }
+    // Issue #52: env changes only reach the process at launch. Detect an
+    // env edit on a running instance so we can offer an immediate restart
+    // instead of leaving it on stale variables.
+    const previous = isNew.value ? null : (store.instanceById(editingId.value!) as DshInstance)
+    const envFingerprint = (m: Record<string, string>) => JSON.stringify(Object.entries(m).sort())
+    const envChanged = !!previous && envFingerprint(previous.env_overrides) !== envFingerprint(envOverrides)
     if (isNew.value) {
       await api.createInstance({
         name: name.value.trim(),
@@ -294,6 +327,7 @@ async function onSave() {
     }
     await store.refreshInstances()
     Message.success(t('instanceEdit.saved'))
+    maybePromptEnvRestart(previous, envChanged)
     router.push({ name: 'home' })
   } catch (e) {
     Message.error(String(e))
@@ -944,6 +978,71 @@ watch([pluginProfile, homeId], async () => {
   await loadPlugins()
 })
 
+// --- Storage redirection tab (issue #51) ---------------------------------------
+
+const storageColumns = [
+  { title: t('instanceEdit.storageEntry'), dataIndex: 'entry', width: 180 },
+  { title: t('instanceEdit.storageTarget'), slotName: 'storageTarget' },
+  { title: t('instanceEdit.storageStatus'), slotName: 'storageStatus', width: 110, align: 'center' as const },
+  { title: t('instances.table.actions'), slotName: 'storageActions', width: 190, align: 'center' as const },
+]
+
+const homeLinks = ref<HomeLinkInfo[]>([])
+const homeLinksLoading = ref(false)
+const linkDialogVisible = ref(false)
+const linkEntry = ref('')
+const linkTarget = ref('')
+const linkBusy = ref(false)
+
+async function loadHomeLinks() {
+  if (!homeId.value || homeId.value === DEDICATED) return
+  homeLinksLoading.value = true
+  try {
+    homeLinks.value = await api.listHomeLinks(homeId.value)
+  } catch (e) {
+    Message.error(String(e))
+  } finally {
+    homeLinksLoading.value = false
+  }
+}
+
+function openLinkDialog(link: HomeLinkInfo) {
+  linkEntry.value = link.entry
+  linkTarget.value = link.target
+  linkDialogVisible.value = true
+}
+
+async function confirmSetLink() {
+  const target = linkTarget.value.trim()
+  if (!target) return
+  linkBusy.value = true
+  try {
+    await api.setHomeLink(homeId.value!, linkEntry.value, target)
+    Message.success(t('instanceEdit.storageSetDone'))
+    linkDialogVisible.value = false
+    await store.refreshHomes()
+    await loadHomeLinks()
+  } catch (e) {
+    Message.error(String(e))
+  } finally {
+    linkBusy.value = false
+  }
+}
+
+async function clearLink(link: HomeLinkInfo) {
+  linkBusy.value = true
+  try {
+    await api.clearHomeLink(homeId.value!, link.entry)
+    Message.success(t('instanceEdit.storageClearDone'))
+    await store.refreshHomes()
+    await loadHomeLinks()
+  } catch (e) {
+    Message.error(String(e))
+  } finally {
+    linkBusy.value = false
+  }
+}
+
 // 进入插件页时若未选择 Profile：优先选中实例的默认 Profile；若实例没有
 // 设置默认 Profile，则选中找到的第一个 Profile。
 watch(activeTab, async (tab) => {
@@ -964,6 +1063,10 @@ watch(activeTab, async (tab) => {
       return
     }
     await loadMcpServers()
+    return
+  }
+  if (tab === 'storage') {
+    await loadHomeLinks()
     return
   }
   if (tab !== 'plugins') return
@@ -1159,6 +1262,7 @@ const terminalRunning = ref(false)
         <a-menu-item key="plugins">{{ t('instanceEdit.tabs.plugins') }}</a-menu-item>
         <a-menu-item key="skills">{{ t('instanceEdit.tabs.skills') }}</a-menu-item>
         <a-menu-item key="mcp">{{ t('instanceEdit.tabs.mcp') }}</a-menu-item>
+        <a-menu-item key="storage">{{ t('instanceEdit.tabs.storage') }}</a-menu-item>
         <a-menu-item key="terminal">{{ t('instanceEdit.tabs.terminal') }}</a-menu-item>
       </a-menu>
     </aside>
@@ -1750,6 +1854,59 @@ const terminalRunning = ref(false)
             </a-alert>
           </div>
 
+          <!-- Storage redirection (issue #51) -->
+          <div v-else-if="activeTab === 'storage'" class="dl-card edit-card">
+            <h4 class="env-title">
+              {{ t('instanceEdit.tabs.storage') }}
+              <HintIcon :content="t('instanceEdit.storageDesc')" />
+            </h4>
+
+            <template v-if="homeId && homeId !== DEDICATED">
+              <a-alert type="warning" class="storage-caveat">
+                {{ t('instanceEdit.storageCaveat') }}
+              </a-alert>
+              <a-table
+                :columns="storageColumns"
+                :data="homeLinks"
+                :loading="homeLinksLoading"
+                :pagination="false"
+                size="small"
+              >
+                <template #storageTarget="{ record }">
+                  <span v-if="record.target" class="storage-target">{{ record.target }}</span>
+                  <span v-else class="storage-default">{{ t('instanceEdit.storageDefault') }}</span>
+                </template>
+                <template #storageStatus="{ record }">
+                  <a-tag v-if="record.active" color="green" size="small">
+                    {{ t('instanceEdit.storageActive') }}
+                  </a-tag>
+                  <a-tag v-else-if="record.target" color="orange" size="small">
+                    {{ t('instanceEdit.storageInactive') }}
+                  </a-tag>
+                  <span v-else>-</span>
+                </template>
+                <template #storageActions="{ record }">
+                  <a-button size="mini" :disabled="linkBusy" @click="openLinkDialog(record)">
+                    {{ record.target ? t('instanceEdit.storageModify') : t('instanceEdit.storageSet') }}
+                  </a-button>
+                  <a-popconfirm
+                    v-if="record.target"
+                    :content="t('instanceEdit.storageClearConfirm')"
+                    @ok="clearLink(record)"
+                  >
+                    <a-button size="mini" status="danger" :disabled="linkBusy">
+                      {{ t('instanceEdit.storageClear') }}
+                    </a-button>
+                  </a-popconfirm>
+                </template>
+              </a-table>
+            </template>
+
+            <a-alert v-else type="info">
+              {{ t('instanceEdit.profilesNeedHome') }}
+            </a-alert>
+          </div>
+
           <!-- Terminal -->
           <div v-else class="dl-card edit-card">
             <h4 class="env-title">
@@ -1933,6 +2090,31 @@ const terminalRunning = ref(false)
       </a-form>
     </a-modal>
 
+    <!-- Storage redirection target picker (issue #51) -->
+    <a-modal
+      :visible="linkDialogVisible"
+      :title="t('instanceEdit.storageSetTitle', { entry: linkEntry })"
+      :ok-text="t('common.confirm')"
+      :cancel-text="t('instanceEdit.cancel')"
+      :ok-button-props="{ disabled: !linkTarget.trim(), loading: linkBusy }"
+      width="560px"
+      @ok="confirmSetLink"
+      @cancel="linkDialogVisible = false"
+    >
+      <a-form layout="vertical" :model="{}">
+        <a-form-item :label="t('instanceEdit.storageTargetPath')">
+          <a-input
+            v-model="linkTarget"
+            :placeholder="t('instanceEdit.storageTargetPlaceholder')"
+            allow-clear
+          />
+        </a-form-item>
+        <a-alert type="info">
+          {{ t('instanceEdit.storageSetHint') }}
+        </a-alert>
+      </a-form>
+    </a-modal>
+
   </div>
 </template>
 <style lang="scss" scoped>
@@ -2075,6 +2257,18 @@ const terminalRunning = ref(false)
 
 .profile-add-btn {
   margin-top: 4px;
+}
+
+.storage-caveat {
+  margin-bottom: 12px;
+}
+
+.storage-target {
+  word-break: break-all;
+}
+
+.storage-default {
+  color: var(--color-text-3);
 }
 
 .env-title {

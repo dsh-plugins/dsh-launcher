@@ -116,7 +116,6 @@ pub async fn start_tui_session(
         .instances
         .iter()
         .find(|i| i.id == instance_id)
-        .cloned()
         .ok_or_else(|| "实例不存在".to_string())?;
     let wsl_distro = cfg
         .homes
@@ -180,8 +179,7 @@ pub async fn start_tui_session(
         ));
     }
 
-    let mut env = crate::process::build_env(&cfg, instance_id)?;
-    env.push(("DSH_LAUNCHER_INSTANCE".to_string(), inst.name.clone()));
+    let env = crate::process::build_env(&cfg, instance_id)?;
 
     let pty_system = native_pty_system();
     let pair = pty_system
