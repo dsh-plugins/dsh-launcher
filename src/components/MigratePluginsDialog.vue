@@ -35,9 +35,9 @@ const conflictStrategy = ref<'skip' | 'reinstall'>('skip')
 /** Also copy the source profile's enabled/disabled state. */
 const syncDisabled = ref(true)
 
-/** Local instances other than the target (WSL excluded, as in the install wizard). */
+/** Local instances other than the target (WSL sources copy through \\wsl$\). */
 const sourceInstances = computed(() =>
-  store.instances.filter((i) => i.id !== props.targetInstanceId && !store.homeById(i.home_id)?.wsl),
+  store.instances.filter((i) => i.id !== props.targetInstanceId),
 )
 
 /** Non-registry sources (git tarballs, local files, links) cannot be reinstalled

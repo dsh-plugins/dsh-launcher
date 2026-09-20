@@ -42,7 +42,7 @@ fn home_path_of(state: &AppState, home_id: &str) -> Result<PathBuf, String> {
         .homes
         .iter()
         .find(|h| h.id == home_id)
-        .map(|h| h.path.clone())
+        .map(crate::wsl::home_fs_path)
         .ok_or_else(|| "DSH_HOME 不存在".to_string())
 }
 

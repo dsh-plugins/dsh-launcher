@@ -36,10 +36,7 @@ watch(
 const profiles = ref<string[]>([])
 const profilesLoading = ref(false)
 
-const instances = computed(() =>
-  // Plugin installs operate on local files; WSL instances are unsupported.
-  store.instances.filter((i) => !store.homeById(i.home_id)?.wsl),
-)
+const instances = computed(() => store.instances)
 const selectedInstance = computed(() => store.instanceById(instanceId.value))
 
 /**

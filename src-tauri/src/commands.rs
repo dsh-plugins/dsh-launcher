@@ -406,16 +406,6 @@ pub fn copy_instance(
     if !cfg.versions.iter().any(|v| v.id == source.version_id) {
         return Err("DSH 版本不存在".to_string());
     }
-    // WSL 实例（issue #19）：复制为新的专属 HOME 需要在发行版内创建文件，
-    // 暂不支持；共享源 HOME 的纯记录复制不受限。
-    if input.new_home
-        && cfg
-            .homes
-            .iter()
-            .any(|h| h.id == source.home_id && h.wsl.is_some())
-    {
-        return Err("WSL 实例暂不支持复制到新的专属 HOME".to_string());
-    }
 
     // Resolve the DSH_HOME: reuse the source's, or create a dedicated one.
     let home_id = if input.new_home {
@@ -469,17 +459,18 @@ pub fn copy_instance(
     };
     // A local icon is stored per instance id; copy the file for the clone,
     // falling back to the launcher default when it cannot be carried over.
+    // WSL source homes map through \\wsl$\ (issue #19 follow-up).
     if source.icon.as_deref() == Some("local") {
         let src_home = cfg
             .homes
             .iter()
             .find(|h| h.id == source.home_id)
-            .map(|h| h.path.clone());
+            .map(crate::wsl::home_fs_path);
         let dst_home = cfg
             .homes
             .iter()
             .find(|h| h.id == inst.home_id)
-            .map(|h| h.path.clone());
+            .map(crate::wsl::home_fs_path);
         let copied = match (src_home, dst_home) {
             (Some(src_home), Some(dst_home)) => {
                 let src_icon = crate::icons::local_icon_path(&src_home, &source.id);
@@ -508,7 +499,9 @@ pub fn list_profiles(state: State<'_, AppState>, home_id: String) -> Result<Vec<
         .iter()
         .find(|h| h.id == home_id)
         .ok_or_else(|| "DSH_HOME 不存在".to_string())?;
-    let profiles_dir = home.path.join("profiles");
+    // WSL homes map through \\wsl$\ (issue #19 follow-up): the fs APIs below
+    // operate on the Windows-visible path.
+    let profiles_dir = crate::wsl::home_fs_path(home).join("profiles");
     let mut out = Vec::new();
     if let Ok(entries) = std::fs::read_dir(&profiles_dir) {
         for entry in entries.flatten() {
@@ -549,7 +542,10 @@ pub fn list_profile_infos(
         .iter()
         .find(|h| h.id == home_id)
         .ok_or_else(|| "DSH_HOME 不存在".to_string())?;
-    let profiles_dir = home.path.join("profiles");
+    // WSL homes map through \\wsl$\ (issue #19 follow-up): the fs APIs below
+    // operate on the Windows-visible path.
+    let home_dir = crate::wsl::home_fs_path(home);
+    let profiles_dir = home_dir.join("profiles");
     let mut out = Vec::new();
     if let Ok(entries) = std::fs::read_dir(&profiles_dir) {
         for entry in entries.flatten() {
@@ -559,7 +555,7 @@ pub fn list_profile_infos(
                 continue;
             }
             if entry.path().is_dir() {
-                let kind = match process::profile_kind(&home.path, &name) {
+                let kind = match process::profile_kind(&home_dir, &name) {
                     process::InstanceKind::Web => "web",
                     process::InstanceKind::Tui => "tui",
                     process::InstanceKind::Other => "other",
@@ -593,7 +589,7 @@ pub fn create_profile(
             .iter()
             .find(|h| h.id == home_id)
             .ok_or_else(|| "DSH_HOME 不存在".to_string())?;
-        home.path.join("profiles")
+        crate::wsl::home_fs_path(home).join("profiles")
     };
 
     let temp_dir = profiles_dir.join("__temp__");
@@ -629,7 +625,7 @@ pub fn copy_profile(
             .iter()
             .find(|h| h.id == home_id)
             .ok_or_else(|| "DSH_HOME 不存在".to_string())?;
-        home.path.join("profiles")
+        crate::wsl::home_fs_path(home).join("profiles")
     };
 
     let from = profiles_dir.join(&source);
@@ -681,7 +677,7 @@ pub fn rename_profile(
             .iter()
             .find(|h| h.id == home_id)
             .ok_or_else(|| "DSH_HOME 不存在".to_string())?;
-        home.path.join("profiles")
+        crate::wsl::home_fs_path(home).join("profiles")
     };
 
     let from = profiles_dir.join(&old_name);
@@ -730,7 +726,7 @@ pub fn delete_profile(
             .iter()
             .find(|h| h.id == home_id)
             .ok_or_else(|| "DSH_HOME 不存在".to_string())?;
-        home.path.join("profiles")
+        crate::wsl::home_fs_path(home).join("profiles")
     };
 
     let target = profiles_dir.join(&name);
@@ -966,8 +962,8 @@ fn resolve_instance_paths(
         .find(|v| v.id == inst.version_id)
         .ok_or_else(|| "版本不存在".to_string())?;
     Ok((
-        home.path.clone(),
-        version.dir.clone(),
+        crate::wsl::home_fs_path(home),
+        crate::wsl::version_fs_path(version),
         version.version.clone(),
     ))
 }
@@ -1358,7 +1354,7 @@ fn read_tail(path: &std::path::Path, n: usize) -> Vec<String> {
 
 /// Opens the DSH_HOME directory of one instance in the file manager.
 #[tauri::command]
-pub fn open_instance_directory(
+pub async fn open_instance_directory(
     state: State<'_, AppState>,
     instance_id: String,
 ) -> Result<String, String> {
@@ -1377,7 +1373,9 @@ pub fn open_instance_directory(
         (h.path.clone(), h.wsl.clone())
     };
     // WSL home (issue #19): open the distro's \\wsl$\ UNC share instead.
+    // Ensure the distro is running first so the share is reachable.
     if let Some(distro) = wsl {
+        crate::wsl::ensure_distro_running(&state, &distro).await?;
         let unc = crate::wsl::unc_path(&distro, &home.to_string_lossy());
         crate::log_info!(
             "在文件管理器中打开实例 {instance_id} 的 WSL DSH_HOME {}",
@@ -1441,7 +1439,7 @@ pub async fn create_launch_shortcut(
             .homes
             .iter()
             .find(|h| h.id == inst.home_id)
-            .map(|h| h.path.clone())
+            .map(crate::wsl::home_fs_path)
             .ok_or_else(|| "DSH_HOME 不存在".to_string())?;
         (inst.name.clone(), inst.icon.clone(), home)
     };

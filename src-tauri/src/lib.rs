@@ -50,6 +50,9 @@ pub struct AppState {
     /// from `terminals` (the settings-page shell): different lifecycle,
     /// different status wiring.
     pub tui_sessions: tokio::sync::Mutex<HashMap<String, tui::TuiSession>>,
+    /// WSL distros recently verified running (`wsl.rs::ensure_distro_running`
+    /// TTL cache): distro → last successful boot/probe timestamp.
+    pub distro_ready: tokio::sync::Mutex<HashMap<String, std::time::Instant>>,
     /// URL of each open instance window's page. DSH mints a fresh launch
     /// token per process, so every restart invalidates the token a window was
     /// created with; keeping the last printed URL here lets an already-open
@@ -172,6 +175,7 @@ pub fn run() {
                 last_focused_instance: StdMutex::new(None),
                 terminals: tokio::sync::Mutex::new(HashMap::new()),
                 tui_sessions: tokio::sync::Mutex::new(HashMap::new()),
+                distro_ready: tokio::sync::Mutex::new(HashMap::new()),
                 window_urls: StdMutex::new(HashMap::new()),
             });
 

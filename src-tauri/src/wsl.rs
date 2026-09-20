@@ -75,6 +75,74 @@ pub fn unc_path(distro: &str, linux_path: &str) -> std::path::PathBuf {
     std::path::PathBuf::from(format!(r"\\wsl$\{distro}\{rest}"))
 }
 
+/// Windows-fs-accessible path for a possibly-WSL location: local paths pass
+/// through unchanged; WSL paths map to the distro's `\\wsl$\` UNC share
+/// (usable while the distro is running — call `ensure_distro_running` before
+/// relying on it). This is the single place WSL path mapping happens, so
+/// business code never scatters `unc_path` calls.
+pub fn fs_path(distro: Option<&str>, linux: &std::path::Path) -> std::path::PathBuf {
+    match distro {
+        Some(d) => unc_path(d, &linux.to_string_lossy()),
+        None => linux.to_path_buf(),
+    }
+}
+
+/// Resolves a `DshHome` to the path Windows file APIs can use: `home.path`
+/// as-is for local homes, `\\wsl$\<distro>\…` for WSL homes.
+pub fn home_fs_path(home: &crate::config::DshHome) -> std::path::PathBuf {
+    fs_path(home.wsl.as_deref(), &home.path)
+}
+
+/// Resolves a `DshVersion` install dir for Windows file APIs, mirroring
+/// `home_fs_path` (WSL versions map through `\\wsl$\` too, e.g. bundle
+/// probes in `process::profile_kind`).
+pub fn version_fs_path(ver: &crate::config::DshVersion) -> std::path::PathBuf {
+    fs_path(ver.wsl.as_deref(), &ver.dir)
+}
+
+/// How long a positive `ensure_distro_running` result is trusted. Probing
+/// wsl.exe on every invoke is wasteful for list-heavy flows (profiles,
+/// plugins, skills), so a verified distro is reused for a short window.
+const DISTRO_READY_TTL: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// Ensures a distro is reachable so `\\wsl$\` UNC access works: boots a
+/// stopped distro with `wsl.exe -d <distro> -- true` (a no-op that starts
+/// it) and caches positive results in `AppState` for `DISTRO_READY_TTL`.
+/// Returns a clear error when wsl.exe is missing or the distro is gone.
+pub async fn ensure_distro_running(
+    state: &tauri::State<'_, crate::AppState>,
+    distro: &str,
+) -> Result<(), String> {
+    {
+        let cache = state.distro_ready.lock().await;
+        if cache
+            .get(distro)
+            .map(|t| t.elapsed() < DISTRO_READY_TTL)
+            .unwrap_or(false)
+        {
+            return Ok(());
+        }
+    }
+    let out = wsl_cmd(distro, &["true".to_string()])
+        .output()
+        .await
+        .map_err(|e| format!("wsl.exe 执行失败: {e}"))?;
+    if !out.status.success() {
+        let err = String::from_utf8_lossy(&out.stderr).trim().to_string();
+        return Err(if err.is_empty() {
+            format!("WSL 发行版 {distro} 不可用")
+        } else {
+            format!("WSL 发行版 {distro} 不可用: {err}")
+        });
+    }
+    state
+        .distro_ready
+        .lock()
+        .await
+        .insert(distro.to_string(), std::time::Instant::now());
+    Ok(())
+}
+
 /// Lists installed WSL distros (`wsl.exe -l -q`), excluding the internal
 /// docker-desktop distros. Empty when WSL is unavailable.
 #[cfg(windows)]
@@ -358,6 +426,70 @@ mod tests {
         assert_eq!(
             unc_path("Ubuntu", "/home/u/.dsh-launcher"),
             std::path::PathBuf::from(r"\\wsl$\Ubuntu\home\u\.dsh-launcher")
+        );
+    }
+
+    #[test]
+    fn fs_path_passes_local_through_and_maps_wsl() {
+        let local = std::path::Path::new(r"C:\Users\u\.dsh-launcher\homes\x");
+        assert_eq!(fs_path(None, local), local.to_path_buf());
+
+        let linux = std::path::Path::new("/home/u/.dsh-launcher/homes/x");
+        assert_eq!(
+            fs_path(Some("Ubuntu"), linux),
+            std::path::PathBuf::from(r"\\wsl$\Ubuntu\home\u\.dsh-launcher\homes\x")
+        );
+    }
+
+    #[test]
+    fn home_fs_path_uses_wsl_field() {
+        let local = crate::config::DshHome {
+            id: "h1".into(),
+            name: "local".into(),
+            path: std::path::PathBuf::from(r"C:\homes\l"),
+            wsl: None,
+            links: Default::default(),
+        };
+        assert_eq!(
+            home_fs_path(&local),
+            std::path::PathBuf::from(r"C:\homes\l")
+        );
+
+        let wsl_home = crate::config::DshHome {
+            id: "h2".into(),
+            name: "wsl".into(),
+            path: std::path::PathBuf::from("/home/u/.dsh-launcher/homes/w"),
+            wsl: Some("Ubuntu".into()),
+            links: Default::default(),
+        };
+        assert_eq!(
+            home_fs_path(&wsl_home),
+            std::path::PathBuf::from(r"\\wsl$\Ubuntu\home\u\.dsh-launcher\homes\w")
+        );
+    }
+
+    #[test]
+    fn version_fs_path_maps_wsl_install_dir() {
+        let local = crate::config::DshVersion {
+            id: "v1".into(),
+            version: "0.1.0".into(),
+            dir: std::path::PathBuf::from(r"C:\ver\0.1.0"),
+            wsl: None,
+        };
+        assert_eq!(
+            version_fs_path(&local),
+            std::path::PathBuf::from(r"C:\ver\0.1.0")
+        );
+
+        let wsl_ver = crate::config::DshVersion {
+            id: "v2".into(),
+            version: "0.1.0".into(),
+            dir: std::path::PathBuf::from("/home/u/.dsh-launcher/versions/0.1.0"),
+            wsl: Some("Debian".into()),
+        };
+        assert_eq!(
+            version_fs_path(&wsl_ver),
+            std::path::PathBuf::from(r"\\wsl$\Debian\home\u\.dsh-launcher\versions\0.1.0")
         );
     }
 }
