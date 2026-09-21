@@ -407,7 +407,19 @@ async function onRemoveHome(id: string) {
 const homeColumns = computed(() => [
   { title: t('settings.homeName'), dataIndex: 'name', width: 180 },
   { title: t('settings.homePath'), dataIndex: 'path', ellipsis: true, tooltip: true },
-  { title: t('instances.table.actions'), slotName: 'actions', width: 110, align: 'center' as const },
+  { title: t('instances.table.actions'), slotName: 'actions', width: 110, align: 'center' as const, fixed: 'right' as const },
+])
+
+// Plugin sources rendered as a table (like the DSH_HOME card): long URLs get
+// ellipsis + tooltip, the action column is pinned right and never squeezed
+// away, and headers stay strictly aligned with their columns (issue #13).
+const pluginSourceColumns = computed(() => [
+  { title: t('settings.pluginSources.enable'), slotName: 'psEnable', width: 90 },
+  { title: t('settings.pluginSources.id'), dataIndex: 'id', width: 160, ellipsis: true, tooltip: true },
+  { title: t('settings.pluginSources.kind'), slotName: 'psKind', width: 120 },
+  { title: t('settings.pluginSources.confidence'), slotName: 'psConf', width: 120 },
+  { title: t('settings.pluginSources.url'), dataIndex: 'url', ellipsis: true, tooltip: true },
+  { title: t('instances.table.actions'), slotName: 'psActions', width: 180, align: 'center' as const, fixed: 'right' as const },
 ])
 </script>
 
@@ -619,59 +631,53 @@ const homeColumns = computed(() => [
           {{ t('settings.pluginSources.add') }}
         </a-button>
       </div>
-      <div v-if="store.settings.plugin_sources.length" class="plugin-source-head">
-        <span class="ps-col-enable">{{ t('settings.pluginSources.enable') }}</span>
-        <span class="ps-col-id">{{ t('settings.pluginSources.id') }}</span>
-        <span class="ps-col-kind">{{ t('settings.pluginSources.kind') }}</span>
-        <span class="ps-col-conf">{{ t('settings.pluginSources.confidence') }}</span>
-        <span class="ps-col-url">{{ t('settings.pluginSources.url') }}</span>
-      </div>
-      <a-list :data="store.settings.plugin_sources" size="small">
-        <template #item="{ item, index }">
-          <a-list-item>
-            <div class="plugin-source-row">
-              <span class="ps-col-enable">
-                <a-switch
-                  :model-value="item.enabled"
-                  :disabled="pluginSourceBusy"
-                  @change="(v) => onPluginSourceEnabledChange(item, v)"
-                />
-              </span>
-              <span class="ps-col-id plugin-source-id">{{ item.id }}</span>
-              <span class="ps-col-kind">
-                <a-tag size="small">{{ t(`settings.pluginSources.sourceKinds.${
-                  item.kind === 'dsh-get' ? 'dshGet' : item.kind === 'github-topic' ? 'githubTopic' : item.kind
-                }`) }}</a-tag>
-              </span>
-              <span class="ps-col-conf">
-                <a-tag size="small" :color="CONFIDENCE_TAG_COLORS[item.confidence as Confidence]">
-                  {{ t(`plugins.confidence.${item.confidence}`) }}
-                </a-tag>
-              </span>
-              <span class="ps-col-url plugin-source-url" :title="item.url">{{ item.url }}</span>
-            </div>
-            <template #actions>
-              <a-button size="mini" type="text" :disabled="pluginSourceBusy || index === 0" @click="onMovePluginSource(index, -1)">
-                ↑
-              </a-button>
-              <a-button
-                size="mini"
-                type="text"
-                :disabled="pluginSourceBusy || index === store.settings.plugin_sources.length - 1"
-                @click="onMovePluginSource(index, 1)"
-              >
-                ↓
-              </a-button>
-              <a-button size="mini" status="danger" type="text" :disabled="pluginSourceBusy" @click="onRemovePluginSource(item.id)">
-                {{ t('settings.pluginSources.delete') }}
-              </a-button>
-            </template>
-          </a-list-item>
+      <a-table
+        :columns="pluginSourceColumns"
+        :data="store.settings.plugin_sources"
+        :pagination="false"
+        :scroll="{ x: 980 }"
+        row-key="id"
+        size="small"
+      >
+        <template #psEnable="{ record }">
+          <a-switch
+            :model-value="record.enabled"
+            :disabled="pluginSourceBusy"
+            @change="(v) => onPluginSourceEnabledChange(record, v)"
+          />
+        </template>
+        <template #psKind="{ record }">
+          <a-tag size="small">{{ t(`settings.pluginSources.sourceKinds.${
+            record.kind === 'dsh-get' ? 'dshGet' : record.kind === 'github-topic' ? 'githubTopic' : record.kind
+          }`) }}</a-tag>
+        </template>
+        <template #psConf="{ record }">
+          <a-tag size="small" :color="CONFIDENCE_TAG_COLORS[record.confidence as Confidence]">
+            {{ t(`plugins.confidence.${record.confidence}`) }}
+          </a-tag>
+        </template>
+        <template #psActions="{ record, rowIndex }">
+          <a-space :size="4">
+            <a-button size="mini" type="text" :disabled="pluginSourceBusy || rowIndex === 0" @click="onMovePluginSource(rowIndex, -1)">
+              ↑
+            </a-button>
+            <a-button
+              size="mini"
+              type="text"
+              :disabled="pluginSourceBusy || rowIndex === store.settings.plugin_sources.length - 1"
+              @click="onMovePluginSource(rowIndex, 1)"
+            >
+              ↓
+            </a-button>
+            <a-button size="mini" status="danger" type="text" :disabled="pluginSourceBusy" @click="onRemovePluginSource(record.id)">
+              {{ t('settings.pluginSources.delete') }}
+            </a-button>
+          </a-space>
         </template>
         <template #empty>
           <a-empty :description="t('settings.pluginSources.empty')" />
         </template>
-      </a-list>
+      </a-table>
     </div>
 
     <div class="dl-card">
@@ -752,7 +758,7 @@ const homeColumns = computed(() => [
         </a-button>
       </div>
 
-      <a-table :columns="homeColumns" :data="store.homes" :pagination="false" row-key="id">
+      <a-table :columns="homeColumns" :data="store.homes" :pagination="false" :scroll="{ x: 700 }" row-key="id">
         <template #actions="{ record }">
           <a-popconfirm
             :content="t('settings.confirmDeleteHome', { name: record.name })"
@@ -792,59 +798,6 @@ const homeColumns = computed(() => [
   min-width: 220px;
 }
 
-.plugin-source-head,
-.plugin-source-row {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-}
-
-.plugin-source-head {
-  color: var(--color-text-3);
-  font-size: 12px;
-  padding: 0 12px 6px;
-}
-
-.ps-col-enable {
-  width: 60px;
-  flex-shrink: 0;
-}
-
-.ps-col-id {
-  width: 160px;
-  flex-shrink: 0;
-}
-
-.ps-col-kind {
-  width: 110px;
-  flex-shrink: 0;
-}
-
-.ps-col-conf {
-  width: 110px;
-  flex-shrink: 0;
-}
-
-.ps-col-url {
-  flex: 1;
-  min-width: 0;
-}
-
-.plugin-source-id {
-  font-size: 13px;
-  font-weight: 600;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.plugin-source-url {
-  font-size: 12px;
-  color: var(--color-text-3);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
 .settings-form {
   max-width: 560px;
 }
@@ -869,10 +822,19 @@ const homeColumns = computed(() => [
   align-items: center;
   gap: 10px;
   margin-bottom: 8px;
+  /* Version tag and channel select must never wrap or squeeze the version
+     string (e.g. v0.2.4-dev.133) onto two lines (issue #13). */
+  flex-wrap: nowrap;
 }
 
 .update-channel-select {
   width: 140px;
+  flex-shrink: 0;
+}
+
+.update-row :deep(.arco-tag) {
+  flex-shrink: 0;
+  white-space: nowrap;
 }
 
 .data-dir-path {
@@ -907,6 +869,8 @@ const homeColumns = computed(() => [
 
 .update-current {
   font-weight: 600;
+  white-space: nowrap;
+  flex-shrink: 0;
 }
 
 .update-result {

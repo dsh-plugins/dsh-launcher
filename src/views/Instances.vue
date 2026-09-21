@@ -31,8 +31,10 @@ const columns = computed(() => [
   { title: t('instances.table.version'), slotName: 'version', width: 140 },
   { title: t('instances.table.home'), slotName: 'home', width: 180 },
   { title: t('instances.table.profile'), slotName: 'profile', width: 120 },
-  { title: t('instances.table.status'), slotName: 'status' },
-  { title: t('instances.table.actions'), slotName: 'actions', width: 200, align: 'center' as const },
+  { title: t('instances.table.status'), slotName: 'status', width: 140 },
+  // Action column pinned right: the table scrolls horizontally when narrow,
+  // but the actions never scroll away (issue #13).
+  { title: t('instances.table.actions'), slotName: 'actions', width: 200, align: 'center' as const, fixed: 'right' as const },
 ])
 
 // --- Instance icons (issue #8): resolved lazily per instance -------------------
@@ -174,7 +176,7 @@ async function onOpenWindow(id: string) {
         </div>
       </div>
 
-      <a-table :columns="columns" :data="store.instances" :pagination="false" row-key="id">
+      <a-table :columns="columns" :data="store.instances" :pagination="false" :scroll="{ x: 1000 }" row-key="id">
         <template #name="{ record }">
           <span class="inst-name">
             <img v-if="iconMap[record.id]" :src="iconMap[record.id]!" class="inst-icon" alt="" />

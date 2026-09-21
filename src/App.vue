@@ -393,6 +393,9 @@ async function onHeaderMouseDown(e: MouseEvent) {
   padding: 0 20px;
   background: var(--color-bg-2);
   border-bottom: 1px solid var(--color-border-2);
+  /* The nav menu is centered against the whole header, independent of the
+     brand / window-control widths. */
+  position: relative;
 }
 
 .app-brand {
@@ -447,7 +450,11 @@ async function onHeaderMouseDown(e: MouseEvent) {
 }
 
 .app-menu {
-  flex: 1;
+  // Centered in the header (issue #13): absolutely positioned so neither the
+  // brand on the left nor the window controls on the right shift it.
+  position: absolute;
+  left: 50%;
+  transform: translateX(-50%);
   // Keep transparent so the header's border-bottom shows through below the
   // menu instead of being covered by a menu background.
   background: transparent;
@@ -456,6 +463,7 @@ async function onHeaderMouseDown(e: MouseEvent) {
   :deep(.arco-menu-inner) {
     background: transparent;
     border-bottom: none;
+    justify-content: center;
   }
 }
 

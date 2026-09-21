@@ -519,7 +519,7 @@ const skillColumns = computed(() => [
   { title: t('instanceEdit.skillColName'), dataIndex: 'name', width: 180 },
   { title: t('instanceEdit.skillColDesc'), dataIndex: 'description', ellipsis: true, tooltip: true },
   { title: t('instanceEdit.skillColOrigin'), slotName: 'origin', width: 220 },
-  { title: t('instances.table.actions'), slotName: 'skillActions', width: 170, align: 'center' as const },
+  { title: t('instances.table.actions'), slotName: 'skillActions', width: 170, align: 'center' as const, fixed: 'right' as const },
 ])
 
 async function loadSkills() {
@@ -716,7 +716,7 @@ const mcpColumns = computed(() => [
   { title: t('instanceEdit.mcpColTransport'), slotName: 'mcpTransport', width: 150 },
   { title: t('instanceEdit.mcpColTarget'), slotName: 'mcpTarget', ellipsis: true, tooltip: true },
   { title: t('instanceEdit.mcpColStatus'), slotName: 'mcpStatus', width: 110 },
-  { title: t('instances.table.actions'), slotName: 'mcpActions', width: 150, align: 'center' as const },
+  { title: t('instances.table.actions'), slotName: 'mcpActions', width: 150, align: 'center' as const, fixed: 'right' as const },
 ])
 
 async function loadMcpServers() {
@@ -984,7 +984,7 @@ const storageColumns = [
   { title: t('instanceEdit.storageEntry'), dataIndex: 'entry', width: 180 },
   { title: t('instanceEdit.storageTarget'), slotName: 'storageTarget' },
   { title: t('instanceEdit.storageStatus'), slotName: 'storageStatus', width: 110, align: 'center' as const },
-  { title: t('instances.table.actions'), slotName: 'storageActions', width: 190, align: 'center' as const },
+  { title: t('instances.table.actions'), slotName: 'storageActions', width: 190, align: 'center' as const, fixed: 'right' as const },
 ]
 
 const homeLinks = ref<HomeLinkInfo[]>([])
@@ -1302,13 +1302,13 @@ const terminalRunning = ref(false)
                       style="max-width: 300px"
                     />
                     <a-space>
-                      <a-button size="small" :loading="iconBusy" :disabled="!iconInput.trim()" @click="applyIconInput">
+                      <a-button :loading="iconBusy" :disabled="!iconInput.trim()" @click="applyIconInput">
                         {{ t('instanceEdit.iconApply') }}
                       </a-button>
-                      <a-button size="small" :loading="iconBusy" @click="pickIconFile">
+                      <a-button :loading="iconBusy" @click="pickIconFile">
                         {{ t('instanceEdit.iconPickFile') }}
                       </a-button>
-                      <a-button v-if="iconUrl" size="small" status="danger" @click="clearIcon">
+                      <a-button v-if="iconUrl" status="danger" @click="clearIcon">
                         {{ t('instanceEdit.iconClear') }}
                       </a-button>
                     </a-space>
@@ -1364,7 +1364,7 @@ const terminalRunning = ref(false)
                     style="width: 200px"
                     @press-enter="applyPort"
                   />
-                  <a-button size="small" :loading="portBusy" @click="applyPort">
+                  <a-button :loading="portBusy" @click="applyPort">
                     {{ t('instanceEdit.portApply') }}
                   </a-button>
                 </a-space>
@@ -1546,21 +1546,18 @@ const terminalRunning = ref(false)
                   <a-option v-for="p in profiles" :key="p" :value="p">{{ p }}</a-option>
                 </a-select>
                 <a-button
-                  size="small"
                   :disabled="!pluginProfile"
                   @click="migrateVisible = true"
                 >
                   {{ t('plugins.migrateOpen') }}
                 </a-button>
                 <a-button
-                  size="small"
                   :disabled="!pluginProfile"
                   @click="importLocalPlugin"
                 >
                   {{ t('instanceEdit.pluginImportLocal') }}
                 </a-button>
                 <a-button
-                  size="small"
                   type="primary"
                   :disabled="!pluginProfile || updatableIds.length === 0 || pluginsBusy"
                   @click="updatePlugins(updatableIds)"
@@ -1568,7 +1565,6 @@ const terminalRunning = ref(false)
                   {{ t('instanceEdit.pluginUpdateAll', { count: updatableIds.length }) }}
                 </a-button>
                 <a-button
-                  size="small"
                   :disabled="!pluginProfile"
                   :loading="pluginsLoading"
                   @click="loadPlugins"
@@ -1584,6 +1580,7 @@ const terminalRunning = ref(false)
                   :row-selection="rowSelection"
                   row-key="id"
                   :pagination="false"
+                  :scroll="{ x: 900 }"
                   class="plugins-table"
                   @selection-change="onSelectionChange"
                 >
@@ -1616,7 +1613,7 @@ const terminalRunning = ref(false)
                         />
                       </template>
                     </a-table-column>
-                    <a-table-column :title="t('instanceEdit.pluginActions')" :width="160">
+                    <a-table-column :title="t('instanceEdit.pluginActions')" :width="160" fixed="right">
                       <template #cell="{ record }">
                         <a-space>
                           <a-button
@@ -1733,6 +1730,7 @@ const terminalRunning = ref(false)
                 :data="skills"
                 :loading="skillsLoading"
                 :pagination="false"
+                :scroll="{ x: 860 }"
                 row-key="name"
                 size="small"
               >
@@ -1795,10 +1793,10 @@ const terminalRunning = ref(false)
                     {{ t('instanceEdit.mcpScopeProfile') }} · {{ p }}
                   </a-option>
                 </a-select>
-                <a-button size="small" type="primary" @click="openMcpCreate">
+                <a-button type="primary" @click="openMcpCreate">
                   {{ t('instanceEdit.mcpAdd') }}
                 </a-button>
-                <a-button size="small" type="text" :loading="mcpLoading" @click="loadMcpServers">
+                <a-button type="text" :loading="mcpLoading" @click="loadMcpServers">
                   ⟳
                 </a-button>
               </div>
@@ -1809,6 +1807,7 @@ const terminalRunning = ref(false)
                 :data="mcpServers"
                 :loading="mcpLoading"
                 :pagination="false"
+                :scroll="{ x: 900 }"
                 row-key="id"
                 size="small"
               >
@@ -1885,6 +1884,7 @@ const terminalRunning = ref(false)
                 :data="homeLinks"
                 :loading="homeLinksLoading"
                 :pagination="false"
+                :scroll="{ x: 900 }"
                 size="small"
               >
                 <template #storageTarget="{ record }">
