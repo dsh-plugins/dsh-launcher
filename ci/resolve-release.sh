@@ -4,6 +4,10 @@
 #   branch push (main)  -> prerelease  v<manifest>-dev.<run_number>
 #   exact version tag   -> stable      v<manifest> (tag must match manifest)
 #
+# Optional 4th arg: `with-commits` collects the "What's Changed" commit list
+# BEFORE creating the release (needs full git history in the checkout) and
+# uses it as the initial body; otherwise the placeholder body is used.
+#
 # The release is created PUBLISHED (draft=false) with a real git tag, exactly
 # like the reference GugleFS pipeline. Draft releases are deliberately
 # avoided: their tag association is eventual-consistency and tauri-action's
@@ -14,6 +18,7 @@ set -euo pipefail
 REF_TYPE="${1:?ref type}"      # branch | tag
 REF_NAME="${2:?ref name}"      # main | v0.1.0
 RUN_NUMBER="${3:?run number}"
+WITH_COMMITS="${4:-}"          # with-commits | empty
 REPO="${GITHUB_REPOSITORY:?}"
 GH_TOKEN="${GH_TOKEN:?}"
 
@@ -41,11 +46,20 @@ if [[ -n "$RELEASE_ID" ]]; then
   echo "reusing existing release $RELEASE_ID ($TAG)"
 else
   # Create a published release; GitHub creates the git tag from target_commitish.
+  # with-commits: the release is born with its "What's Changed" section (the
+  # downloads table is still appended by update-release-notes.sh once the
+  # packaging matrix has uploaded the artifacts).
+  BODY_ARGS=(-f "body=Preparing artifacts…")
+  if [[ "$WITH_COMMITS" == "with-commits" ]]; then
+    ./ci/collect-commits.sh "$TAG" commits.txt
+    node ci/release-notes-render.mjs "$TAG" - commits.txt > release-body.md
+    BODY_ARGS=(-F "body=@release-body.md")
+  fi
   RELEASE_ID="$(gh api "repos/$REPO/releases" \
     -f tag_name="$TAG" \
     -f target_commitish="$GITHUB_SHA" \
     -f name="$TAG" \
-    -f body="Preparing artifacts…" \
+    "${BODY_ARGS[@]}" \
     -F draft=false \
     -F prerelease="$PRERELEASE" \
     --jq .id)"

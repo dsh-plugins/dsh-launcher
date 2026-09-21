@@ -70,3 +70,16 @@ test('empty commit list renders an empty What\'s Changed section', () => {
   const body = render(TAG, ASSETS, [], { repo: REPO })
   assert.ok(body.includes('## What\'s Changed'))
 })
+
+test('commits-only mode omits Downloads and keeps the commit list', () => {
+  // Initial release body, rendered BEFORE the release is created (no assets
+  // uploaded yet).
+  const body = render(TAG, null, COMMITS, { repo: REPO })
+  assert.ok(!body.includes('## Downloads'))
+  assert.ok(body.includes('## What\'s Changed'))
+  for (const c of COMMITS) {
+    assert.ok(body.includes(`* ${c}`), `expected commit line for ${c}`)
+  }
+  // English-only.
+  assert.ok(!body.includes('简体中文'))
+})

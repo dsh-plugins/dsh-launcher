@@ -28,9 +28,26 @@ const KIND_ORDER = { exe: 0, msi: 1, AppImage: 2, deb: 3, rpm: 4, dmg: 5 }
 /**
  * Renders the English-only "Downloads" table plus the "What's Changed"
  * commit list. Every artifact row links directly to its release-asset
- * download URL.
+ * download URL. With `assets = null` (commits-only mode, used for the
+ * initial release body before packaging finishes) the Downloads section is
+ * omitted and a preparation note is rendered instead.
  */
 export function render(tag, assets, commits, { repo = 'REPO' } = {}) {
+  const commitLines = (commits ?? [])
+    .map((c) => `* ${c}`)
+    .join('\n')
+
+  if (assets === null) {
+    return `_Artifacts are being prepared; the downloads table will appear here once packaging finishes._
+
+---
+
+## What's Changed
+
+${commitLines}
+`
+  }
+
   const sorted = [...assets]
     .filter((a) => classify(a))
     .sort((a, b) => {
@@ -46,10 +63,6 @@ export function render(tag, assets, commits, { repo = 'REPO' } = {}) {
     return `| ${PLATFORM_OF_KIND[c.kind]} | ${c.arch} | [${name}](${link(name)}) (${KIND_LABEL_EN[c.kind]}) |`
   })
 
-  const commitLines = (commits ?? [])
-    .map((c) => `* ${c}`)
-    .join('\n')
-
   return `## Downloads
 
 | Platform | Architecture | File |
@@ -64,20 +77,24 @@ ${commitLines}
 `
 }
 
-// CLI mode: node ci/release-notes-render.mjs <tag> <assets-json> <commits-file>
+// CLI mode:
+//   node ci/release-notes-render.mjs <tag> <assets-json> <commits-file>
+//   node ci/release-notes-render.mjs <tag> - <commits-file>   (commits-only)
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { readFileSync } from 'node:fs'
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   const [, , tag, assetsJson, commitsFile] = process.argv
-  const assets = JSON.parse(assetsJson)
+  const assets = assetsJson === '-' ? null : JSON.parse(assetsJson)
   const commits = commitsFile
     ? readFileSync(commitsFile, 'utf8').split('\n').map((s) => s.trim()).filter(Boolean)
     : []
   const repo = process.env.GITHUB_REPOSITORY ?? 'REPO'
-  const unknown = assets.filter((a) => !classify(a))
-  if (unknown.length > 0) {
-    console.error(`release-note classifier rejected assets: ${unknown.join(', ')}`)
-    process.exit(1)
+  if (assets !== null) {
+    const unknown = assets.filter((a) => !classify(a))
+    if (unknown.length > 0) {
+      console.error(`release-note classifier rejected assets: ${unknown.join(', ')}`)
+      process.exit(1)
+    }
   }
   process.stdout.write(render(tag, assets, commits, { repo }))
 }

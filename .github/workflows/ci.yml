@@ -88,12 +88,16 @@ jobs:
       prerelease: ${{ steps.release.outputs.prerelease }}
     steps:
       - uses: actions/checkout@v5
+        with:
+          # Full history + tags: prepare collects the "What's Changed" commit
+          # list BEFORE creating the release (ci/collect-commits.sh).
+          fetch-depth: 0
       - name: Resolve idempotent release
         id: release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITHUB_REPOSITORY: ${{ github.repository }}
-        run: ./ci/resolve-release.sh "$GITHUB_REF_TYPE" "$GITHUB_REF_NAME" "$GITHUB_RUN_NUMBER"
+        run: ./ci/resolve-release.sh "$GITHUB_REF_TYPE" "$GITHUB_REF_NAME" "$GITHUB_RUN_NUMBER" with-commits
 
   build:
     name: Package (${{ matrix.target }})
