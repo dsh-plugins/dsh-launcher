@@ -109,3 +109,18 @@ body {
     }
   }
 }
+
+// Empty tables (issue #13): with no rows there is nothing to scroll, but the
+// forced horizontal scroll still renders a strip that overlaps the column
+// titles — hide every scrollbar until data exists.
+.arco-table-empty {
+  .arco-table-content,
+  .arco-table-body,
+  .arco-table-header {
+    scrollbar-width: none;
+
+    &::-webkit-scrollbar {
+      display: none;
+    }
+  }
+}

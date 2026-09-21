@@ -458,9 +458,12 @@ async function onHeaderMouseDown(e: MouseEvent) {
 
 .app-menu {
   // Middle grid column: the menu shrink-wraps and sits at the header's true
-  // center.
+  // center. Arco sets width:100% on horizontal menus, which inside an auto
+  // grid track measures too small and folds the last item into a "···"
+  // overflow dropdown — max-content keeps every item visible (issue #13).
   grid-column: 2;
   justify-self: center;
+  width: max-content;
   // Keep transparent so the header's border-bottom shows through below the
   // menu instead of being covered by a menu background.
   background: transparent;
