@@ -322,7 +322,7 @@ async function mockCall<T>(cmd: string, args?: Record<string, unknown>): Promise
       return db.homes as T
     // Issue #51 (mock): storage redirection backed by home.links.
     case 'list_home_links': {
-      const home = db.homes.find((h) => h.id === String(args?.home_id))
+      const home = db.homes.find((h) => h.id === String(args?.homeId))
       if (!home) fail('DSH_HOME 不存在')
       const links = home.links ?? {}
       return Object.entries(MOCK_LINK_KINDS).map(([entry, is_dir]) => ({
@@ -333,7 +333,7 @@ async function mockCall<T>(cmd: string, args?: Record<string, unknown>): Promise
       })) as T
     }
     case 'set_home_link': {
-      const home = db.homes.find((h) => h.id === String(args?.home_id))
+      const home = db.homes.find((h) => h.id === String(args?.homeId))
       if (!home) fail('DSH_HOME 不存在')
       const entry = String(args?.entry ?? '')
       if (!(entry in MOCK_LINK_KINDS)) fail(`不支持重定向的条目: ${entry}`)
@@ -342,7 +342,7 @@ async function mockCall<T>(cmd: string, args?: Record<string, unknown>): Promise
       return undefined as T
     }
     case 'clear_home_link': {
-      const home = db.homes.find((h) => h.id === String(args?.home_id))
+      const home = db.homes.find((h) => h.id === String(args?.homeId))
       if (!home) fail('DSH_HOME 不存在')
       if (home.links) delete home.links[String(args?.entry ?? '')]
       saveDb(db)
@@ -1319,11 +1319,11 @@ export const api = {
   listHomes: () => call<DshHome[]>('list_homes'),
   createHome: (name: string, path: string) => call<DshHome>('create_home', { name, path }),
   removeHome: (id: string) => call<void>('remove_home', { id }),
-  listHomeLinks: (homeId: string) => call<HomeLinkInfo[]>('list_home_links', { home_id: homeId }),
+  listHomeLinks: (homeId: string) => call<HomeLinkInfo[]>('list_home_links', { homeId }),
   setHomeLink: (homeId: string, entry: string, target: string) =>
-    call<void>('set_home_link', { home_id: homeId, entry, target }),
+    call<void>('set_home_link', { homeId, entry, target }),
   clearHomeLink: (homeId: string, entry: string) =>
-    call<void>('clear_home_link', { home_id: homeId, entry }),
+    call<void>('clear_home_link', { homeId, entry }),
   defaultDedicatedHomePath: (name: string) => call<string>('default_dedicated_home_path', { name }),
 
   listVersions: () => call<DshVersion[]>('list_versions'),
