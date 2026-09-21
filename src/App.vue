@@ -465,15 +465,28 @@ async function onHeaderMouseDown(e: MouseEvent) {
   justify-self: center;
   width: 320px;
   max-width: 100%;
+  // Exactly header height: Arco's 14px vertical inner padding makes the menu
+  // 58px tall, pushing the selected-item indicator 6px past the header's
+  // bottom edge.
+  height: 100%;
   // Keep transparent so the header's border-bottom shows through below the
   // menu instead of being covered by a menu background.
   background: transparent;
   border-bottom: none;
 
   :deep(.arco-menu-inner) {
+    height: 100%;
+    padding-top: 0;
+    padding-bottom: 0;
     background: transparent;
     border-bottom: none;
     justify-content: center;
+  }
+
+  :deep(.arco-menu-selected-label) {
+    // Arco anchors the indicator 14px below the item (the padding we removed);
+    // 11px keeps the 3px bar flush with the header's inner bottom edge.
+    bottom: -11px;
   }
 }
 
