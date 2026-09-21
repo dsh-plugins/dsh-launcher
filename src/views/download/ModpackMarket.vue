@@ -98,6 +98,7 @@ onMounted(() => {
             v-model="search"
             :placeholder="t('modpack.marketSearch')"
             allow-clear
+            size="small"
             class="search-input"
           />
           <a-button size="small" type="text" :loading="store.modpackMarketLoading" @click="load">
@@ -273,6 +274,8 @@ onMounted(() => {
 .modpack-side {
   display: flex;
   align-items: center;
+  /* Vertically center the install button within the top-aligned row (issue #13). */
+  align-self: center;
   flex-shrink: 0;
 }
 </style>

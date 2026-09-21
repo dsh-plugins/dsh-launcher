@@ -157,6 +157,7 @@ onBeforeUnmount(() => {
             v-model="search"
             :placeholder="t('plugins.searchPlaceholder')"
             allow-clear
+            size="small"
             class="search-input"
           />
           <a-button size="small" type="text" :loading="store.marketLoading" @click="load">
@@ -326,6 +327,9 @@ onBeforeUnmount(() => {
 .plugin-side {
   display: flex;
   align-items: center;
+  /* Row uses align-items: flex-start for the meta block; the side (support
+     badge + › arrow) must still sit at the row's vertical center (issue #13). */
+  align-self: center;
   gap: 10px;
   flex-shrink: 0;
 }
