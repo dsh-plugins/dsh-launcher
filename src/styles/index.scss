@@ -67,3 +67,35 @@ body {
   gap: 8px;
   align-items: center;
 }
+
+// Tables (issue #13): slim, unobtrusive scrollbars. The default native
+// scrollbar renders an opaque track strip inside the table body that covers
+// the last row / right column; a slim transparent-track thumb keeps the
+// content readable.
+.arco-table {
+  .arco-table-body,
+  .arco-table-content {
+    scrollbar-width: thin;
+    scrollbar-color: var(--color-fill-4) transparent;
+
+    &::-webkit-scrollbar {
+      width: 8px;
+      height: 8px;
+      background: transparent;
+    }
+
+    &::-webkit-scrollbar-track,
+    &::-webkit-scrollbar-corner {
+      background: transparent;
+    }
+
+    &::-webkit-scrollbar-thumb {
+      background: var(--color-fill-4);
+      border-radius: 4px;
+
+      &:hover {
+        background: var(--color-fill-3);
+      }
+    }
+  }
+}

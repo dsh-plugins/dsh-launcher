@@ -393,8 +393,10 @@ async function onHeaderMouseDown(e: MouseEvent) {
   padding: 0 20px;
   background: var(--color-bg-2);
   border-bottom: 1px solid var(--color-border-2);
-  /* The nav menu is centered against the whole header, independent of the
-     brand / window-control widths. */
+  /* Brand and window controls are absolutely positioned at the edges so the
+     in-flow nav menu spans the full header and centers itself exactly (issue
+     #13) — a previous attempt absolutely positioned the menu instead, which
+     collapsed it to the far left. */
   position: relative;
 }
 
@@ -402,7 +404,11 @@ async function onHeaderMouseDown(e: MouseEvent) {
   display: flex;
   align-items: center;
   gap: 8px;
-  margin-right: 32px;
+  /* Absolute at the left edge: keeps the in-flow menu free to occupy (and
+     center within) the whole header width. */
+  position: absolute;
+  left: 20px;
+  top: 0;
   white-space: nowrap;
   height: 100%;
   cursor: default;
@@ -424,7 +430,11 @@ async function onHeaderMouseDown(e: MouseEvent) {
   display: flex;
   align-items: center;
   gap: 2px;
-  margin-right: -12px;
+  /* Absolute at the right edge (the header padding is 20px; the extra -12px
+     optically aligns the close button with the window frame). */
+  position: absolute;
+  right: 8px;
+  top: 0;
 }
 
 .wc-btn {
@@ -450,11 +460,10 @@ async function onHeaderMouseDown(e: MouseEvent) {
 }
 
 .app-menu {
-  // Centered in the header (issue #13): absolutely positioned so neither the
-  // brand on the left nor the window controls on the right shift it.
-  position: absolute;
-  left: 50%;
-  transform: translateX(-50%);
+  // In-flow, spanning the full header: its items are centered against the
+  // header's true center (brand / window controls are absolutely positioned).
+  flex: 1;
+  min-width: 0;
   // Keep transparent so the header's border-bottom shows through below the
   // menu instead of being covered by a menu background.
   background: transparent;
