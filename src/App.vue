@@ -343,7 +343,9 @@ async function onHeaderMouseDown(e: MouseEvent) {
   display: flex;
   align-items: center;
   gap: 12px;
-  flex: 1;
+  // Instance pages have no brand/menu: span the first two grid columns.
+  grid-column: 1 / 3;
+  justify-self: start;
   min-width: 0;
   height: 100%;
 }
@@ -386,17 +388,17 @@ async function onHeaderMouseDown(e: MouseEvent) {
 }
 
 .app-header {
-  display: flex;
+  // Three-column grid: brand left, nav menu exactly centered, window controls
+  // right. Deterministic regardless of Arco's menu-internal styles (issue
+  // #13 — flex/absolute variants all lost specificity fights or collapsed).
+  display: grid;
+  grid-template-columns: 1fr auto 1fr;
   align-items: center;
   flex-shrink: 0;
   height: var(--dl-header-height);
   padding: 0 20px;
   background: var(--color-bg-2);
   border-bottom: 1px solid var(--color-border-2);
-  /* Brand and window controls are absolutely positioned at the edges so the
-     in-flow nav menu spans the full header and centers itself exactly (issue
-     #13) — a previous attempt absolutely positioned the menu instead, which
-     collapsed it to the far left. */
   position: relative;
 }
 
@@ -404,11 +406,8 @@ async function onHeaderMouseDown(e: MouseEvent) {
   display: flex;
   align-items: center;
   gap: 8px;
-  /* Absolute at the left edge: keeps the in-flow menu free to occupy (and
-     center within) the whole header width. */
-  position: absolute;
-  left: 20px;
-  top: 0;
+  grid-column: 1;
+  justify-self: start;
   white-space: nowrap;
   height: 100%;
   cursor: default;
@@ -430,11 +429,9 @@ async function onHeaderMouseDown(e: MouseEvent) {
   display: flex;
   align-items: center;
   gap: 2px;
-  /* Absolute at the right edge (the header padding is 20px; the extra -12px
-     optically aligns the close button with the window frame). */
-  position: absolute;
-  right: 8px;
-  top: 0;
+  grid-column: 3;
+  justify-self: end;
+  margin-right: -12px;
 }
 
 .wc-btn {
@@ -460,10 +457,10 @@ async function onHeaderMouseDown(e: MouseEvent) {
 }
 
 .app-menu {
-  // In-flow, spanning the full header: its items are centered against the
-  // header's true center (brand / window controls are absolutely positioned).
-  flex: 1;
-  min-width: 0;
+  // Middle grid column: the menu shrink-wraps and sits at the header's true
+  // center.
+  grid-column: 2;
+  justify-self: center;
   // Keep transparent so the header's border-bottom shows through below the
   // menu instead of being covered by a menu background.
   background: transparent;

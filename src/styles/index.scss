@@ -71,8 +71,18 @@ body {
 // Tables (issue #13): slim, unobtrusive scrollbars. The default native
 // scrollbar renders an opaque track strip inside the table body that covers
 // the last row / right column; a slim transparent-track thumb keeps the
-// content readable.
+// content readable. The header's own scroll strip (Arco scrolls the header
+// in sync with the body, and gives empty tables a scrollable header) must
+// never be visible — it would overlap the column titles.
 .arco-table {
+  .arco-table-header {
+    scrollbar-width: none;
+
+    &::-webkit-scrollbar {
+      display: none;
+    }
+  }
+
   .arco-table-body,
   .arco-table-content {
     scrollbar-width: thin;
