@@ -68,59 +68,54 @@ body {
   align-items: center;
 }
 
-// Tables (issue #13): slim, unobtrusive scrollbars. The default native
-// scrollbar renders an opaque track strip inside the table body that covers
-// the last row / right column; a slim transparent-track thumb keeps the
-// content readable. The header's own scroll strip (Arco scrolls the header
-// in sync with the body, and gives empty tables a scrollable header) must
-// never be visible — it would overlap the column titles.
+// Tables (issue #13): Arco tables scroll through the a-scrollbar component,
+// whose track is a 15px strip (z-index 100) absolutely positioned over the
+// content. The page-level type="track" scrollbar in App.vue makes Arco's
+// `.arco-scrollbar-type-track .arco-scrollbar-track` rule paint EVERY nested
+// track opaque (descendant selector), covering the last row / column titles.
+// Slim the tracks down, make them transparent, and use a subtle thumb. Empty
+// tables have nothing to scroll: hide their scrollbars entirely (the strip
+// would otherwise sit right under the column titles).
 .arco-table {
-  .arco-table-header {
-    scrollbar-width: none;
+  // Three classes to out-specify / tie-and-override Arco's
+  // `.arco-scrollbar.arco-scrollbar-type-track .arco-scrollbar-track`.
+  .arco-scrollbar .arco-scrollbar-track {
+    background-color: transparent;
+    border: none;
 
-    &::-webkit-scrollbar {
+    &::after {
       display: none;
     }
   }
 
-  .arco-table-body,
-  .arco-table-content {
-    scrollbar-width: thin;
-    scrollbar-color: var(--color-fill-4) transparent;
+  .arco-scrollbar-track-direction-horizontal {
+    height: 8px;
+  }
 
-    &::-webkit-scrollbar {
-      width: 8px;
-      height: 8px;
-      background: transparent;
-    }
+  .arco-scrollbar-track-direction-vertical {
+    width: 8px;
+  }
 
-    &::-webkit-scrollbar-track,
-    &::-webkit-scrollbar-corner {
-      background: transparent;
-    }
+  .arco-scrollbar-thumb-direction-horizontal .arco-scrollbar-thumb-bar {
+    height: 6px;
+    margin: 1px 0;
+  }
 
-    &::-webkit-scrollbar-thumb {
-      background: var(--color-fill-4);
-      border-radius: 4px;
+  .arco-scrollbar-thumb-direction-vertical .arco-scrollbar-thumb-bar {
+    width: 6px;
+    margin: 0 1px;
+  }
 
-      &:hover {
-        background: var(--color-fill-3);
-      }
-    }
+  .arco-scrollbar-thumb-bar {
+    background-color: var(--color-fill-4);
+  }
+
+  .arco-scrollbar-thumb:hover .arco-scrollbar-thumb-bar,
+  .arco-scrollbar-thumb-dragging .arco-scrollbar-thumb-bar {
+    background-color: var(--color-fill-3);
   }
 }
 
-// Empty tables (issue #13): with no rows there is nothing to scroll, but the
-// forced horizontal scroll still renders a strip that overlaps the column
-// titles — hide every scrollbar until data exists.
-.arco-table-empty {
-  .arco-table-content,
-  .arco-table-body,
-  .arco-table-header {
-    scrollbar-width: none;
-
-    &::-webkit-scrollbar {
-      display: none;
-    }
-  }
+.arco-table-empty .arco-scrollbar-track {
+  display: none;
 }
