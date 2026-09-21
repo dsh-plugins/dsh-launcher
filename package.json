@@ -1,7 +1,7 @@
 {
   "name": "dsh-launcher",
   "private": true,
-  "version": "0.2.4",
+  "version": "0.2.5",
   "description": "Multi-version, multi-instance launcher for DeepSeek Harness (DSH)",
   "type": "module",
   "packageManager": "pnpm@11.17.0",
