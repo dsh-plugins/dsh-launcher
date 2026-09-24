@@ -258,6 +258,27 @@ pub fn list_instance_skills(
     Ok(out)
 }
 
+/// Opens the instance's SKILL directory (`<home>/skills`) in the system file
+/// manager, creating it when missing (issue #60). WSL homes open through the
+/// distro's `\\wsl$\` share after making sure the distro is running. Returns
+/// the opened path so the UI can surface it.
+#[tauri::command]
+pub async fn open_skills_directory(
+    state: State<'_, AppState>,
+    home_id: String,
+) -> Result<String, String> {
+    let (fs, _linux, distro) = home_paths_of(&state, &home_id)?;
+    if let Some(d) = distro.as_deref() {
+        crate::wsl::ensure_distro_running(&state, d).await?;
+    }
+    let dir = skills_dir(&fs);
+    if !dir.is_dir() {
+        std::fs::create_dir_all(&dir).map_err(|e| format!("创建目录失败: {e}"))?;
+    }
+    open::that(&dir).map_err(|e| format!("打开目录失败: {e}"))?;
+    Ok(dir.to_string_lossy().to_string())
+}
+
 /// Runs git and returns trimmed stdout; errors carry stderr.
 async fn git(args: &[&str], cwd: Option<&Path>) -> Result<String, String> {
     let mut cmd = tokio::process::Command::new("git");

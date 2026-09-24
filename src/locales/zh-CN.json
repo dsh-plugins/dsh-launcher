@@ -490,6 +490,7 @@
     "skillRepoEmpty": "暂无 SKILL — 请先在启动器设置中添加 SKILL 仓库",
     "skillColRepo": "仓库",
     "skillCheckUpdates": "检查更新",
+    "skillOpenDir": "打开目录",
     "skillUpdateAll": "全部更新（{count}）",
     "skillUpdatesFound": "发现 {count} 个 SKILL 有更新",
     "skillNoUpdates": "所有 SKILL 已是最新",

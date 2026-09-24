@@ -915,6 +915,8 @@ async function mockCall<T>(cmd: string, args?: Record<string, unknown>): Promise
       ] as T
     case 'install_skill_repo':
       return ['conventional-commits'] as T
+    case 'open_skills_directory':
+      return 'C:\\Users\\Administrator\\dsh-homes\\demo\\skills' as T
     case 'list_repo_skills':
       return [
         {
@@ -1448,6 +1450,8 @@ export const api = {
   readInstanceIcon: (instanceId: string) => call<string | null>('read_instance_icon', { instanceId }),
   /** Lists skills in an instance HOME's skills directory. */
   listInstanceSkills: (homeId: string) => call<SkillInfo[]>('list_instance_skills', { homeId }),
+  /** Opens the instance HOME's skills directory in the system file manager (issue #60). */
+  openSkillsDirectory: (homeId: string) => call<string>('open_skills_directory', { homeId }),
   /** Installs skill(s) from a source repo URL; resolves to installed skill names. */
   installSkillRepo: (homeId: string, url: string) =>
     call<string[]>('install_skill_repo', { homeId, url }),

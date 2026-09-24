@@ -272,6 +272,7 @@ pub fn run() {
             icons::clear_instance_icon,
             icons::read_instance_icon,
             skills::list_instance_skills,
+            skills::open_skills_directory,
             skills::install_skill_repo,
             skills::list_repo_skills,
             skills::check_skill_updates,

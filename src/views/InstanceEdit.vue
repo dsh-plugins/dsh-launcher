@@ -518,6 +518,19 @@ const skillCreateBusy = ref(false)
 const skillUpdates = ref<SkillUpdateInfo[]>([])
 const skillCheckingUpdates = ref(false)
 const skillUpdatingAll = ref(false)
+const skillOpeningDir = ref(false)
+
+async function onOpenSkillsDir() {
+  if (!homeId.value) return
+  skillOpeningDir.value = true
+  try {
+    await api.openSkillsDirectory(homeId.value)
+  } catch (e) {
+    Message.error(String(e))
+  } finally {
+    skillOpeningDir.value = false
+  }
+}
 
 const skillColumns = computed(() => [
   { title: t('instanceEdit.skillColName'), dataIndex: 'name', width: 180 },
@@ -1949,6 +1962,9 @@ const terminalRunning = ref(false)
                   @click="onCheckSkillUpdates"
                 >
                   {{ t('instanceEdit.skillCheckUpdates') }}
+                </a-button>
+                <a-button size="small" :loading="skillOpeningDir" @click="onOpenSkillsDir">
+                  {{ t('instanceEdit.skillOpenDir') }}
                 </a-button>
                 <a-button
                   v-if="skillUpdates.length > 0"

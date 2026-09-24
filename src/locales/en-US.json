@@ -490,6 +490,7 @@
     "skillRepoEmpty": "No skills — add SKILL repositories in launcher settings first",
     "skillColRepo": "Repository",
     "skillCheckUpdates": "Check updates",
+    "skillOpenDir": "Open folder",
     "skillUpdateAll": "Update all ({count})",
     "skillUpdatesFound": "{count} skill(s) have updates",
     "skillNoUpdates": "All skills are up to date",
