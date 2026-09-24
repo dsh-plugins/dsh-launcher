@@ -920,6 +920,10 @@ async function mockCall<T>(cmd: string, args?: Record<string, unknown>): Promise
       return ['conventional-commits'] as T
     case 'open_skills_directory':
       return 'C:\\Users\\Administrator\\dsh-homes\\demo\\skills' as T
+    case 'read_agents_md':
+      return '# AGENTS.md\n\n示例内容。\n' as T
+    case 'write_agents_md':
+      return undefined as T
     case 'list_repo_skills':
       return [
         {
@@ -1458,6 +1462,11 @@ export const api = {
   /** Exports the selected skills (on-disk entry names) into one ZIP archive (issue #61). */
   exportSkills: (homeId: string, entries: string[], target: string) =>
     call<void>('export_skills', { home_id: homeId, entries, target }),
+  /** Reads the home's AGENTS.md (empty string when missing) (issue #57). */
+  readAgentsMd: (homeId: string) => call<string>('read_agents_md', { home_id: homeId }),
+  /** Writes the home's AGENTS.md (issue #57). */
+  writeAgentsMd: (homeId: string, content: string) =>
+    call<void>('write_agents_md', { home_id: homeId, content }),
   /** Installs skill(s) from a source repo URL; resolves to installed skill names. */
   installSkillRepo: (homeId: string, url: string) =>
     call<string[]>('install_skill_repo', { homeId, url }),

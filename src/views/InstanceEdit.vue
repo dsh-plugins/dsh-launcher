@@ -7,6 +7,7 @@ import { api } from '@/api'
 import type { CompatibilityReport as CompatibilityReportType } from '@/api/types'
 import CompatibilityReport from '@/components/CompatibilityReport.vue'
 import { latestRequest } from '@/utils/latest-request'
+import { renderMarkdown } from '@/utils/markdown'
 import { useLauncherStore } from '@/stores/launcher'
 import type {
   DshInstance,
@@ -49,7 +50,7 @@ const homeOptions = computed(() =>
 
 // --- Sidebar tabs ---------------------------------------------------------------
 
-type TabKey = 'basic' | 'env' | 'profiles' | 'plugins' | 'skills' | 'mcp' | 'storage' | 'terminal'
+type TabKey = 'basic' | 'env' | 'profiles' | 'plugins' | 'skills' | 'agents' | 'mcp' | 'storage' | 'terminal'
 const activeTab = ref<TabKey>('basic')
 
 // --- Form state ---------------------------------------------------------------
@@ -559,6 +560,40 @@ async function onOpenSkillsDir() {
     Message.error(String(e))
   } finally {
     skillOpeningDir.value = false
+  }
+}
+
+// --- AGENTS.md tab (issue #57) ------------------------------------------------
+
+const agentsContent = ref('')
+const agentsLoading = ref(false)
+const agentsSaving = ref(false)
+const agentsPreview = ref(false)
+
+const agentsPreviewHtml = computed(() => renderMarkdown(agentsContent.value))
+
+async function loadAgentsMd() {
+  if (!homeId.value || !editingId.value) return
+  agentsLoading.value = true
+  try {
+    agentsContent.value = await api.readAgentsMd(homeId.value)
+  } catch (e) {
+    Message.error(String(e))
+  } finally {
+    agentsLoading.value = false
+  }
+}
+
+async function saveAgentsMd() {
+  if (!homeId.value || !editingId.value) return
+  agentsSaving.value = true
+  try {
+    await api.writeAgentsMd(homeId.value, agentsContent.value)
+    Message.success(t('instanceEdit.agentsSaved'))
+  } catch (e) {
+    Message.error(String(e))
+  } finally {
+    agentsSaving.value = false
   }
 }
 
@@ -1328,6 +1363,10 @@ watch(activeTab, async (tab) => {
     await loadSkills()
     return
   }
+  if (tab === 'agents') {
+    await loadAgentsMd()
+    return
+  }
   if (tab === 'mcp') {
     // The scope defaults to the instance's default profile when it has one:
     // that is where a per-instance MCP server usually belongs. Changing it
@@ -1544,6 +1583,7 @@ const terminalRunning = ref(false)
         <a-menu-item key="profiles">{{ t('instanceEdit.tabs.profiles') }}</a-menu-item>
         <a-menu-item key="plugins">{{ t('instanceEdit.tabs.plugins') }}</a-menu-item>
         <a-menu-item key="skills">{{ t('instanceEdit.tabs.skills') }}</a-menu-item>
+        <a-menu-item key="agents">{{ t('instanceEdit.tabs.agents') }}</a-menu-item>
         <a-menu-item key="mcp">{{ t('instanceEdit.tabs.mcp') }}</a-menu-item>
         <a-menu-item key="storage">{{ t('instanceEdit.tabs.storage') }}</a-menu-item>
         <a-menu-item key="terminal">{{ t('instanceEdit.tabs.terminal') }}</a-menu-item>
@@ -2064,6 +2104,45 @@ const terminalRunning = ref(false)
                   <a-empty :description="t('instanceEdit.skillsEmpty')" />
                 </template>
               </a-table>
+            </template>
+
+            <a-alert v-else type="info">
+              {{ t('instanceEdit.profilesNeedHome') }}
+            </a-alert>
+          </div>
+
+          <!-- AGENTS.md (issue #57) -->
+          <div v-else-if="activeTab === 'agents'" class="dl-card edit-card">
+            <h4 class="env-title">
+              {{ t('instanceEdit.tabs.agents') }}
+              <HintIcon :content="t('instanceEdit.agentsDesc')" />
+            </h4>
+
+            <template v-if="homeId && editingId">
+              <div class="skill-toolbar">
+                <a-button size="small" type="primary" :loading="agentsSaving" @click="saveAgentsMd">
+                  {{ t('common.save') }}
+                </a-button>
+                <a-button size="small" :loading="agentsLoading" @click="loadAgentsMd">
+                  {{ t('common.refresh') }}
+                </a-button>
+                <a-button size="small" @click="agentsPreview = !agentsPreview">
+                  {{ agentsPreview ? t('instanceEdit.agentsEdit') : t('instanceEdit.agentsPreview') }}
+                </a-button>
+              </div>
+              <a-textarea
+                v-if="!agentsPreview"
+                v-model="agentsContent"
+                class="agents-editor"
+                :auto-size="{ minRows: 18, maxRows: 40 }"
+                :placeholder="t('instanceEdit.agentsEmpty')"
+              />
+              <!-- eslint-disable-next-line vue/no-v-html -- sanitized by renderMarkdown -->
+              <div
+                v-else
+                class="agents-preview markdown-body"
+                v-html="agentsPreviewHtml || `<p class='agents-empty'>${t('instanceEdit.agentsEmpty')}</p>`"
+              />
             </template>
 
             <a-alert v-else type="info">
@@ -2743,6 +2822,72 @@ const terminalRunning = ref(false)
     :deep(.arco-menu-item) {
       white-space: nowrap;
     }
+  }
+}
+
+/* AGENTS.md editor / preview (issue #57) */
+.agents-editor {
+  font-family: Consolas, 'Courier New', monospace;
+}
+
+.agents-preview {
+  padding: 12px 16px;
+  border: 1px solid var(--color-border-2);
+  border-radius: 4px;
+  font-size: 14px;
+  line-height: 1.7;
+  color: var(--color-text-1);
+  word-wrap: break-word;
+
+  :deep(h1),
+  :deep(h2),
+  :deep(h3) {
+    margin: 16px 0 8px;
+    line-height: 1.35;
+  }
+
+  :deep(h2) {
+    padding-bottom: 6px;
+    border-bottom: 1px solid var(--color-border-2);
+  }
+
+  :deep(p) {
+    margin: 8px 0;
+  }
+
+  :deep(a) {
+    color: rgb(var(--primary-6));
+  }
+
+  :deep(code) {
+    font-family: Consolas, 'Courier New', monospace;
+    font-size: 0.9em;
+    background: var(--color-fill-2);
+    padding: 1px 5px;
+    border-radius: 3px;
+  }
+
+  :deep(pre) {
+    background: var(--color-fill-2);
+    padding: 10px 12px;
+    border-radius: 4px;
+    overflow-x: auto;
+
+    code {
+      background: none;
+      padding: 0;
+    }
+  }
+
+  :deep(blockquote) {
+    margin: 8px 0;
+    padding: 4px 12px;
+    border-left: 3px solid var(--color-border-3);
+    color: var(--color-text-2);
+  }
+
+  .agents-empty {
+    color: var(--color-text-3);
   }
 }
 </style>

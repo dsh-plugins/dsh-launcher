@@ -272,6 +272,8 @@ pub fn run() {
             icons::clear_instance_icon,
             icons::read_instance_icon,
             skills::list_instance_skills,
+            commands::read_agents_md,
+            commands::write_agents_md,
             skills::open_skills_directory,
             skills::export_skills,
             skills::install_skill_repo,

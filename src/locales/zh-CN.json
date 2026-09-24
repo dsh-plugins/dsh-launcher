@@ -356,6 +356,7 @@
       "profiles": "Profile",
       "plugins": "插件",
       "skills": "SKILL",
+      "agents": "AGENTS.md",
       "mcp": "MCP",
       "storage": "存储路径",
       "terminal": "终端"
@@ -462,6 +463,11 @@
     "createShortcut": "创建快捷方式",
     "shortcutCreated": "快捷方式已创建：{path}",
     "skillsDesc": "管理该实例 DSH_HOME 下的 SKILL（<HOME>/skills，各实例按 HOME 共享）。支持从仓库安装/更新（以 commit/tag 识别版本）、导入 SKILL.md 或粘贴内容创建；DSH 会监视该目录，无需重启实例即可生效。",
+    "agentsDesc": "直接编辑/预览该实例 DSH_HOME 下的 AGENTS.md（<HOME>/AGENTS.md，各实例按 HOME 共享）。",
+    "agentsPreview": "预览",
+    "agentsEdit": "编辑",
+    "agentsEmpty": "暂无内容，输入 AGENTS.md 的 Markdown 文本",
+    "agentsSaved": "AGENTS.md 已保存",
     "skillsEmpty": "暂无 SKILL",
     "skillRepoPlaceholder": "选择已配置的仓库，或粘贴 https://…/owner/repo[#/path/to/skill]",
     "skillInstall": "安装 / 更新",
@@ -707,6 +713,7 @@
   "common": {
     "confirm": "确定",
     "cancel": "取消",
+    "save": "保存",
     "copy": "复制",
     "copied": "已复制",
     "refresh": "刷新",

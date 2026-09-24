@@ -357,6 +357,7 @@
       "plugins": "Plugins",
       "terminal": "Terminal",
       "skills": "SKILL",
+      "agents": "AGENTS.md",
       "mcp": "MCP",
       "storage": "Storage"
     },
@@ -462,6 +463,11 @@
     "createShortcut": "Create shortcut",
     "shortcutCreated": "Shortcut created: {path}",
     "skillsDesc": "Manage skills in the DSH_HOME of this instance (<HOME>/skills, shared per HOME). Install/update from repositories (versioned by commit/tag), import a SKILL.md, or paste content to create one; DSH watches the directory so changes apply without a restart.",
+    "agentsDesc": "Edit and preview this instance's DSH_HOME AGENTS.md (<HOME>/AGENTS.md, shared per HOME).",
+    "agentsPreview": "Preview",
+    "agentsEdit": "Edit",
+    "agentsEmpty": "Nothing yet — write the AGENTS.md markdown here",
+    "agentsSaved": "AGENTS.md saved",
     "skillsEmpty": "No skills yet",
     "skillRepoPlaceholder": "Pick a configured repo, or paste https://…/owner/repo[#/path/to/skill]",
     "skillInstall": "Install / Update",
@@ -707,6 +713,7 @@
   "common": {
     "confirm": "OK",
     "cancel": "Cancel",
+    "save": "Save",
     "copy": "Copy",
     "copied": "Copied",
     "refresh": "Refresh",

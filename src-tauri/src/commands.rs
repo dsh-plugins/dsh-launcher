@@ -1738,6 +1738,59 @@ pub async fn open_instance_directory(
 }
 
 // ---------------------------------------------------------------------------
+// AGENTS.md editor (issue #57)
+// ---------------------------------------------------------------------------
+
+/// Resolves a home id to the filesystem path Windows APIs use (`\\wsl$\…`
+/// for WSL homes).
+fn home_fs_of(state: &AppState, home_id: &str) -> Result<std::path::PathBuf, String> {
+    state
+        .config
+        .lock()
+        .unwrap()
+        .homes
+        .iter()
+        .find(|h| h.id == home_id)
+        .map(crate::wsl::home_fs_path)
+        .ok_or_else(|| "DSH_HOME 不存在".to_string())
+}
+
+/// Reads `<home>/AGENTS.md` for the AGENTS.md editor tab; a missing file
+/// reads as an empty document.
+#[tauri::command(rename_all = "snake_case")]
+pub async fn read_agents_md(state: State<'_, AppState>, home_id: String) -> Result<String, String> {
+    let fs = home_fs_of(&state, &home_id)?;
+    // UNC round trips for WSL homes go to the blocking pool (issue #49 G3).
+    crate::wsl::run_blocking(move || {
+        let path = fs.join("AGENTS.md");
+        match std::fs::read_to_string(&path) {
+            Ok(content) => Ok(content),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(String::new()),
+            Err(e) => Err(format!("读取 AGENTS.md 失败: {e}")),
+        }
+    })
+    .await?
+}
+
+/// Writes `<home>/AGENTS.md`, creating the home directory when missing.
+#[tauri::command(rename_all = "snake_case")]
+pub async fn write_agents_md(
+    state: State<'_, AppState>,
+    home_id: String,
+    content: String,
+) -> Result<(), String> {
+    let fs = home_fs_of(&state, &home_id)?;
+    crate::wsl::run_blocking(move || {
+        if !fs.is_dir() {
+            std::fs::create_dir_all(&fs).map_err(|e| format!("创建目录失败: {e}"))?;
+        }
+        std::fs::write(fs.join("AGENTS.md"), content)
+            .map_err(|e| format!("写入 AGENTS.md 失败: {e}"))
+    })
+    .await?
+}
+
+// ---------------------------------------------------------------------------
 // Launch shortcut (issue #9)
 // ---------------------------------------------------------------------------
 
