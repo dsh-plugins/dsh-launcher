@@ -251,6 +251,11 @@ pub struct LauncherSettings {
     /// three catalogs plus the (disabled) live GitHub topic channel.
     #[serde(default = "default_plugin_sources")]
     pub plugin_sources: Vec<PluginSourceConfig>,
+    /// Root directory of the most recent storage redirection (issue #65),
+    /// offered as the "last used" preset. Advisory UI memory only — it never
+    /// affects validation. `#[serde(default)]` keeps older configs loadable.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_link_root: Option<String>,
 }
 
 fn default_locale() -> String {
@@ -305,6 +310,7 @@ impl Default for LauncherSettings {
             auto_open_on_launch: true,
             hide_launcher_on_window_open: false,
             plugin_sources: default_plugin_sources(),
+            last_link_root: None,
         }
     }
 }

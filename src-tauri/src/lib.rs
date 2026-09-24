@@ -213,6 +213,7 @@ pub fn run() {
             links::list_home_links,
             links::set_home_link,
             links::clear_home_link,
+            links::suggest_home_link_targets,
             commands::list_wsl_distros,
             commands::list_versions,
             commands::fetch_available_versions,

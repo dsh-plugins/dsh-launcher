@@ -8,6 +8,7 @@ import { useLauncherStore } from '@/stores/launcher'
 import type {
   DshInstance,
   HomeLinkInfo,
+  HomeLinkSuggestion,
   InstalledPlugin,
   McpKv,
   McpServer,
@@ -24,7 +25,7 @@ import { shortRepoName } from '@/utils/repo'
 
 const route = useRoute()
 const router = useRouter()
-const { t } = useI18n()
+const { t, te } = useI18n()
 const store = useLauncherStore()
 
 const editingId = computed(() => (route.params.id as string | undefined) ?? null)
@@ -993,6 +994,33 @@ const linkDialogVisible = ref(false)
 const linkEntry = ref('')
 const linkTarget = ref('')
 const linkBusy = ref(false)
+/** Preset root candidates for the open dialog (issue #65), from the backend. */
+const linkPresets = ref<HomeLinkSuggestion[]>([])
+const linkPresetsLoading = ref(false)
+/** Picked preset id ('' = no preset; the path stays hand-editable). */
+const linkPresetId = ref('')
+/** The open entry is a directory (decides the browse dialog mode). */
+const linkIsDir = ref(true)
+/** A browse/file dialog is currently open. */
+const linkPicking = ref(false)
+
+/** Preset cache per `<homeId>::<entry>` so reopening a dialog is instant. */
+const linkPresetCache = new Map<string, HomeLinkSuggestion[]>()
+
+/**
+ * Preset options with resolved labels. The backend emits a bare `label_key`
+ * (it never hardcodes prose); the `instanceEdit.` namespace lives here. An
+ * unknown key falls back to the raw id rather than rendering an empty option.
+ */
+const linkPresetOptions = computed(() =>
+  linkPresets.value.map((preset) => {
+    const path = `instanceEdit.${preset.label_key}`
+    return {
+      ...preset,
+      label: te(path) ? t(path) : preset.id,
+    }
+  }),
+)
 
 async function loadHomeLinks() {
   if (!homeId.value || homeId.value === DEDICATED) return
@@ -1013,15 +1041,134 @@ async function loadHomeLinks() {
   }
 }
 
-function openLinkDialog(link: HomeLinkInfo) {
+/** Joins a preset root and an entry name using the root's own separator, so a
+ * Windows root stays `D:\dsh-data\sessions` and a POSIX one `.../sessions`. */
+function joinLinkPath(root: string, entry: string): string {
+  const sep = root.includes('\\') ? '\\' : '/'
+  const trimmed = root.replace(/[\\/]+$/, '')
+  return `${trimmed}${sep}${entry}`
+}
+
+/**
+ * Normalizes a user/picker supplied path: strips the Windows `\\?\` long-path
+ * prefix the native dialog may return (the backend `canonicalize` validation
+ * is sensitive to it) and any trailing separator.
+ */
+function normalizeLinkPath(p: string): string {
+  return p.trim().replace(/^\\\\\?\\/, '').replace(/[\\/]+$/, '')
+}
+
+function cfgInsensitiveEqual(a: string, b: string): boolean {
+  return a.toLowerCase() === b.toLowerCase()
+}
+
+/** True when `target` is the HOME itself or lives inside it (case-insensitive
+ * on Windows). Mirrors the backend rule that rejects such targets. */
+function isInsideHome(target: string, home: string): boolean {
+  const t = normalizeLinkPath(target)
+  const h = normalizeLinkPath(home)
+  if (!t || !h) return false
+  if (cfgInsensitiveEqual(t, h)) return true
+  const sep = h.includes('\\') ? '\\' : '/'
+  return cfgInsensitiveEqual(t.slice(0, h.length), h) && t.charAt(h.length) === sep
+}
+
+async function loadLinkPresets(entry: string) {
+  const key = `${homeId.value}::${entry}`
+  const cached = linkPresetCache.get(key)
+  if (cached) {
+    linkPresets.value = cached
+    return
+  }
+  linkPresetsLoading.value = true
+  try {
+    const list = await api.suggestHomeLinkTargets(homeId.value!, entry)
+    linkPresetCache.set(key, list)
+    linkPresets.value = list
+  } catch (e) {
+    // Presets are advisory: a failure must not block hand-entry.
+    linkPresets.value = []
+    Message.error(String(e))
+  } finally {
+    linkPresetsLoading.value = false
+  }
+}
+
+// A different HOME invalidates every cached candidate set.
+watch(homeId, () => {
+  linkPresetCache.clear()
+  linkPresets.value = []
+})
+
+async function openLinkDialog(link: HomeLinkInfo) {
   linkEntry.value = link.entry
+  linkIsDir.value = link.is_dir
   linkTarget.value = link.target
+  linkPresetId.value = ''
+  linkPresets.value = []
   linkDialogVisible.value = true
+  await loadLinkPresets(link.entry)
+}
+
+/** Fills the path input from a preset; the value stays editable (D3). */
+function applyLinkPreset(id: unknown) {
+  const presetId = typeof id === 'string' ? id : ''
+  linkPresetId.value = presetId
+  if (!presetId) return
+  const preset = linkPresets.value.find((p) => p.id === presetId)
+  if (!preset?.path) return
+  linkTarget.value = joinLinkPath(preset.path, linkEntry.value)
+}
+
+/** Browse button: a directory picker for directory entries, a filtered file
+ * picker for file entries (the whitelist mixes both). */
+async function pickLinkTarget() {
+  if (linkPicking.value) return
+  if (!api.isTauri) {
+    // Browser preview: there is no native dialog, so guide the user instead of
+    // throwing (the settings page does the same for its directory picker).
+    Message.info(t('settings.browserPickHint'))
+    return
+  }
+  linkPicking.value = true
+  try {
+    const { open } = await import('@tauri-apps/plugin-dialog')
+    const home = store.homes.find((h) => h.id === homeId.value)?.path
+    const defaultPath = normalizeLinkPath(linkTarget.value) || home
+    const picked = linkIsDir.value
+      ? await open({
+          directory: true,
+          multiple: false,
+          title: t('instanceEdit.storageBrowseDirTitle'),
+          defaultPath,
+        })
+      : await open({
+          multiple: false,
+          title: t('instanceEdit.storageBrowseFileTitle'),
+          defaultPath,
+          filters: [{ name: 'YAML', extensions: ['yaml', 'yml'] }],
+        })
+    if (typeof picked !== 'string') return
+    linkTarget.value = normalizeLinkPath(picked)
+    linkPresetId.value = ''
+  } catch (e) {
+    Message.error(String(e))
+  } finally {
+    linkPicking.value = false
+  }
 }
 
 async function confirmSetLink() {
-  const target = linkTarget.value.trim()
+  const target = normalizeLinkPath(linkTarget.value)
   if (!target) return
+  // Frontend pre-check (the deterministic half only): a target inside the HOME
+  // is always rejected by the backend, so catch it before the request.
+  // Existence and UNC/relative-path subtleties stay the backend's call.
+  const home = store.homes.find((h) => h.id === homeId.value)?.path
+  if (home && isInsideHome(target, home)) {
+    Message.error(t('instanceEdit.storageTargetInsideHome'))
+    return
+  }
   linkBusy.value = true
   try {
     await api.setHomeLink(homeId.value!, linkEntry.value, target)
@@ -1029,6 +1176,8 @@ async function confirmSetLink() {
     linkDialogVisible.value = false
     await store.refreshHomes()
     await loadHomeLinks()
+    // The just-used root is now the "last used" preset: drop stale caches.
+    linkPresetCache.clear()
   } catch (e) {
     Message.error(String(e))
   } finally {
@@ -2111,18 +2260,43 @@ const terminalRunning = ref(false)
       :title="t('instanceEdit.storageSetTitle', { entry: linkEntry })"
       :ok-text="t('common.confirm')"
       :cancel-text="t('instanceEdit.cancel')"
-      :ok-button-props="{ disabled: !linkTarget.trim(), loading: linkBusy }"
-      width="560px"
+      :ok-button-props="{ disabled: !linkTarget.trim(), loading: linkBusy || linkPicking }"
+      width="620px"
       @ok="confirmSetLink"
       @cancel="linkDialogVisible = false"
     >
       <a-form layout="vertical" :model="{}">
-        <a-form-item :label="t('instanceEdit.storageTargetPath')">
-          <a-input
-            v-model="linkTarget"
-            :placeholder="t('instanceEdit.storageTargetPlaceholder')"
+        <a-form-item :label="t('instanceEdit.storagePreset')">
+          <a-select
+            :model-value="linkPresetId"
+            :placeholder="t('instanceEdit.storagePresetNone')"
+            :loading="linkPresetsLoading"
             allow-clear
-          />
+            style="width: 100%"
+            @change="applyLinkPreset"
+          >
+            <a-option v-for="preset in linkPresetOptions" :key="preset.id" :value="preset.id">
+              {{ preset.label }}
+              <span class="storage-preset-path">
+                {{ preset.path }}
+                <template v-if="!preset.exists">
+                  · {{ t('instanceEdit.storagePresetUnavailable') }}
+                </template>
+              </span>
+            </a-option>
+          </a-select>
+        </a-form-item>
+        <a-form-item :label="t('instanceEdit.storageTargetPath')">
+          <a-input-group>
+            <a-input
+              v-model="linkTarget"
+              :placeholder="t('instanceEdit.storageTargetPlaceholder')"
+              allow-clear
+            />
+            <a-button :loading="linkPicking" @click="pickLinkTarget">
+              {{ t('instanceEdit.storageBrowse') }}
+            </a-button>
+          </a-input-group>
         </a-form-item>
         <a-alert type="info">
           {{ t('instanceEdit.storageSetHint') }}
@@ -2284,6 +2458,13 @@ const terminalRunning = ref(false)
 
 .storage-default {
   color: var(--color-text-3);
+}
+
+/* Preset option: label first, then the concrete root path in a muted aside. */
+.storage-preset-path {
+  margin-left: 8px;
+  color: var(--color-text-3);
+  font-size: 12px;
 }
 
 .env-title {

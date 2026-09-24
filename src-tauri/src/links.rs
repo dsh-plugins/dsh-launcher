@@ -37,6 +37,24 @@ pub struct HomeLinkInfo {
     pub active: bool,
 }
 
+/// One candidate **root directory** offered as a preset for a redirection
+/// target (issue #65). `path` is the root only: the frontend joins the entry
+/// name onto it, so a single suggestion set serves every entry. The candidate
+/// set is advisory — the user can always type a path by hand.
+#[derive(Clone, Debug, serde::Serialize)]
+pub struct HomeLinkSuggestion {
+    /// Stable id: `launcher-data` | `same-drive` | `last-used`.
+    pub id: String,
+    /// Frontend i18n key for the label. The backend never emits prose, so the
+    /// UI stays translated without a backend language switch.
+    pub label_key: String,
+    /// Candidate root directory, absolute.
+    pub path: String,
+    /// Whether the root exists **right now**. Purely a read-only probe: this
+    /// command never creates a directory and never writes configuration.
+    pub exists: bool,
+}
+
 fn home_of(state: &AppState, home_id: &str) -> Result<DshHome, String> {
     let cfg = state.config.lock().unwrap();
     cfg.homes
@@ -260,8 +278,107 @@ fn record_link(
         .ok_or_else(|| "DSH_HOME 不存在".to_string())?;
     home.links
         .insert(entry.to_string(), target.to_string_lossy().to_string());
+    // Remember the directory the user redirected into (issue #65 D2) so the
+    // next dialog can offer it as a preset root. Advisory only: a bad value
+    // costs one useless dropdown entry, never a failed write.
+    if let Some(parent) = target.parent() {
+        if !parent.as_os_str().is_empty() {
+            cfg.settings.last_link_root = Some(parent.to_string_lossy().to_string());
+        }
+    }
     save_locked(state, &cfg)?;
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Redirection target presets (issue #65)
+// ---------------------------------------------------------------------------
+
+/// Candidate root directories presented as presets for a redirection target.
+///
+/// Purely advisory and **read-only**: no directory is created, no config is
+/// written, and no writability probe is attempted (a temp-file probe would
+/// litter the user's directories for no real gain — the backend validation in
+/// `set_home_link` stays the only authority).
+fn suggest_targets(
+    data_dir: &Path,
+    home_path: &Path,
+    last_used: Option<&str>,
+) -> Vec<HomeLinkSuggestion> {
+    let mut out: Vec<HomeLinkSuggestion> = Vec::new();
+    let mut push = |id: &str, label_key: &str, path: PathBuf| {
+        // Same root reached two ways (e.g. last-used equals the launcher
+        // default) must appear once.
+        if out
+            .iter()
+            .any(|s| crate::config::paths_equal(Path::new(&s.path), &path))
+        {
+            return;
+        }
+        out.push(HomeLinkSuggestion {
+            id: id.to_string(),
+            label_key: label_key.to_string(),
+            exists: path.exists(),
+            path: path.to_string_lossy().to_string(),
+        });
+    };
+
+    push(
+        "launcher-data",
+        "storagePresetLauncherData",
+        data_dir.join("dsh-data"),
+    );
+    if let Some(root) = same_volume_root(home_path) {
+        push("same-drive", "storagePresetSameDrive", root);
+    }
+    if let Some(last) = last_used.map(str::trim).filter(|s| !s.is_empty()) {
+        push("last-used", "storagePresetLastUsed", PathBuf::from(last));
+    }
+    out
+}
+
+/// A `<volume>:\dsh-data` root on the DSH_HOME's own volume, or
+/// `<home parent>/dsh-data` where there is no drive letter (unix, UNC, …).
+/// Returns `None` when no sensible location exists, rather than proposing a
+/// path inside the HOME — which `set_home_link` would reject outright.
+fn same_volume_root(home_path: &Path) -> Option<PathBuf> {
+    #[cfg(windows)]
+    {
+        use std::path::{Component, Prefix};
+        if let Some(Component::Prefix(prefix)) = home_path.components().next() {
+            if matches!(prefix.kind(), Prefix::Disk(_) | Prefix::VerbatimDisk(_)) {
+                // "D:" + "\" → "D:\", then join onto it.
+                let root = PathBuf::from(format!("{}\\", prefix.as_os_str().to_string_lossy()));
+                return Some(root.join("dsh-data"));
+            }
+        }
+    }
+    let parent = home_path.parent()?;
+    if parent.as_os_str().is_empty() {
+        return None;
+    }
+    Some(parent.join("dsh-data"))
+}
+
+/// Suggests preset root directories for a redirection target (issue #65).
+/// Advisory only: the user may ignore every candidate and type a path.
+#[tauri::command]
+pub async fn suggest_home_link_targets(
+    state: State<'_, AppState>,
+    home_id: String,
+    entry: String,
+) -> Result<Vec<HomeLinkSuggestion>, String> {
+    if entry_kind(&entry).is_none() {
+        return Err(format!("不支持重定向的条目: {entry}"));
+    }
+    let home = home_of(&state, &home_id)?;
+    // Same capability boundary as list/set/clear: WSL HOMEs are refused.
+    if home.wsl.is_some() {
+        return Err("WSL 实例的 DSH_HOME 暂不支持存储重定向".to_string());
+    }
+    let data_dir = state.data_dir.clone();
+    let last_used = state.config.lock().unwrap().settings.last_link_root.clone();
+    Ok(suggest_targets(&data_dir, &home.path, last_used.as_deref()))
 }
 
 #[tauri::command]
@@ -362,5 +479,103 @@ mod tests {
         with.links = BTreeMap::from([("sessions".to_string(), "D:/data/sessions".to_string())]);
         let s = serde_json::to_string(&with).unwrap();
         assert!(s.contains("sessions"));
+    }
+
+    #[test]
+    fn suggest_targets_lists_launcher_data_first_and_never_touches_disk() {
+        let data_dir = unique_temp("suggest-data");
+        let home = unique_temp("suggest-home");
+        let out = suggest_targets(&data_dir, &home, None);
+        assert_eq!(out[0].id, "launcher-data");
+        assert_eq!(out[0].label_key, "storagePresetLauncherData");
+        assert_eq!(PathBuf::from(&out[0].path), data_dir.join("dsh-data"));
+        assert!(!out[0].exists);
+        // Read-only contract: the probe must not materialize anything.
+        assert!(!data_dir.exists());
+        assert!(!data_dir.join("dsh-data").exists());
+    }
+
+    #[test]
+    fn suggest_targets_marks_existing_roots() {
+        let data_dir = unique_temp("suggest-exists");
+        let root = data_dir.join("dsh-data");
+        std::fs::create_dir_all(&root).unwrap();
+        let out = suggest_targets(&data_dir, &unique_temp("suggest-home2"), None);
+        assert!(out[0].exists);
+        std::fs::remove_dir_all(&data_dir).ok();
+    }
+
+    #[test]
+    fn suggest_targets_includes_last_used_and_dedupes() {
+        let data_dir = unique_temp("suggest-last");
+        let home = unique_temp("suggest-home3");
+        let last = unique_temp("suggest-lastused");
+        let out = suggest_targets(&data_dir, &home, Some(&last.to_string_lossy()));
+        assert!(out.iter().any(|s| s.id == "last-used"));
+        assert_eq!(
+            out.iter()
+                .find(|s| s.id == "last-used")
+                .map(|s| PathBuf::from(&s.path)),
+            Some(last.clone())
+        );
+        // A last-used root equal to an earlier candidate must not duplicate.
+        let dup = suggest_targets(
+            &data_dir,
+            &home,
+            Some(&data_dir.join("dsh-data").to_string_lossy()),
+        );
+        assert_eq!(dup.iter().filter(|s| s.id == "launcher-data").count(), 1);
+        assert!(!dup.iter().any(|s| s.id == "last-used"));
+        // Blank/whitespace last-used is ignored rather than offered.
+        let blank = suggest_targets(&data_dir, &home, Some("   "));
+        assert!(!blank.iter().any(|s| s.id == "last-used"));
+    }
+
+    #[test]
+    fn suggest_targets_proposes_a_root_outside_the_home() {
+        // `set_home_link` rejects targets inside the HOME, so a suggestion
+        // must never be nested under it.
+        let data_dir = unique_temp("suggest-outside");
+        let home = unique_temp("suggest-home4");
+        let out = suggest_targets(&data_dir, &home, None);
+        for s in &out {
+            assert!(
+                !Path::new(&s.path).starts_with(&home),
+                "suggestion {} must stay outside the HOME",
+                s.path
+            );
+        }
+        if let Some(same) = out.iter().find(|s| s.id == "same-drive") {
+            assert!(same.path.ends_with("dsh-data"));
+            assert!(PathBuf::from(&same.path).is_absolute());
+        }
+    }
+
+    #[test]
+    fn same_volume_root_is_absolute_and_outside_the_home() {
+        let home = unique_temp("suggest-vol").join("homes").join("lab");
+        let root = same_volume_root(&home).expect("a volume root exists for a nested path");
+        assert!(root.is_absolute());
+        assert!(root.ends_with("dsh-data"));
+        assert!(!root.starts_with(&home));
+        // A bare root has no parent to hang `<parent>/dsh-data` off.
+        assert_eq!(same_volume_root(Path::new("/")), None);
+    }
+
+    #[test]
+    fn last_link_root_is_backward_compatible() {
+        // Older configs have no `last_link_root` key at all and must still
+        // parse; absent means "never redirected yet".
+        let json = r#"{"locale":"zh-CN"}"#;
+        let s: crate::config::LauncherSettings = serde_json::from_str(json).unwrap();
+        assert_eq!(s.last_link_root, None);
+        let mut with = s.clone();
+        with.last_link_root = Some("D:/dsh-data".to_string());
+        let raw = serde_json::to_string(&with).unwrap();
+        assert!(raw.contains("last_link_root"));
+        // None stays out of the file so the default config is unchanged.
+        assert!(!serde_json::to_string(&s)
+            .unwrap()
+            .contains("last_link_root"));
     }
 }
