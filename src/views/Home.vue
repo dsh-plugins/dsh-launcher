@@ -579,11 +579,15 @@ function goEditSelected() {
       @ok="closeCompatModal"
       @cancel="closeCompatModal"
     >
-      <div v-if="compatibilityBusy && !compatibility" class="compat-checking">
-        <a-spin :size="22" />
-        <span>{{ t('compat.checking') }}</span>
-      </div>
-      <CompatibilityReport v-else-if="compatibility" :report="compatibility" />
+      <a-scrollbar type="track" outer-style="max-height: 60vh" style="max-height: 60vh; overflow-y: auto">
+        <div class="compat-modal-body">
+          <div v-if="compatibilityBusy && !compatibility" class="compat-checking">
+            <a-spin :size="22" />
+            <span>{{ t('compat.checking') }}</span>
+          </div>
+          <CompatibilityReport v-else-if="compatibility" :report="compatibility" />
+        </div>
+      </a-scrollbar>
     </a-modal>
 
     <!-- Right news area: renders the configured md/html source (XSS-sanitized) -->
@@ -699,6 +703,13 @@ function goEditSelected() {
   display: flex;
   flex-direction: column;
   gap: 10px;
+}
+
+// The popup caps its own height and scrolls internally (a-scrollbar track),
+// so a long findings list never stretches the modal past the viewport and no
+// opaque native scrollbar track shows up.
+.compat-modal-body {
+  padding-right: 6px;
 }
 
 .compat-checking { display: flex; align-items: center; gap: 12px; padding: 24px 4px; font-size: 13px; color: var(--color-text-2); }
