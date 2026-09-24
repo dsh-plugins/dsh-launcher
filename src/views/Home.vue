@@ -87,13 +87,40 @@ const selectedProfile = ref<string | undefined>(undefined)
 const compatibility = ref<CompatibilityReportType | null>(null)
 const compatibilityBusy = ref(false)
 const handoffCompleted = ref(false)
-watch([selectedInstanceId, selectedProfile], () => { compatibility.value = null; handoffCompleted.value = false })
+// The compatibility result shows in a popup, not inline (issue: launch-UX).
+// Once the DSH window opens the popup hides at once — the details stay in
+// the instance log file only (<data>/logs/<id>.log).
+const dshWindowOpened = ref(false)
+const compatDismissed = ref(false)
+watch([selectedInstanceId, selectedProfile], () => {
+  compatibility.value = null
+  handoffCompleted.value = false
+  dshWindowOpened.value = false
+  compatDismissed.value = false
+})
+
+/** The DSH window of `id` just opened: hide the compatibility popup. */
+function onDshWindowOpened(id: string) {
+  if (id !== selectedInstanceId.value) return
+  dshWindowOpened.value = true
+  compatibility.value = null
+}
+
+const compatModalVisible = computed(
+  () => !dshWindowOpened.value && !compatDismissed.value && (compatibilityBusy.value || !!compatibility.value),
+)
+
+function closeCompatModal() {
+  compatibility.value = null
+  compatDismissed.value = true
+}
 let unlistenCompatibility: (() => void) | null = null
 onMounted(async () => {
   if (!('__TAURI_INTERNALS__' in window)) return
   const { listen } = await import('@tauri-apps/api/event')
   unlistenCompatibility = await listen<CompatibilityReportType>('instance://compatibility', (event) => {
     const report = event.payload
+    if (dshWindowOpened.value) return
     if (selectedInstanceId.value === report.instance_id && selectedProfile.value === report.profile) {
       compatibility.value = report
       if (!report.handoff_pending) handoffCompleted.value = true
@@ -315,27 +342,35 @@ const launchSubtitle = computed(() => {
 
 async function onStart() {
   if (!selectedInstanceId.value || !selectedProfile.value) return
+  const id = selectedInstanceId.value
   compatibility.value = null
+  dshWindowOpened.value = false
+  compatDismissed.value = false
   try {
-    await api.startInstance(selectedInstanceId.value, selectedProfile.value)
+    await api.startInstance(id, selectedProfile.value)
     // TUI profiles: start_instance opens the terminal window; the PTY session
     // is started by that window (issue #31).
     if (selectedProfileKind.value === 'tui') {
       Message.success(t('home.startedTui'))
+      // The TUI window IS the DSH window: it opened with the start.
+      onDshWindowOpened(id)
     } else {
       Message.success(t('home.started'))
       // Launch behavior: optionally open the instance window once ready.
       if (store.settings.auto_open_on_launch) {
-        void store.openWindowWhenReady(selectedInstanceId.value).catch((e) => Message.error(String(e)))
+        store
+          .openWindowWhenReady(id)
+          .then(() => onDshWindowOpened(id))
+          .catch((e) => Message.error(String(e)))
       }
     }
-    void reportHealth(selectedInstanceId.value, selectedProfile.value)
+    void reportHealth(id, selectedProfile.value)
   } catch (e) {
     // Sync failure (preflight / spawn): surface the full detail in the
     // launch-failure dialog instead of a transient toast (issue #30).
     // (onStart early-returns without a selection, so an id always exists here.)
     store.reportLaunchError({
-      instanceId: selectedInstanceId.value,
+      instanceId: id,
       message: String(e),
       exitCode: null,
     })
@@ -348,6 +383,8 @@ async function onCompatibleStart() {
   if (!id || !profile) return
   compatibility.value = null
   handoffCompleted.value = false
+  dshWindowOpened.value = false
+  compatDismissed.value = false
   compatibilityBusy.value = true
   try {
     const report = await api.startCompatibleInstance(id, profile)
@@ -356,7 +393,14 @@ async function onCompatibleStart() {
       compatibility.value = report
     }
     if (report.started && selectedProfileKind.value !== 'tui' && store.settings.auto_open_on_launch) {
-      void store.openWindowWhenReady(id).catch((e) => Message.error(String(e)))
+      store
+        .openWindowWhenReady(id)
+        .then(() => onDshWindowOpened(id))
+        .catch((e) => Message.error(String(e)))
+    }
+    // TUI handoff: the backend already opened the terminal window.
+    if (report.handoff_pending && selectedProfileKind.value === 'tui') {
+      onDshWindowOpened(id)
     }
   } catch (e) {
     if (selectedInstanceId.value === id && selectedProfile.value === profile) Message.error(String(e))
@@ -368,6 +412,8 @@ async function onCompatibleStart() {
 async function reportHealth(instanceId: string, profile: string) {
   try {
     const report = await api.checkPluginCompatibility(instanceId, profile)
+    // The DSH window already opened: keep the details in the log file only.
+    if (dshWindowOpened.value) return
     if (selectedInstanceId.value === instanceId && selectedProfile.value === profile) {
       report.started = selectedProfileKind.value !== 'tui'
       report.handoff_pending = selectedProfileKind.value === 'tui'
@@ -390,8 +436,10 @@ async function onStop() {
 
 async function onOpenWindow() {
   if (!selectedInstanceId.value) return
+  const id = selectedInstanceId.value
   try {
-    await api.openInstanceWindow(selectedInstanceId.value)
+    await api.openInstanceWindow(id)
+    onDshWindowOpened(id)
   } catch (e) {
     Message.error(String(e))
   }
@@ -515,9 +563,28 @@ function goEditSelected() {
             {{ t('home.editSelected') }}
           </a-button>
         </div>
-        <CompatibilityReport v-if="compatibility" :report="compatibility" class="home-compat" />
       </div>
     </aside>
+
+    <!-- Compatibility result pops up instead of stacking under the buttons;
+         it hides the moment the DSH window opens (details stay in the log). -->
+    <a-modal
+      :visible="compatModalVisible"
+      :title="t('compat.title')"
+      :closable="!compatibilityBusy"
+      :mask-closable="!compatibilityBusy"
+      :hide-cancel="true"
+      :ok-text="t('common.confirm')"
+      width="560px"
+      @ok="closeCompatModal"
+      @cancel="closeCompatModal"
+    >
+      <div v-if="compatibilityBusy && !compatibility" class="compat-checking">
+        <a-spin :size="22" />
+        <span>{{ t('compat.checking') }}</span>
+      </div>
+      <CompatibilityReport v-else-if="compatibility" :report="compatibility" />
+    </a-modal>
 
     <!-- Right news area: renders the configured md/html source (XSS-sanitized) -->
     <section class="news-area">
@@ -634,7 +701,7 @@ function goEditSelected() {
   gap: 10px;
 }
 
-.home-compat { max-height: 260px; overflow: auto; }
+.compat-checking { display: flex; align-items: center; gap: 12px; padding: 24px 4px; font-size: 13px; color: var(--color-text-2); }
 
 .launch-button {
   height: 64px;

@@ -30,7 +30,7 @@
     "settings": "Settings"
   },
   "compat": {
-    "title": "Plugin compatibility", "launch": "Compatibility launch", "check": "Check compatibility",
+    "title": "Plugin compatibility", "launch": "Compatibility launch", "check": "Check compatibility", "checking": "Checking plugin compatibility…",
     "complete": "Complete", "partial": "Incomplete", "failed": "Check failed",
     "spawned": "Process spawned (readiness not verified)", "handoff": "Terminal window opened; PTY startup pending", "notStarted": "Not started",
     "actions": "Disabled entries", "findings": "Findings", "before": "Before", "after": "Current findings", "unresolved": "Unresolved",
