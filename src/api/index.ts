@@ -906,6 +906,7 @@ async function mockCall<T>(cmd: string, args?: Record<string, unknown>): Promise
           name: 'conventional-commits',
           description: 'Conventional Commits 提交规范',
           kind: 'dir',
+          entry: 'conventional-commits',
           origin: {
             repo: 'https://github.com/Gu-ZT/skills#/conventional-commits',
             commit: '0123456789abcdef0123456789abcdef01234567',
@@ -913,6 +914,8 @@ async function mockCall<T>(cmd: string, args?: Record<string, unknown>): Promise
           },
         },
       ] as T
+    case 'export_skills':
+      return undefined as T
     case 'install_skill_repo':
       return ['conventional-commits'] as T
     case 'open_skills_directory':
@@ -1452,6 +1455,9 @@ export const api = {
   listInstanceSkills: (homeId: string) => call<SkillInfo[]>('list_instance_skills', { homeId }),
   /** Opens the instance HOME's skills directory in the system file manager (issue #60). */
   openSkillsDirectory: (homeId: string) => call<string>('open_skills_directory', { homeId }),
+  /** Exports the selected skills (on-disk entry names) into one ZIP archive (issue #61). */
+  exportSkills: (homeId: string, entries: string[], target: string) =>
+    call<void>('export_skills', { home_id: homeId, entries, target }),
   /** Installs skill(s) from a source repo URL; resolves to installed skill names. */
   installSkillRepo: (homeId: string, url: string) =>
     call<string[]>('install_skill_repo', { homeId, url }),

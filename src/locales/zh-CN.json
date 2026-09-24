@@ -491,6 +491,8 @@
     "skillColRepo": "仓库",
     "skillCheckUpdates": "检查更新",
     "skillOpenDir": "打开目录",
+    "skillExport": "导出选中",
+    "skillExported": "已导出到 {path}",
     "skillUpdateAll": "全部更新（{count}）",
     "skillUpdatesFound": "发现 {count} 个 SKILL 有更新",
     "skillNoUpdates": "所有 SKILL 已是最新",

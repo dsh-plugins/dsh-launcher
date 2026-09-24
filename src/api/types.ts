@@ -361,6 +361,8 @@ export interface SkillInfo {
   description: string
   /** "dir" bundle or flat "file". */
   kind: string
+  /** On-disk entry name in the skills directory (may differ from the frontmatter name). */
+  entry: string
   origin?: SkillOrigin | null
 }
 

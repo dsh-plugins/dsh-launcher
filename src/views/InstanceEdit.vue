@@ -519,6 +519,36 @@ const skillUpdates = ref<SkillUpdateInfo[]>([])
 const skillCheckingUpdates = ref(false)
 const skillUpdatingAll = ref(false)
 const skillOpeningDir = ref(false)
+const skillSelectedKeys = ref<string[]>([])
+const skillExporting = ref(false)
+
+function onSkillSelectionChange(keys: (string | number)[]) {
+  skillSelectedKeys.value = keys.map(String)
+}
+
+/** Exports the checked skills into one ZIP chosen via the save dialog (issue #61). */
+async function onExportSkills() {
+  if (!homeId.value || skillSelectedKeys.value.length === 0) return
+  const entries = skills.value
+    .filter((s) => skillSelectedKeys.value.includes(s.name))
+    .map((s) => s.entry)
+  if (entries.length === 0) return
+  const { save } = await import('@tauri-apps/plugin-dialog')
+  const dest = await save({
+    defaultPath: 'skills.zip',
+    filters: [{ name: 'ZIP', extensions: ['zip'] }],
+  })
+  if (typeof dest !== 'string') return
+  skillExporting.value = true
+  try {
+    await api.exportSkills(homeId.value, entries, dest)
+    Message.success(t('instanceEdit.skillExported', { path: dest }))
+  } catch (e) {
+    Message.error(String(e))
+  } finally {
+    skillExporting.value = false
+  }
+}
 
 async function onOpenSkillsDir() {
   if (!homeId.value) return
@@ -542,6 +572,7 @@ const skillColumns = computed(() => [
 async function loadSkills() {
   if (!homeId.value) return
   skillsLoading.value = true
+  skillSelectedKeys.value = []
   try {
     skills.value = await api.listInstanceSkills(homeId.value)
   } catch (e) {
@@ -1967,6 +1998,14 @@ const terminalRunning = ref(false)
                   {{ t('instanceEdit.skillOpenDir') }}
                 </a-button>
                 <a-button
+                  size="small"
+                  :disabled="skillSelectedKeys.length === 0"
+                  :loading="skillExporting"
+                  @click="onExportSkills"
+                >
+                  {{ t('instanceEdit.skillExport') }}
+                </a-button>
+                <a-button
                   v-if="skillUpdates.length > 0"
                   size="small"
                   status="warning"
@@ -1982,9 +2021,11 @@ const terminalRunning = ref(false)
                 :data="skills"
                 :loading="skillsLoading"
                 :pagination="false"
+                :row-selection="rowSelection"
                 :scroll="{ x: 860 }"
                 row-key="name"
                 size="small"
+                @selection-change="onSkillSelectionChange"
               >
                 <template #origin="{ record }">
                   <template v-if="record.origin">

@@ -30,6 +30,9 @@ pub struct SkillInfo {
     pub description: String,
     /// "dir" bundle or flat "file" skill.
     pub kind: String,
+    /// On-disk entry name in the skills directory (directory name or
+    /// `<name>.md`) — may differ from the frontmatter `name` (issue #61).
+    pub entry: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub origin: Option<SkillOrigin>,
 }
@@ -216,6 +219,7 @@ fn skill_info_from_dir(dir: &Path) -> Option<SkillInfo> {
         name,
         description,
         kind: "dir".to_string(),
+        entry: dir.file_name()?.to_string_lossy().to_string(),
         origin: read_origin(dir),
     })
 }
@@ -247,6 +251,7 @@ pub fn list_instance_skills(
                             name,
                             description,
                             kind: "file".to_string(),
+                            entry: entry.file_name().to_string_lossy().to_string(),
                             origin: None,
                         });
                     }
@@ -277,6 +282,90 @@ pub async fn open_skills_directory(
     }
     open::that(&dir).map_err(|e| format!("打开目录失败: {e}"))?;
     Ok(dir.to_string_lossy().to_string())
+}
+
+/// Exports selected skills as one ZIP archive (issue #61). `entries` are
+/// on-disk names inside `<home>/skills` (directory names or `<name>.md`
+/// files); anything containing path separators is rejected. The archive
+/// mirrors the skills directory layout, so it round-trips through
+/// `import_skill_zip`.
+#[tauri::command(rename_all = "snake_case")]
+pub async fn export_skills(
+    state: State<'_, AppState>,
+    home_id: String,
+    entries: Vec<String>,
+    target: String,
+) -> Result<(), String> {
+    if entries.is_empty() {
+        return Err("未选择要导出的 SKILL".to_string());
+    }
+    let fs = home_path_of(&state, &home_id)?;
+    // Reading a WSL home goes through \\wsl$\, which can block for
+    // milliseconds per call; keep the runtime free (issue #49 G3).
+    crate::wsl::run_blocking(move || export_skills_blocking(&fs, &entries, &target)).await?
+}
+
+fn export_skills_blocking(home: &Path, entries: &[String], target: &str) -> Result<(), String> {
+    let dir = skills_dir(home);
+    let file = std::fs::File::create(target).map_err(|e| format!("创建 ZIP 失败 {target}: {e}"))?;
+    let mut zip = zip::ZipWriter::new(file);
+    let opts = zip::write::SimpleFileOptions::default()
+        .compression_method(zip::CompressionMethod::Deflated);
+    for entry in entries {
+        if entry.is_empty()
+            || entry.contains('/')
+            || entry.contains('\\')
+            || entry == "."
+            || entry == ".."
+        {
+            return Err(format!("非法的 SKILL 条目名: {entry}"));
+        }
+        let path = dir.join(entry);
+        if path.is_dir() {
+            zip_skill_dir(&mut zip, &path, entry, opts)?;
+        } else if path.is_file() {
+            let bytes =
+                std::fs::read(&path).map_err(|e| format!("读取 SKILL 失败 {entry}: {e}"))?;
+            zip.start_file(entry.as_str(), opts)
+                .map_err(|e| format!("写入 ZIP 失败: {e}"))?;
+            use std::io::Write;
+            zip.write_all(&bytes)
+                .map_err(|e| format!("写入 ZIP 失败: {e}"))?;
+        } else {
+            return Err(format!("SKILL 不存在: {entry}"));
+        }
+    }
+    zip.finish().map_err(|e| format!("写入 ZIP 失败: {e}"))?;
+    Ok(())
+}
+
+/// Adds one skill directory to the archive under `<prefix>/`, skipping VCS
+/// metadata (`.git`).
+fn zip_skill_dir(
+    zip: &mut zip::ZipWriter<std::fs::File>,
+    dir: &Path,
+    prefix: &str,
+    opts: zip::write::SimpleFileOptions,
+) -> Result<(), String> {
+    use std::io::Write;
+    for item in std::fs::read_dir(dir).map_err(|e| format!("读取 SKILL 目录失败: {e}"))? {
+        let item = item.map_err(|e| e.to_string())?;
+        if item.file_name() == ".git" {
+            continue;
+        }
+        let name = format!("{}/{}", prefix, item.file_name().to_string_lossy());
+        let path = item.path();
+        if path.is_dir() {
+            zip_skill_dir(zip, &path, &name, opts)?;
+        } else {
+            let bytes = std::fs::read(&path).map_err(|e| format!("读取文件失败 {name}: {e}"))?;
+            zip.start_file(name.as_str(), opts)
+                .map_err(|e| format!("写入 ZIP 失败: {e}"))?;
+            zip.write_all(&bytes)
+                .map_err(|e| format!("写入 ZIP 失败: {e}"))?;
+        }
+    }
+    Ok(())
 }
 
 /// Runs git and returns trimmed stdout; errors carry stderr.
@@ -802,6 +891,85 @@ pub fn create_skill(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Unique scratch directory under %TEMP%, removed by the caller.
+    fn scratch_dir(tag: &str) -> PathBuf {
+        std::env::temp_dir().join(format!(
+            "dshl-skill-{tag}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ))
+    }
+
+    #[test]
+    fn export_skills_blocking_archives_dirs_and_files() {
+        let root = scratch_dir("export");
+        let skills = skills_dir(&root);
+        let dir_skill = skills.join("review");
+        std::fs::create_dir_all(dir_skill.join("sub")).unwrap();
+        std::fs::write(dir_skill.join("SKILL.md"), "---\nname: review\n---\n").unwrap();
+        std::fs::write(dir_skill.join("sub").join("note.md"), "note").unwrap();
+        std::fs::create_dir_all(dir_skill.join(".git")).unwrap();
+        std::fs::write(dir_skill.join(".git").join("HEAD"), "x").unwrap();
+        std::fs::write(skills.join("plain.md"), "---\nname: plain\n---\n").unwrap();
+        std::fs::write(skills.join("unselected.md"), "---\nname: unselected\n---\n").unwrap();
+        let target = root.join("out.zip");
+
+        export_skills_blocking(
+            &root,
+            &["review".to_string(), "plain.md".to_string()],
+            target.to_str().unwrap(),
+        )
+        .unwrap();
+
+        let file = std::fs::File::open(&target).unwrap();
+        let mut archive = zip::ZipArchive::new(file).unwrap();
+        let names: Vec<String> = (0..archive.len())
+            .map(|i| archive.by_index(i).unwrap().name().to_string())
+            .collect();
+        assert!(names.contains(&"review/SKILL.md".to_string()), "{names:?}");
+        assert!(
+            names.contains(&"review/sub/note.md".to_string()),
+            "{names:?}"
+        );
+        assert!(names.contains(&"plain.md".to_string()), "{names:?}");
+        assert!(!names.iter().any(|n| n.contains(".git")), "{names:?}");
+        assert!(!names.iter().any(|n| n.contains("unselected")), "{names:?}");
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn export_skills_blocking_rejects_traversal_and_missing() {
+        let root = scratch_dir("export-guard");
+        std::fs::create_dir_all(skills_dir(&root)).unwrap();
+        let target = root.join("out.zip");
+        let target_str = target.to_str().unwrap().to_string();
+        assert!(export_skills_blocking(&root, &["../evil".to_string()], &target_str).is_err());
+        assert!(export_skills_blocking(&root, &["a/b".to_string()], &target_str).is_err());
+        assert!(export_skills_blocking(&root, &["ghost".to_string()], &target_str).is_err());
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn skill_info_reports_on_disk_entry_name() {
+        // The frontmatter name and the directory name may differ; the export
+        // flow keys on the on-disk entry (issue #61).
+        let root = scratch_dir("entry");
+        let skill = skills_dir(&root).join("renamed-dir");
+        std::fs::create_dir_all(&skill).unwrap();
+        std::fs::write(
+            skill.join("SKILL.md"),
+            "---\nname: 显示名\ndescription: d\n---\n",
+        )
+        .unwrap();
+        let info = skill_info_from_dir(&skill).unwrap();
+        assert_eq!(info.entry, "renamed-dir");
+        assert_eq!(info.name, "显示名");
+        std::fs::remove_dir_all(&root).ok();
+    }
 
     #[test]
     fn parse_repo_url_variants() {

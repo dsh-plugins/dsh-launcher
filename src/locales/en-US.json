@@ -491,6 +491,8 @@
     "skillColRepo": "Repository",
     "skillCheckUpdates": "Check updates",
     "skillOpenDir": "Open folder",
+    "skillExport": "Export selected",
+    "skillExported": "Exported to {path}",
     "skillUpdateAll": "Update all ({count})",
     "skillUpdatesFound": "{count} skill(s) have updates",
     "skillNoUpdates": "All skills are up to date",
