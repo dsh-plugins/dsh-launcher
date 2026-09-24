@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { Message } from '@arco-design/web-vue'
@@ -36,6 +36,18 @@ const contents = ref({
 /** Skills of the export HOME + the selected on-disk entries (issue #58). */
 const skillList = ref<SkillInfo[]>([])
 const skillSelected = ref<string[]>([])
+
+/** Select-all checkbox state for the SKILL list. */
+const skillAllChecked = computed(
+  () => skillList.value.length > 0 && skillSelected.value.length === skillList.value.length,
+)
+const skillIndeterminate = computed(
+  () => skillSelected.value.length > 0 && skillSelected.value.length < skillList.value.length,
+)
+
+function onToggleAllSkills(value: boolean | (string | number | boolean)[]) {
+  skillSelected.value = value === true ? skillList.value.map((s) => s.entry) : []
+}
 
 const busy = ref(false)
 
@@ -176,7 +188,13 @@ async function startExport() {
         </div>
         <div v-if="skillList.length > 0" class="content-row content-skills">
           <div class="content-skills-title">
-            {{ t('exportPack.contentSkills') }}
+            <a-checkbox
+              :model-value="skillAllChecked"
+              :indeterminate="skillIndeterminate"
+              @change="onToggleAllSkills"
+            >
+              {{ t('exportPack.contentSkills') }}
+            </a-checkbox>
             <HintIcon :content="t('exportPack.contentSkillsHint')" />
           </div>
           <a-checkbox-group v-model="skillSelected" class="content-skills-list">
