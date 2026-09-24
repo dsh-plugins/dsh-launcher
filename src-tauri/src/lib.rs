@@ -189,6 +189,10 @@ pub fn run() {
             // System tray with dynamic menu.
             tray::build_tray(app.handle())?;
 
+            // Custom launcher icons (issue #59) re-apply over the defaults
+            // once the window and tray both exist.
+            icons::apply_launcher_icons(app.handle(), &data_dir);
+
             // Close-to-tray for the main window.
             if let Some(win) = app.get_webview_window("main") {
                 let handle = app.handle().clone();
@@ -271,6 +275,9 @@ pub fn run() {
             icons::set_instance_icon,
             icons::clear_instance_icon,
             icons::read_instance_icon,
+            icons::set_launcher_icon,
+            icons::clear_launcher_icon,
+            icons::read_launcher_icon,
             skills::list_instance_skills,
             commands::read_agents_md,
             commands::write_agents_md,

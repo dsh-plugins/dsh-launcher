@@ -6,7 +6,7 @@
 use std::path::{Path, PathBuf};
 
 use crate::AppState;
-use tauri::State;
+use tauri::{Manager, State};
 
 const ICON_MAX_BYTES: usize = 16 * 1024 * 1024;
 const ICON_SIZE: u32 = 256;
@@ -200,9 +200,158 @@ pub fn read_instance_icon(
     }
 }
 
+// ---------------------------------------------------------------------------
+// Launcher icons (issue #59): the window icon (title bar + taskbar share it)
+// and the tray icon may be replaced by a local image, stored as cropped
+// square PNGs under `<data>/icons/launcher-<kind>.png`. Files on disk are the
+// source of truth — startup re-applies them, no config flag to go stale.
+// ---------------------------------------------------------------------------
+
+/// Where a launcher icon of `kind` ("window" / "tray") is stored.
+fn launcher_icon_path(data_dir: &Path, kind: &str) -> Result<PathBuf, String> {
+    match kind {
+        "window" => Ok(data_dir.join("icons").join("launcher-window.png")),
+        "tray" => Ok(data_dir.join("icons").join("launcher-tray.png")),
+        _ => Err(format!("未知的图标类型: {kind}")),
+    }
+}
+
+/// Applies PNG bytes to the live window / tray icon.
+fn apply_launcher_icon(app: &tauri::AppHandle, kind: &str, png: &[u8]) -> Result<(), String> {
+    let img = tauri::image::Image::from_bytes(png).map_err(|e| format!("解析 PNG 失败: {e}"))?;
+    match kind {
+        "window" => {
+            let win = app
+                .get_webview_window("main")
+                .ok_or_else(|| "主窗口不存在".to_string())?;
+            win.set_icon(img)
+                .map_err(|e| format!("设置窗口图标失败: {e}"))
+        }
+        "tray" => {
+            let tray = app
+                .tray_by_id("main")
+                .ok_or_else(|| "托盘不存在".to_string())?;
+            tray.set_icon(Some(img))
+                .map_err(|e| format!("设置托盘图标失败: {e}"))
+        }
+        _ => Err(format!("未知的图标类型: {kind}")),
+    }
+}
+
+/// Re-applies the stored launcher icons at startup; missing files keep the
+/// defaults. Failures are logged, never fatal — a bad icon file must not
+/// block the launcher.
+pub fn apply_launcher_icons(app: &tauri::AppHandle, data_dir: &Path) {
+    for kind in ["window", "tray"] {
+        let Ok(path) = launcher_icon_path(data_dir, kind) else {
+            continue;
+        };
+        match std::fs::read(&path) {
+            Ok(bytes) => {
+                if let Err(e) = apply_launcher_icon(app, kind, &bytes) {
+                    crate::log_warn!("应用自定义启动器图标（{kind}）失败: {e}");
+                }
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => crate::log_warn!("读取自定义启动器图标（{kind}）失败: {e}"),
+        }
+    }
+}
+
+/// Sets a launcher icon from a local image file: decoded, center-cropped to
+/// a square PNG, stored, and applied immediately.
+#[tauri::command(rename_all = "snake_case")]
+pub fn set_launcher_icon(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    kind: String,
+    path: String,
+) -> Result<(), String> {
+    let dest = launcher_icon_path(&state.data_dir, &kind)?;
+    let src = PathBuf::from(path.trim());
+    let bytes =
+        std::fs::read(&src).map_err(|e| format!("读取图标文件失败 {}: {e}", src.display()))?;
+    if bytes.len() > ICON_MAX_BYTES {
+        return Err("图标文件过大（超过 16 MiB）".to_string());
+    }
+    let png = crop_square_png(&bytes)?;
+    if let Some(dir) = dest.parent() {
+        std::fs::create_dir_all(dir).map_err(|e| format!("创建图标目录失败: {e}"))?;
+    }
+    std::fs::write(&dest, &png).map_err(|e| format!("写入图标失败: {e}"))?;
+    apply_launcher_icon(&app, &kind, &png)?;
+    crate::log_info!("已设置自定义启动器图标（{kind}）");
+    Ok(())
+}
+
+/// Restores a launcher icon to the default and removes the stored file.
+#[tauri::command(rename_all = "snake_case")]
+pub fn clear_launcher_icon(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    kind: String,
+) -> Result<(), String> {
+    let dest = launcher_icon_path(&state.data_dir, &kind)?;
+    match std::fs::remove_file(&dest) {
+        Ok(()) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => return Err(format!("删除图标失败: {e}")),
+    }
+    let default = app.default_window_icon().cloned();
+    match (kind.as_str(), default) {
+        ("window", Some(icon)) => {
+            if let Some(win) = app.get_webview_window("main") {
+                win.set_icon(icon)
+                    .map_err(|e| format!("恢复窗口图标失败: {e}"))?;
+            }
+        }
+        ("tray", Some(icon)) => {
+            if let Some(tray) = app.tray_by_id("main") {
+                tray.set_icon(Some(icon))
+                    .map_err(|e| format!("恢复托盘图标失败: {e}"))?;
+            }
+        }
+        // No bundled default icon to restore to (should not happen in
+        // packaged builds); the file is gone either way.
+        _ => crate::log_warn!("恢复默认启动器图标（{kind}）：无内置默认图标可用"),
+    }
+    Ok(())
+}
+
+/// Reads a stored launcher icon as a `data:` URL for the settings preview;
+/// `None` means the default is in use.
+#[tauri::command(rename_all = "snake_case")]
+pub fn read_launcher_icon(
+    state: State<'_, AppState>,
+    kind: String,
+) -> Result<Option<String>, String> {
+    let path = launcher_icon_path(&state.data_dir, &kind)?;
+    match std::fs::read(&path) {
+        Ok(bytes) => Ok(Some(format!(
+            "data:image/png;base64,{}",
+            base64::Engine::encode(&base64::engine::general_purpose::STANDARD, bytes)
+        ))),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(format!("读取图标失败: {e}")),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn launcher_icon_path_validates_kind() {
+        let dir = Path::new("data");
+        assert!(launcher_icon_path(dir, "window")
+            .unwrap()
+            .ends_with("launcher-window.png"));
+        assert!(launcher_icon_path(dir, "tray")
+            .unwrap()
+            .ends_with("launcher-tray.png"));
+        assert!(launcher_icon_path(dir, "../escape").is_err());
+        assert!(launcher_icon_path(dir, "").is_err());
+    }
 
     /// 4x2 red rectangle PNG, generated once for the crop test.
     fn rect_png() -> Vec<u8> {

@@ -895,11 +895,15 @@ async function mockCall<T>(cmd: string, args?: Record<string, unknown>): Promise
       return null as T
     case 'create_launch_shortcut':
       return undefined as T
-    case 'set_instance_icon':
-    case 'clear_instance_icon':
+    case 'set_instance_icon':    case 'clear_instance_icon':
       return undefined as T
     case 'read_instance_icon':
       return null as T
+    case 'read_launcher_icon':
+      return null as T
+    case 'set_launcher_icon':
+    case 'clear_launcher_icon':
+      return undefined as T
     case 'list_instance_skills':
       return [
         {
@@ -1455,6 +1459,12 @@ export const api = {
   clearInstanceIcon: (instanceId: string) => call<void>('clear_instance_icon', { instanceId }),
   /** Resolves the displayable icon (URL or data URL); null = launcher default. */
   readInstanceIcon: (instanceId: string) => call<string | null>('read_instance_icon', { instanceId }),
+  /** Sets a custom launcher icon ("window" = title bar/taskbar, "tray") from a local image (issue #59). */
+  setLauncherIcon: (kind: string, path: string) => call<void>('set_launcher_icon', { kind, path }),
+  /** Restores a launcher icon to the default (issue #59). */
+  clearLauncherIcon: (kind: string) => call<void>('clear_launcher_icon', { kind }),
+  /** Reads a custom launcher icon as a data URL; null = default (issue #59). */
+  readLauncherIcon: (kind: string) => call<string | null>('read_launcher_icon', { kind }),
   /** Lists skills in an instance HOME's skills directory. */
   listInstanceSkills: (homeId: string) => call<SkillInfo[]>('list_instance_skills', { homeId }),
   /** Opens the instance HOME's skills directory in the system file manager (issue #60). */

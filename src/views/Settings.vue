@@ -68,6 +68,7 @@ const UPDATE_CHANNEL_OPTIONS = computed<{ value: 'dev' | 'release'; label: strin
 ])
 
 onMounted(async () => {
+  loadLauncherIcons()
   try {
     launcherVersion.value = await api.getLauncherVersion()
   } catch {
@@ -203,6 +204,54 @@ async function onNewsSourceSave() {
   const value = newsSource.value.trim()
   if (value === (store.settings.news_source ?? '')) return
   await patchSettings({ news_source: value })
+}
+
+// --- Launcher icons (issue #59): custom window (title bar / taskbar) and
+// tray icons, stored under <data>/icons by the backend.
+const launcherIcons = ref<{ window: string | null; tray: string | null }>({ window: null, tray: null })
+const launcherIconBusy = ref('')
+
+async function loadLauncherIcons() {
+  try {
+    const [window, tray] = await Promise.all([
+      api.readLauncherIcon('window'),
+      api.readLauncherIcon('tray'),
+    ])
+    launcherIcons.value = { window, tray }
+  } catch (e) {
+    Message.error(String(e))
+  }
+}
+
+async function onPickLauncherIcon(kind: 'window' | 'tray') {
+  const { open } = await import('@tauri-apps/plugin-dialog')
+  const file = await open({
+    multiple: false,
+    filters: [{ name: 'Image', extensions: ['png', 'jpg', 'jpeg', 'ico'] }],
+  })
+  if (typeof file !== 'string') return
+  launcherIconBusy.value = kind
+  try {
+    await api.setLauncherIcon(kind, file)
+    launcherIcons.value[kind] = await api.readLauncherIcon(kind)
+    Message.success(t('settings.launcherIcon.saved'))
+  } catch (e) {
+    Message.error(String(e))
+  } finally {
+    launcherIconBusy.value = ''
+  }
+}
+
+async function onClearLauncherIcon(kind: 'window' | 'tray') {
+  launcherIconBusy.value = kind
+  try {
+    await api.clearLauncherIcon(kind)
+    launcherIcons.value[kind] = null
+  } catch (e) {
+    Message.error(String(e))
+  } finally {
+    launcherIconBusy.value = ''
+  }
 }
 
 // --- SKILL source repos (issue #10) ---------------------------------------------
@@ -482,6 +531,48 @@ const pluginSourceColumns = computed(() => [
             @press-enter="onNewsSourceSave"
           />
           </a-form-item>
+        <a-form-item>
+          <template #label>
+            {{ t('settings.launcherIcon.window') }}
+            <HintIcon :content="t('settings.launcherIcon.windowHint')" />
+          </template>
+          <a-space>
+            <img v-if="launcherIcons.window" :src="launcherIcons.window" class="launcher-icon-preview" alt="" />
+            <a-button size="small" :loading="launcherIconBusy === 'window'" @click="onPickLauncherIcon('window')">
+              {{ t('settings.launcherIcon.pick') }}
+            </a-button>
+            <a-button
+              v-if="launcherIcons.window"
+              size="small"
+              status="danger"
+              :loading="launcherIconBusy === 'window'"
+              @click="onClearLauncherIcon('window')"
+            >
+              {{ t('settings.launcherIcon.clear') }}
+            </a-button>
+          </a-space>
+        </a-form-item>
+        <a-form-item>
+          <template #label>
+            {{ t('settings.launcherIcon.tray') }}
+            <HintIcon :content="t('settings.launcherIcon.trayHint')" />
+          </template>
+          <a-space>
+            <img v-if="launcherIcons.tray" :src="launcherIcons.tray" class="launcher-icon-preview" alt="" />
+            <a-button size="small" :loading="launcherIconBusy === 'tray'" @click="onPickLauncherIcon('tray')">
+              {{ t('settings.launcherIcon.pick') }}
+            </a-button>
+            <a-button
+              v-if="launcherIcons.tray"
+              size="small"
+              status="danger"
+              :loading="launcherIconBusy === 'tray'"
+              @click="onClearLauncherIcon('tray')"
+            >
+              {{ t('settings.launcherIcon.clear') }}
+            </a-button>
+          </a-space>
+        </a-form-item>
       </a-form>
     </div>
 
@@ -884,5 +975,13 @@ const pluginSourceColumns = computed(() => [
 .update-up-to-date {
   color: var(--color-text-3);
   font-size: 13px;
+}
+
+.launcher-icon-preview {
+  width: 32px;
+  height: 32px;
+  border-radius: 6px;
+  border: 1px solid var(--color-border-2);
+  object-fit: contain;
 }
 </style>

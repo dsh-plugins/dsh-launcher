@@ -261,7 +261,16 @@
     },
     "newsSource": "新闻来源",
     "newsSourcePlaceholder": "https://…/news.md 或本地 .md/.html 文件路径",
-    "newsSourceHint": "支持 Markdown（GFM + 内联 HTML + &gt;!遮罩!&lt; 剧透语法）与 HTML 文件；内容会先经 XSS 过滤再展示在启动页右侧新闻区域，链接在新窗口打开。",
+    "newsSourceHint":"支持 Markdown（GFM + 内联 HTML + &gt;!遮罩!&lt; 剧透语法）与 HTML 文件；内容会先经 XSS 过滤再展示在启动页右侧新闻区域，链接在新窗口打开。",
+    "launcherIcon": {
+      "window": "窗口图标",
+      "windowHint": "自定义标题栏与任务栏图标（两者共用窗口图标）；居中裁剪为正方形，重启后保持",
+      "tray": "托盘图标",
+      "trayHint": "自定义系统托盘图标；居中裁剪为正方形，重启后保持",
+      "pick": "选择图片",
+      "clear": "恢复默认",
+      "saved": "图标已更新"
+    },
     "skillRepos": {
       "title": "SKILL 仓库",
       "hint": "格式：https://[user:password{'@'}]github.com/user/repo[.git][#/path/to/skill]；在实例设置的 SKILL 页中从仓库安装或更新 SKILL，以 commit / tag 识别版本。",

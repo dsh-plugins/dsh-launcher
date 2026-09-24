@@ -262,6 +262,15 @@
     "newsSource": "News source",
     "newsSourcePlaceholder": "https://…/news.md or a local .md/.html path",
     "newsSourceHint": "Markdown (GFM + inline HTML + the &gt;!spoiler!&lt; redaction syntax) and HTML are supported; content is XSS-sanitized before being shown in the news area on the home page, and links open in a new window.",
+    "launcherIcon": {
+      "window": "Window icon",
+      "windowHint": "Custom title bar and taskbar icon (both share the window icon); center-cropped to a square and kept across restarts",
+      "tray": "Tray icon",
+      "trayHint": "Custom system tray icon; center-cropped to a square and kept across restarts",
+      "pick": "Choose image",
+      "clear": "Restore default",
+      "saved": "Icon updated"
+    },
     "skillRepos": {
       "title": "SKILL repositories",
       "hint": "Format: https://[user:password{'@'}]github.com/user/repo[.git][#/path/to/skill]; install or update skills from a repo on the instance SKILL tab, versioned by commit / tag.",
