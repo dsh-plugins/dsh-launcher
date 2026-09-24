@@ -655,6 +655,10 @@
     "contentIconHint": "打包为包内 icon.png；默认启动器图标不会导出",
     "contentExtra": "Profile 内其他文件",
     "contentExtraHint": "除上述文件外的用户文件，经安全过滤（排除 node_modules、.env、密钥与嵌套压缩包）后放入 overrides/",
+    "contentAgents": "AGENTS.md",
+    "contentAgentsHint": "携带 DSH_HOME 根目录下的 AGENTS.md（如果存在），导入时应用到目标 DSH_HOME 根目录",
+    "contentSkills": "携带的 SKILL",
+    "contentSkillsHint": "勾选的 SKILL 随包携带（home/skills/），导入时放入目标 DSH_HOME 的 skills 目录",
     "start": "开始导出",
     "exported": "整合包已导出：{path}"
   },

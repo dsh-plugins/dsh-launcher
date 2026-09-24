@@ -4,6 +4,7 @@ import { useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { Message } from '@arco-design/web-vue'
 import { api } from '@/api'
+import type { SkillInfo } from '@/api/types'
 import { useLauncherStore } from '@/stores/launcher'
 import HintIcon from '@/components/HintIcon.vue'
 
@@ -29,12 +30,25 @@ const contents = ref({
   workspace: true,
   icon: true,
   extra_files: false,
+  agents_md: false,
 })
+
+/** Skills of the export HOME + the selected on-disk entries (issue #58). */
+const skillList = ref<SkillInfo[]>([])
+const skillSelected = ref<string[]>([])
 
 const busy = ref(false)
 
-onMounted(() => {
-  if (!ctx) router.replace({ name: 'instances' })
+onMounted(async () => {
+  if (!ctx) {
+    router.replace({ name: 'instances' })
+    return
+  }
+  try {
+    skillList.value = await api.listInstanceSkills(ctx.homeId)
+  } catch (e) {
+    Message.error(String(e))
+  }
 })
 
 function goBack() {
@@ -69,7 +83,7 @@ async function startExport() {
       displayName: form.value.displayName.trim() || undefined,
       description: form.value.description.trim() || undefined,
       author: form.value.author.trim() || undefined,
-      contents: { ...contents.value },
+      contents: { ...contents.value, skills: [...skillSelected.value] },
     })
     Message.success(t('exportPack.exported', { path }))
     goBack()
@@ -154,6 +168,24 @@ async function startExport() {
             <HintIcon :content="t('exportPack.contentExtraHint')" />
           </a-checkbox>
         </div>
+        <div class="content-row">
+          <a-checkbox v-model="contents.agents_md">
+            {{ t('exportPack.contentAgents') }}
+            <HintIcon :content="t('exportPack.contentAgentsHint')" />
+          </a-checkbox>
+        </div>
+        <div v-if="skillList.length > 0" class="content-row content-skills">
+          <div class="content-skills-title">
+            {{ t('exportPack.contentSkills') }}
+            <HintIcon :content="t('exportPack.contentSkillsHint')" />
+          </div>
+          <a-checkbox-group v-model="skillSelected" class="content-skills-list">
+            <a-checkbox v-for="s in skillList" :key="s.entry" :value="s.entry">
+              {{ s.name }}
+              <span v-if="s.name !== s.entry" class="content-skill-entry">({{ s.entry }})</span>
+            </a-checkbox>
+          </a-checkbox-group>
+        </div>
       </div>
 
       <div class="export-actions">
@@ -199,6 +231,23 @@ async function startExport() {
 
 .content-row:last-child {
   border-bottom: none;
+}
+
+.content-skills-title {
+  color: var(--color-text-1);
+  margin-bottom: 6px;
+}
+
+.content-skills-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding-left: 22px;
+}
+
+.content-skill-entry {
+  color: var(--color-text-3);
+  font-size: 12px;
 }
 
 .export-actions {

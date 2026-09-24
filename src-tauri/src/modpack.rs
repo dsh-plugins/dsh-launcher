@@ -128,7 +128,7 @@ pub struct ModpackManifest {
 
 /// Exportable content selection; `Default` exports the standard set (patch,
 /// lockfile, workspace settings, icon) and skips extra user files.
-#[derive(Clone, Copy, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize)]
 pub struct ExportContents {
     /// cordis.patch.yml patch layer, carried via `overrides/`.
     #[serde(default = "default_include")]
@@ -145,6 +145,15 @@ pub struct ExportContents {
     /// Other user files in the profile, safety-filtered into `overrides/`.
     #[serde(default)]
     pub extra_files: bool,
+    /// HOME-level AGENTS.md, shipped under `home/` and applied onto the
+    /// DSH_HOME root on import (pack-structure v3, issue #58).
+    #[serde(default)]
+    pub agents_md: bool,
+    /// Selected on-disk skill entries under `<home>/skills` (directory names
+    /// or `<name>.md`), shipped under `home/skills/` (issue #58). Empty = the
+    /// pack carries no skills.
+    #[serde(default)]
+    pub skills: Vec<String>,
 }
 
 fn default_include() -> bool {
@@ -159,6 +168,8 @@ impl Default for ExportContents {
             workspace: true,
             icon: true,
             extra_files: false,
+            agents_md: false,
+            skills: Vec::new(),
         }
     }
 }
@@ -394,6 +405,31 @@ fn collect_extra_files(profile: &Path) -> Result<Vec<(String, Vec<u8>)>, String>
         }
     }
     Ok(out)
+}
+
+/// Collects one skill directory as `<prefix>/…` archive entries (issue #58),
+/// skipping VCS metadata (`.git`).
+fn collect_skill_tree(
+    out: &mut Vec<(String, Vec<u8>)>,
+    dir: &Path,
+    prefix: &str,
+) -> Result<(), String> {
+    for entry in std::fs::read_dir(dir).map_err(|e| format!("读取 SKILL 目录失败: {e}"))? {
+        let entry = entry.map_err(|e| format!("读取 SKILL 条目失败: {e}"))?;
+        if entry.file_name() == ".git" {
+            continue;
+        }
+        let rel = format!("{}/{}", prefix, entry.file_name().to_string_lossy());
+        let path = entry.path();
+        if path.is_dir() {
+            collect_skill_tree(out, &path, &rel)?;
+        } else {
+            let bytes =
+                std::fs::read(&path).map_err(|e| format!("读取 SKILL 文件 {rel} 失败: {e}"))?;
+            out.push((rel, bytes));
+        }
+    }
+    Ok(())
 }
 
 /// Extracts a modpack tgz into `dest`, refusing path-traversal entries.
@@ -1125,6 +1161,35 @@ pub async fn export_modpack(
     if contents.extra_files {
         files.extend(collect_extra_files(&profile_dir)?);
     }
+    // issue #58: HOME-level payload — selected skills + AGENTS.md ship under
+    // `home/`, which import applies onto the DSH_HOME root (pack-structure
+    // v3). Skill entry names come from list_instance_skills' `entry` field;
+    // anything that could escape the skills directory is rejected.
+    if contents.agents_md {
+        if let Ok(md) = std::fs::read(home.join("AGENTS.md")) {
+            files.push(("home/AGENTS.md".to_string(), md));
+        }
+    }
+    for entry in &contents.skills {
+        if entry.is_empty()
+            || entry.contains('/')
+            || entry.contains('\\')
+            || entry == "."
+            || entry == ".."
+        {
+            return Err(format!("非法的 SKILL 条目名: {entry}"));
+        }
+        let path = home.join("skills").join(entry);
+        if path.is_dir() {
+            collect_skill_tree(&mut files, &path, &format!("home/skills/{entry}"))?;
+        } else if path.is_file() {
+            let bytes =
+                std::fs::read(&path).map_err(|e| format!("读取 SKILL 失败 {entry}: {e}"))?;
+            files.push((format!("home/skills/{entry}"), bytes));
+        } else {
+            return Err(format!("SKILL 不存在: {entry}"));
+        }
+    }
 
     // The save dialog may return a path without the extension (or with a
     // different one); append `.dspack` instead of rejecting.
@@ -1352,7 +1417,7 @@ pub async fn export_dshhome_modpack(
     let mut collected: Vec<(String, ProfileExport)> = Vec::new();
     for spec in &input.profiles {
         let pname = spec.profile.trim().to_string();
-        let contents = spec.contents.unwrap_or_default();
+        let contents = spec.contents.clone().unwrap_or_default();
         let dir = crate::plugins::profile_dir_pub(&home, &pname);
         let payload = collect_profile_export(&dir, &contents)
             .map_err(|e| format!("profile「{pname}」: {e}"))?;
@@ -3057,5 +3122,50 @@ importers:
         assert!(second.updated_at.is_none());
         assert!(second.profile_count.is_none());
         assert!(second.author.is_none());
+    }
+
+    /// issue #58: skills selected for export ship under `home/skills/<entry>/`
+    /// with `.git` stripped; the names are archive-relative (`/` separated).
+    #[test]
+    fn collect_skill_tree_uses_prefix_and_skips_git() {
+        let root = std::env::temp_dir().join(format!(
+            "dshl-modpack-skill-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        let skill = root.join("review");
+        std::fs::create_dir_all(skill.join("sub")).unwrap();
+        std::fs::create_dir_all(skill.join(".git")).unwrap();
+        std::fs::write(skill.join("SKILL.md"), "s").unwrap();
+        std::fs::write(skill.join("sub").join("note.md"), "n").unwrap();
+        std::fs::write(skill.join(".git").join("HEAD"), "x").unwrap();
+
+        let mut out = Vec::new();
+        collect_skill_tree(&mut out, &skill, "home/skills/review").unwrap();
+        let names: Vec<&str> = out.iter().map(|(n, _)| n.as_str()).collect();
+        assert!(names.contains(&"home/skills/review/SKILL.md"), "{names:?}");
+        assert!(
+            names.contains(&"home/skills/review/sub/note.md"),
+            "{names:?}"
+        );
+        assert!(!names.iter().any(|n| n.contains(".git")), "{names:?}");
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// issue #58: the new content flags default to "not carried" so existing
+    /// callers (and older frontends) keep the pre-#58 export shape.
+    #[test]
+    fn export_contents_defaults_carry_no_home_payload() {
+        let c = ExportContents::default();
+        assert!(!c.agents_md);
+        assert!(c.skills.is_empty());
+        assert!(c.patch && c.lockfile && c.workspace && c.icon);
+        // Older packs omit the new keys entirely — they must still parse.
+        let parsed: ExportContents = serde_json::from_str(r#"{"patch":true}"#).unwrap();
+        assert!(!parsed.agents_md);
+        assert!(parsed.skills.is_empty());
     }
 }

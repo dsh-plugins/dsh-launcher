@@ -655,6 +655,10 @@
     "contentIconHint": "Bundled as icon.png; the default launcher icon is never exported",
     "contentExtra": "Other profile files",
     "contentExtraHint": "User files besides the ones above, safety-filtered (node_modules, .env, keys and nested archives excluded) into overrides/",
+    "contentAgents": "AGENTS.md",
+    "contentAgentsHint": "Carry the DSH_HOME root AGENTS.md (when present); applied onto the target DSH_HOME root on import",
+    "contentSkills": "Skills to carry",
+    "contentSkillsHint": "Checked skills ship with the pack (home/skills/) and land in the target DSH_HOME skills directory on import",
     "start": "Start export",
     "exported": "Modpack exported: {path}"
   },

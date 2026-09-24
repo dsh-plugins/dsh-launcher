@@ -223,6 +223,10 @@ export interface ExportContents {
   icon?: boolean
   /** Other user files in the profile, safety-filtered into overrides/. */
   extra_files?: boolean
+  /** HOME-level AGENTS.md, shipped under home/ (issue #58). */
+  agents_md?: boolean
+  /** Selected on-disk skill entries under <home>/skills, shipped under home/skills/ (issue #58). */
+  skills?: string[]
 }
 
 /** Modpack export overrides; unset fields fall back to profile-derived defaults. */
