@@ -928,6 +928,10 @@ async function mockCall<T>(cmd: string, args?: Record<string, unknown>): Promise
       return '# AGENTS.md\n\n示例内容。\n' as T
     case 'write_agents_md':
       return undefined as T
+    case 'guess_crash_plugin':
+      return null as T
+    case 'export_instance_log':
+      return 'C:\\Users\\Administrator\\Downloads\\demo.log' as T
     case 'list_repo_skills':
       return [
         {
@@ -1477,6 +1481,11 @@ export const api = {
   /** Writes the home's AGENTS.md (issue #57). */
   writeAgentsMd: (homeId: string, content: string) =>
     call<void>('write_agents_md', { home_id: homeId, content }),
+  /** Heuristic crash-suspect plugin name for the crash dialog; null = unknown (issue #64). */
+  guessCrashPlugin: (instanceId: string) => call<string | null>('guess_crash_plugin', { instance_id: instanceId }),
+  /** Copies the instance's runtime log to a user-chosen path (issue #64). */
+  exportInstanceLog: (instanceId: string, target: string) =>
+    call<string>('export_instance_log', { instance_id: instanceId, target }),
   /** Installs skill(s) from a source repo URL; resolves to installed skill names. */
   installSkillRepo: (homeId: string, url: string) =>
     call<string[]>('install_skill_repo', { homeId, url }),

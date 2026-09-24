@@ -1670,6 +1670,114 @@ pub fn read_instance_log_tail(
     Ok(read_tail(&log_path, max_lines.unwrap_or(30).min(200)))
 }
 
+/// Copies one instance's runtime log to a user-chosen path (issue #64 crash
+/// dialog: "导出日志文件"). Returns the written path.
+#[tauri::command(rename_all = "snake_case")]
+pub fn export_instance_log(
+    state: State<'_, AppState>,
+    instance_id: String,
+    target: String,
+) -> Result<String, String> {
+    {
+        let cfg = state.config.lock().unwrap();
+        if !cfg.instances.iter().any(|i| i.id == instance_id) {
+            return Err("实例不存在".to_string());
+        }
+    }
+    let src = state
+        .data_dir
+        .join("logs")
+        .join(format!("{instance_id}.log"));
+    if !src.is_file() {
+        return Err("日志文件不存在（实例可能尚未产生日志）".to_string());
+    }
+    let dest = target.trim();
+    if dest.is_empty() {
+        return Err("未选择导出路径".to_string());
+    }
+    std::fs::copy(&src, dest).map_err(|e| format!("导出日志失败: {e}"))?;
+    crate::log_info!("已导出实例 {instance_id} 日志到 {dest}");
+    Ok(dest.to_string())
+}
+
+/// Heuristic crash-suspect guess (issue #64): scans the tail of the crashed
+/// instance's runtime log for mentions of its installed plugins (package name
+/// or declared entry id, issue #62 ids included); the plugin named in the
+/// LAST matching line is the suspect, because a fatal error usually surfaces
+/// at the end of the log. `None` when nothing matches — the dialog then shows
+/// no hint at all rather than making a wild accusation.
+#[tauri::command(rename_all = "snake_case")]
+pub async fn guess_crash_plugin(
+    state: State<'_, AppState>,
+    instance_id: String,
+) -> Result<Option<String>, String> {
+    let (home, profile) = {
+        let cfg = state.config.lock().unwrap();
+        let inst = cfg
+            .instances
+            .iter()
+            .find(|i| i.id == instance_id)
+            .ok_or_else(|| "实例不存在".to_string())?;
+        let home = cfg
+            .homes
+            .iter()
+            .find(|h| h.id == inst.home_id)
+            .map(crate::wsl::home_fs_path)
+            .ok_or_else(|| "DSH_HOME 不存在".to_string())?;
+        let profile = inst
+            .last_profile
+            .clone()
+            .or_else(|| inst.default_profile.clone())
+            .unwrap_or_else(|| "web".to_string());
+        (home, profile)
+    };
+    let log_path = state
+        .data_dir
+        .join("logs")
+        .join(format!("{instance_id}.log"));
+    // Candidate tokens + the whole log tail read live on the blocking pool:
+    // the profile may sit behind \\wsl$\ (issue #49 G3).
+    crate::wsl::run_blocking(move || {
+        let dir = crate::plugins::profile_dir_pub(&home, &profile);
+        let mut candidates: Vec<(String, Vec<String>)> = Vec::new();
+        if let Ok(raw) = std::fs::read_to_string(dir.join("package.json")) {
+            if let Ok(pkg) = serde_json::from_str::<serde_json::Value>(&raw) {
+                if let Some(deps) = pkg.get("dependencies").and_then(|d| d.as_object()) {
+                    for name in deps.keys() {
+                        if name.starts_with("@deepseek-ai/") {
+                            continue;
+                        }
+                        candidates
+                            .push((name.clone(), crate::plugins::package_entry_ids(&dir, name)));
+                    }
+                }
+            }
+        }
+        let tail = read_tail(&log_path, 200);
+        Ok(suspect_from_tail(&tail, &candidates))
+    })
+    .await?
+}
+
+/// Pure suspect heuristic: the last log line that mentions a candidate's
+/// package name or one of its entry ids wins. Tokens shorter than 6 chars are
+/// ignored (e.g. an entry id like `permission` matches too much prose).
+fn suspect_from_tail(tail: &[String], candidates: &[(String, Vec<String>)]) -> Option<String> {
+    let mut suspect: Option<&str> = None;
+    for line in tail {
+        for (package, entry_ids) in candidates {
+            let mentioned = package.len() >= 6 && line.contains(package.as_str())
+                || entry_ids
+                    .iter()
+                    .any(|id| id.len() >= 6 && line.contains(id.as_str()));
+            if mentioned {
+                suspect = Some(package.as_str());
+            }
+        }
+    }
+    suspect.map(|s| s.to_string())
+}
+
 /// Reads the last `n` lines of `path`, bounding the read to the final 64 KiB
 /// so a multi-megabyte log does not get slurped in just to show its tail.
 fn read_tail(path: &std::path::Path, n: usize) -> Vec<String> {
@@ -1955,6 +2063,42 @@ pub(crate) fn save_state(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn suspect_from_tail_last_mention_wins() {
+        let candidates = vec![
+            ("dsh-cost-meter".to_string(), vec!["cost-meter".to_string()]),
+            (
+                "@dsh-plugin/dsh-thought-buddy".to_string(),
+                vec!["thought-buddy".to_string()],
+            ),
+        ];
+        let tail = vec![
+            "[info] loaded dsh-cost-meter".to_string(),
+            "[error] plugin thought-buddy panicked: boom".to_string(),
+        ];
+        // The culprit surfaces at the end of the log: thought-buddy's entry
+        // id is mentioned last, so its PACKAGE name is reported.
+        assert_eq!(
+            suspect_from_tail(&tail, &candidates).as_deref(),
+            Some("@dsh-plugin/dsh-thought-buddy")
+        );
+    }
+
+    #[test]
+    fn suspect_from_tail_ignores_short_tokens_and_no_match() {
+        let candidates = vec![
+            ("a".to_string(), vec!["soul".to_string()]),
+            ("dsh-soul-md".to_string(), vec!["soul".to_string()]),
+        ];
+        // Short tokens (< 6 chars) never match, even when present verbatim.
+        let tail = vec!["error in soul module".to_string()];
+        assert_eq!(suspect_from_tail(&tail, &candidates), None);
+        assert_eq!(suspect_from_tail(&[], &candidates), None);
+        let tail = vec!["totally unrelated output".to_string()];
+        let candidates = vec![("dsh-cost-meter".to_string(), vec!["cost-meter".to_string()])];
+        assert_eq!(suspect_from_tail(&tail, &candidates), None);
+    }
 
     /// Creates a directory link without requiring privileges: a junction on
     /// Windows (via `mklink /J`), a symlink elsewhere. Returns false when the

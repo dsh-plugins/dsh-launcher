@@ -27,6 +27,9 @@ const summary = computed(() => {
 
 const tail = ref<string[]>([])
 const tailLoading = ref(false)
+/** Suspected culprit plugin name from the crash-log heuristic (issue #64). */
+const suspect = ref<string | null>(null)
+const exporting = ref(false)
 
 // Watch the error object itself (not the derived visibility): a second
 // failure while the dialog is still open must refresh summary AND tail.
@@ -34,6 +37,7 @@ watch(
   () => store.launchError,
   async (err) => {
     tail.value = []
+    suspect.value = null
     if (!err) {
       tailLoading.value = false
       return
@@ -51,8 +55,11 @@ watch(
       await new Promise((r) => setTimeout(r, 800))
       if (store.launchError !== err) return
       tail.value = await api.readInstanceLogTail(err.instanceId, 40)
-    } catch {
+      // The suspect guess reads the same log once the tail has settled.
+      suspect.value = await api.guessCrashPlugin(err.instanceId)
+    } catch (e) {
       tail.value = []
+      Message.error(String(e))
     } finally {
       if (store.launchError === err) tailLoading.value = false
     }
@@ -80,6 +87,28 @@ async function revealLog() {
   }
 }
 
+/** Saves the full instance log file to a user-chosen path (issue #64). */
+async function exportLog() {
+  const err = store.launchError
+  if (!err) return
+  const { save } = await import('@tauri-apps/plugin-dialog')
+  const name = instance.value?.name ?? err.instanceId
+  const dest = await save({
+    defaultPath: `${name}.log`,
+    filters: [{ name: 'Log', extensions: ['log', 'txt'] }],
+  })
+  if (typeof dest !== 'string') return
+  exporting.value = true
+  try {
+    await api.exportInstanceLog(err.instanceId, dest)
+    Message.success(t('launchError.logExported', { path: dest }))
+  } catch (e) {
+    Message.error(String(e))
+  } finally {
+    exporting.value = false
+  }
+}
+
 function close() {
   store.dismissLaunchError()
 }
@@ -94,12 +123,17 @@ function close() {
   >
     <template #footer>
       <a-button @click="copyError">{{ t('launchError.copy') }}</a-button>
+      <a-button :loading="exporting" @click="exportLog">{{ t('launchError.exportLog') }}</a-button>
       <a-button @click="revealLog">{{ t('launchError.revealLog') }}</a-button>
       <a-button type="primary" @click="close">{{ t('launchError.close') }}</a-button>
     </template>
 
     <div class="err-body">
       <a-alert type="error" :message="summary" />
+      <a-alert v-if="suspect" type="warning">
+        <div>{{ t('launchError.suspect', { name: suspect }) }}</div>
+        <div class="err-suspect-hint">{{ t('launchError.suspectHint') }}</div>
+      </a-alert>
       <div class="err-tail-title">{{ t('launchError.tailTitle') }}</div>
       <a-spin :loading="tailLoading" style="width: 100%">
         <pre v-if="tail.length" class="err-tail">{{ tail.join('\n') }}</pre>
@@ -120,6 +154,12 @@ function close() {
   font-size: 13px;
   font-weight: 600;
   color: var(--color-text-1);
+}
+
+.err-suspect-hint {
+  font-size: 12px;
+  color: var(--color-text-2);
+  margin-top: 4px;
 }
 
 .err-tail {

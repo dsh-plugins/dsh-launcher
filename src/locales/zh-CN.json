@@ -752,6 +752,10 @@
     "revealLog": "打开完整日志",
     "close": "关闭",
     "copied": "错误信息已复制",
-    "copyFailed": "复制失败"
+    "copyFailed": "复制失败",
+    "suspect": "DSH Launcher 怀疑名为 {name} 的插件导致程序出错，但不能完全确定。",
+    "suspectHint": "你可以尝试禁用此插件，然后观察程序是否还会崩溃。求助时请发送导出的日志文件，而不是这个窗口的截图。",
+    "exportLog": "导出日志文件",
+    "logExported": "日志已导出：{path}"
   }
 }

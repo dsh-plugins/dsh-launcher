@@ -752,6 +752,10 @@
     "revealLog": "Open full log",
     "close": "Close",
     "copied": "Error info copied",
-    "copyFailed": "Copy failed"
+    "copyFailed": "Copy failed",
+    "suspect": "DSH Launcher suspects the plugin \"{name}\" caused this error, but cannot be certain.",
+    "suspectHint": "Try disabling this plugin and see whether the crash recurs. When asking for help, send the exported log file — not a screenshot of this window.",
+    "exportLog": "Export log file",
+    "logExported": "Log exported: {path}"
   }
 }
