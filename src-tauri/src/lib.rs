@@ -82,6 +82,17 @@ fn pending_deep_link() -> Option<String> {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // Dev builds run under a `<identifier>.dev` identity so `pnpm tauri-dev`
+    // never fights the installed production launcher: the single-instance
+    // mutex AND the WebView2 user-data folder both key off the bundle
+    // identifier, so a shared one makes dev and prod focus/kill each other's
+    // windows. The launcher data dir (config/homes) stays shared — see
+    // migrate::default_data_dir.
+    let mut context = tauri::generate_context!();
+    if tauri::is_dev() {
+        let dev_id = format!("{}.dev", context.config().identifier);
+        context.config_mut().identifier = dev_id;
+    }
     tauri::Builder::default()
         // Single instance first: a second launch (e.g. browser protocol
         // activation) forwards its argv to the running instance and exits.
@@ -114,12 +125,16 @@ pub fn run() {
         .setup(|app| {
             // Register the dsh-launcher:// scheme at runtime (Windows/Linux)
             // and forward every deep link to the frontend; the modpack
-            // import flow consumes dsh-launcher://pack?url=<tgz>.
+            // import flow consumes dsh-launcher://pack?url=<tgz>. Dev builds
+            // skip the registration: it would rebind the protocol to the dev
+            // exe and hijack links from the installed launcher.
             #[cfg(desktop)]
             {
                 use tauri_plugin_deep_link::DeepLinkExt;
-                if let Err(e) = app.deep_link().register("dsh-launcher") {
-                    crate::log_warn!("注册 dsh-launcher:// 协议失败: {e}");
+                if !tauri::is_dev() {
+                    if let Err(e) = app.deep_link().register("dsh-launcher") {
+                        crate::log_warn!("注册 dsh-launcher:// 协议失败: {e}");
+                    }
                 }
                 let handle = app.handle().clone();
                 app.deep_link().on_open_url(move |event| {
@@ -157,9 +172,16 @@ pub fn run() {
 
             // Runtime log: rotate the previous latest.log, then apply the
             // configured level (invalid stored values fall back to info).
+            // Dev builds write latest-dev.log instead so they never rotate
+            // the production launcher's live log file.
             let log_level =
                 applog::parse_level(&cfg.settings.log_level).unwrap_or(applog::Level::Info);
-            if let Err(e) = applog::init(&data_dir.join("logs"), log_level) {
+            let log_result = if tauri::is_dev() {
+                applog::init_dev(&data_dir.join("logs"), log_level)
+            } else {
+                applog::init(&data_dir.join("logs"), log_level)
+            };
+            if let Err(e) = log_result {
                 eprintln!("dsh-launcher: 初始化运行日志失败: {e}");
             }
             crate::log_info!(
@@ -322,7 +344,7 @@ pub fn run() {
             tui::write_tui_input,
             tui::resize_tui_session,
         ])
-        .build(tauri::generate_context!())
+        .build(context)
         .expect("error while building tauri application")
         .run(|app_handle, event| {
             // Terminate child processes when the launcher exits so no DSH

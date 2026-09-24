@@ -55,11 +55,24 @@ pub fn set_level(level: Level) {
 pub fn init(log_dir: &Path, level: Level) -> Result<(), String> {
     std::fs::create_dir_all(log_dir).map_err(|e| format!("创建日志目录失败: {e}"))?;
     rotate_latest(log_dir)?;
+    open_log(log_dir, level, "latest.log")
+}
+
+/// Dev-build variant (issue: `pnpm tauri-dev` must not disturb the installed
+/// launcher): appends to `latest-dev.log` WITHOUT rotating — rotating
+/// `latest.log` out from under the running production launcher would strand
+/// its open file handle on the rotated file.
+pub fn init_dev(log_dir: &Path, level: Level) -> Result<(), String> {
+    std::fs::create_dir_all(log_dir).map_err(|e| format!("创建日志目录失败: {e}"))?;
+    open_log(log_dir, level, "latest-dev.log")
+}
+
+fn open_log(log_dir: &Path, level: Level, name: &str) -> Result<(), String> {
     let file = OpenOptions::new()
         .create(true)
         .append(true)
-        .open(log_dir.join("latest.log"))
-        .map_err(|e| format!("打开 latest.log 失败: {e}"))?;
+        .open(log_dir.join(name))
+        .map_err(|e| format!("打开 {name} 失败: {e}"))?;
     *LOG_FILE.lock().unwrap() = Some(file);
     set_level(level);
     Ok(())

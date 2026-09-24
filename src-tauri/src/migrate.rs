@@ -54,7 +54,19 @@ pub struct Bootstrap {
 
 /// Returns the default app data dir (home of the pointer file).
 fn default_data_dir<R: tauri::Runtime>(app: &impl tauri::Manager<R>) -> tauri::Result<PathBuf> {
-    app.path().app_data_dir()
+    let dir = app.path().app_data_dir()?;
+    // Dev builds run under a `<identifier>.dev` identity (see lib.rs run())
+    // to isolate the single-instance mutex and WebView2 user data from the
+    // installed launcher — but the launcher data dir (config/homes/logs)
+    // stays SHARED, so strip the dev suffix here.
+    if tauri::is_dev() {
+        if let (Some(parent), Some(name)) = (dir.parent(), dir.file_name()) {
+            if let Some(stripped) = name.to_string_lossy().strip_suffix(".dev") {
+                return Ok(parent.join(stripped));
+            }
+        }
+    }
+    Ok(dir)
 }
 
 /// Reads the pointer file if present and non-empty; empty otherwise.
