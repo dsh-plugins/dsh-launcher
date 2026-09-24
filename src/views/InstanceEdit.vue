@@ -2111,22 +2111,14 @@ const terminalRunning = ref(false)
             </a-alert>
           </div>
 
-          <!-- AGENTS.md (issue #57): preview-first; save lives top-right. -->
+          <!-- AGENTS.md (issue #57): preview-first; save right-aligned on the
+               toolbar row so it lines up with 编辑/刷新. -->
           <div v-else-if="activeTab === 'agents'" class="dl-card edit-card">
             <div class="agents-head">
               <h4 class="env-title">
                 {{ t('instanceEdit.tabs.agents') }}
                 <HintIcon :content="t('instanceEdit.agentsDesc')" />
               </h4>
-              <a-button
-                v-if="homeId && editingId"
-                size="small"
-                type="primary"
-                :loading="agentsSaving"
-                @click="saveAgentsMd"
-              >
-                {{ t('common.save') }}
-              </a-button>
             </div>
 
             <template v-if="homeId && editingId">
@@ -2136,6 +2128,15 @@ const terminalRunning = ref(false)
                 </a-button>
                 <a-button size="small" :loading="agentsLoading" @click="loadAgentsMd">
                   {{ t('common.refresh') }}
+                </a-button>
+                <a-button
+                  size="small"
+                  type="primary"
+                  class="agents-save"
+                  :loading="agentsSaving"
+                  @click="saveAgentsMd"
+                >
+                  {{ t('common.save') }}
                 </a-button>
               </div>
               <a-scrollbar outer-style="height: 480px" style="height: 480px; overflow-y: auto">
@@ -2837,14 +2838,14 @@ const terminalRunning = ref(false)
 
 /* AGENTS.md editor / preview (issue #57) */
 .agents-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-
   .env-title {
     margin: 0;
   }
+}
+
+// Save sits on the toolbar row, pushed to the right edge, level with 编辑/刷新.
+.agents-save {
+  margin-left: auto;
 }
 
 .agents-editor {
