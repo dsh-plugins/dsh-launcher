@@ -1571,6 +1571,73 @@ pub fn cordis_id_of(package: &str) -> String {
     last.to_string()
 }
 
+/// Collects every entry id declared under `- insert:` blocks of a bundle
+/// patch. Those are the ids the loader actually registers — the enable/disable
+/// patch layer matches entry ids exactly, and a declared id often has no
+/// relation to the package name (issue #62: `dsh-cost-meter` → `cost-meter`).
+fn insert_entry_ids(raw: &str) -> Vec<String> {
+    let lines: Vec<&str> = raw.lines().collect();
+    let n = lines.len();
+    let is_top = |idx: usize| -> bool {
+        let t = lines[idx].trim();
+        !t.is_empty() && !t.starts_with('#') && t != "[]" && indent_of(lines[idx]) == 0
+    };
+    let mut out: Vec<String> = Vec::new();
+    let mut i = 0usize;
+    while i < n {
+        let t = lines[i].trim();
+        if (t == "- insert" || t == "- insert:") && indent_of(lines[i]) == 0 {
+            let mut end = i + 1;
+            while end < n && !is_top(end) {
+                end += 1;
+            }
+            let container_child = if i + 1 < n && indent_of(lines[i + 1]) > 0 {
+                indent_of(lines[i + 1])
+            } else {
+                2
+            };
+            for line in lines.iter().take(end).skip(i + 1) {
+                let tm = line.trim();
+                if (tm.starts_with("- id:") || tm.starts_with("id:"))
+                    && indent_of(line) >= container_child
+                {
+                    if let Some(id) = line_id(tm) {
+                        // Strip YAML quoting (`id: 'foo'` / `id: "foo"`).
+                        let id = id.trim_matches(|c| c == '\'' || c == '"');
+                        if !id.is_empty() && !out.iter().any(|x| x == id) {
+                            out.push(id.to_string());
+                        }
+                    }
+                }
+            }
+            i = end;
+            continue;
+        }
+        i += 1;
+    }
+    out
+}
+
+/// Resolves the real cordis entry id(s) an installed package declares in its
+/// own bundle patch (`node_modules/<pkg>/cordis.patch.yml` insert children).
+/// A package may declare several entries (e.g. approve-for-me + permission);
+/// every one is returned so a disable hits them all. Falls back to the
+/// unscoped package name when the package has no patch or declares no id —
+/// the pre-#62 behavior, kept for packages without a bundle patch.
+pub(crate) fn package_entry_ids(profile_dir: &std::path::Path, package: &str) -> Vec<String> {
+    let patch = profile_dir
+        .join("node_modules")
+        .join(package)
+        .join("cordis.patch.yml");
+    if let Ok(raw) = std::fs::read_to_string(&patch) {
+        let ids = insert_entry_ids(&raw);
+        if !ids.is_empty() {
+            return ids;
+        }
+    }
+    vec![cordis_id_of(package)]
+}
+
 // ---------------------------------------------------------------------------
 // Commands: installed plugin listing (per instance + profile)
 // ---------------------------------------------------------------------------
@@ -1625,11 +1692,33 @@ pub async fn list_installed_plugins(
     ids.sort();
     ids.dedup();
 
+    // Resolve each package's real entry id(s) from its bundle patch (issue
+    // #62) so the enabled flag reflects rows written under the declared id,
+    // not just the package name. UNC reads stay on the blocking pool.
+    let entry_ids: std::collections::HashMap<String, Vec<String>> = {
+        let dir = dir.clone();
+        let ids_ref = ids.clone();
+        crate::wsl::run_blocking(move || {
+            ids_ref
+                .iter()
+                .map(|p| (p.clone(), package_entry_ids(&dir, p)))
+                .collect::<std::collections::HashMap<_, _>>()
+        })
+        .await?
+    };
+
     let out = ids
         .into_iter()
         .map(|id| {
             let cordis_id = cordis_id_of(&id);
-            let enabled = !disabled.contains(&cordis_id) && !disabled.contains(&id);
+            // Disabled when ANY of the package's declared entry ids is gated
+            // (a partial disable is still a disable), or the raw package id is.
+            let entry_disabled = entry_ids
+                .get(&id)
+                .map(|v| v.iter().any(|e| disabled.contains(e)))
+                .unwrap_or(false);
+            let enabled =
+                !entry_disabled && !disabled.contains(&cordis_id) && !disabled.contains(&id);
             InstalledPlugin {
                 version: versions.get(&id).cloned(),
                 enabled,
@@ -1974,9 +2063,24 @@ pub async fn set_plugins_enabled(
         String::new()
     };
 
-    for package in &input.plugin_ids {
-        let cordis_id = cordis_id_of(package);
-        raw = set_disabled_row(&raw, &cordis_id, input.enabled);
+    // Resolve every package's real entry id(s) from its own bundle patch
+    // (issue #62) before editing: the loader matches patch rows by entry id
+    // exactly, so a row keyed by the package name is silently ignored. UNC
+    // reads for WSL profiles go to the blocking pool (issue #49 G3).
+    let resolve_dir = dir.clone();
+    let resolve_packages = input.plugin_ids.clone();
+    let entry_ids = crate::wsl::run_blocking(move || {
+        resolve_packages
+            .iter()
+            .map(|p| package_entry_ids(&resolve_dir, p))
+            .collect::<Vec<_>>()
+    })
+    .await?;
+
+    for ids in &entry_ids {
+        for entry_id in ids {
+            raw = set_disabled_row(raw.as_str(), entry_id, input.enabled);
+        }
     }
 
     // One blocking hop for the whole write-back (mkdir + write) so a UNC round
@@ -2027,6 +2131,23 @@ pub async fn uninstall_plugin(
     let lock = profile_lock(&state, &dir).await;
     let _guard = lock.lock().await;
 
+    // 0b. Capture the package's declared entry id(s) NOW (issue #62): the CLI
+    //     remove below deletes node_modules, after which the bundle patch is
+    //     gone and its ids unrecoverable. Targets also include the legacy
+    //     derived id and the raw package id for patches written pre-#62.
+    let strip_ids = {
+        let dir = dir.clone();
+        let plugin_id = input.plugin_id.clone();
+        crate::wsl::run_blocking(move || {
+            let mut v = package_entry_ids(&dir, &plugin_id);
+            if !v.contains(&plugin_id) {
+                v.push(plugin_id);
+            }
+            v
+        })
+        .await?
+    };
+
     // 1. `dsh plugin remove <id>` through the instance's own CLI: it removes
     //    the dependency and reconciles dsh.profile.bundles (a name that is no
     //    longer an installed bundle leaves the layer stack), so the manifest is
@@ -2051,19 +2172,19 @@ pub async fn uninstall_plugin(
 
     // 2. Drop the plugin's rows from cordis.patch.yml (insert rows mount the
     //    plugin; disabled rows gate it). Reuse the block-stripping logic in
-    //    set_disabled_row by removing any block whose id matches.
+    //    set_disabled_row by removing any block whose id matches. The CLI
+    //    remove above already deleted node_modules, so the entry ids were
+    //    captured before it ran (issue #62).
     let patch_path = dir.join("cordis.patch.yml");
     // Read + rewrite on the blocking pool: for a WSL profile these are UNC
     // round trips, not local file operations (issue #49 G3).
-    let plugin_id = input.plugin_id.clone();
     crate::wsl::run_blocking(move || -> Result<(), String> {
         if !patch_path.exists() {
             return Ok(());
         }
         let raw = std::fs::read_to_string(&patch_path)
             .map_err(|e| format!("读取 cordis.patch.yml 失败: {e}"))?;
-        let cordis_id = cordis_id_of(&plugin_id);
-        let cleaned = strip_cordis_rows(&raw, &cordis_id, &plugin_id);
+        let cleaned = strip_cordis_rows(&raw, &strip_ids);
         if cleaned != raw {
             std::fs::write(&patch_path, &cleaned)
                 .map_err(|e| format!("写入 cordis.patch.yml 失败: {e}"))?;
@@ -2237,7 +2358,7 @@ impl EntryRef {
     }
 }
 
-/// Strips every cordis.patch.yml block whose id equals `cordis_id` (matching
+/// Strips every cordis.patch.yml block whose id equals one of `ids` (matching
 /// plain `- id:` / `id:` rows, including `- insert:` wrappers) and restores
 /// the `[]` placeholder when the document becomes empty.
 ///
@@ -2245,9 +2366,10 @@ impl EntryRef {
 /// (its `config:`, `disabled: true`); removing an insert child drops just that
 /// child row. Everything else — headers, `!!js` scalars, unrelated entries,
 /// blank separators — is preserved byte-for-byte.
-fn strip_cordis_rows(raw: &str, cordis_id: &str, plugin_id: &str) -> String {
+fn strip_cordis_rows(raw: &str, ids: &[String]) -> String {
     let lines: Vec<&str> = raw.lines().collect();
-    let targets = EntryRef::find_all(&lines, &[cordis_id, plugin_id]);
+    let refs: Vec<&str> = ids.iter().map(|s| s.as_str()).collect();
+    let targets = EntryRef::find_all(&lines, &refs);
     let drop = EntryRef::drop_mask(&targets);
     let kept: Vec<&str> = lines
         .iter()
@@ -3514,6 +3636,78 @@ mod tests {
     }
 
     #[test]
+    fn insert_entry_ids_reads_declared_ids_not_package_names() {
+        // Issue #62 fixtures: the declared entry id often differs from the
+        // package name, and one package may declare several entries.
+        let cost_meter = "- insert:\n    - id: cost-meter\n      name: 'dsh-cost-meter'\n";
+        assert_eq!(insert_entry_ids(cost_meter), vec!["cost-meter"]);
+
+        let approve = "- insert:\n    - id: approve-for-me\n      name: '@dsh-plugin/dsh-approve-for-me'\n\n- insert:\n    - id: permission\n      name: '@deepseek-ai/dsh-permission-presets'\n";
+        assert_eq!(
+            insert_entry_ids(approve),
+            vec!["approve-for-me", "permission"]
+        );
+
+        // Quoted ids, conditional `!!js` rows, and duplicate declarations.
+        let quoted = "- insert:\n    - id: 'ui-skill-explorer'\n      name: '@linxin666/dsh-client-ui-skill-explorer'\n- insert:\n    - id: better-sidebar\n      name: 'dsh-better-sidebar'\n      disabled: !!js \"[...ctx.loader.entries()].some((e) => false)\"\n- insert:\n    - id: better-sidebar\n";
+        assert_eq!(
+            insert_entry_ids(quoted),
+            vec!["ui-skill-explorer", "better-sidebar"]
+        );
+        // A patch with no insert block declares nothing.
+        assert!(insert_entry_ids("- id: something\n  disabled: true\n").is_empty());
+    }
+
+    #[test]
+    fn package_entry_ids_prefers_bundle_patch_then_falls_back() {
+        let root = std::env::temp_dir().join(format!(
+            "dshl-test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        let pkg_dir = root.join("node_modules").join("dsh-cost-meter");
+        std::fs::create_dir_all(&pkg_dir).unwrap();
+        std::fs::write(
+            pkg_dir.join("cordis.patch.yml"),
+            "- insert:\n    - id: cost-meter\n      name: 'dsh-cost-meter'\n",
+        )
+        .unwrap();
+        assert_eq!(
+            package_entry_ids(&root, "dsh-cost-meter"),
+            vec!["cost-meter"]
+        );
+        // No patch on disk → the legacy unscoped-name fallback.
+        assert_eq!(package_entry_ids(&root, "dshmarket"), vec!["dshmarket"]);
+        // A patch without declarations falls back too.
+        std::fs::write(pkg_dir.join("cordis.patch.yml"), "# empty\n[]\n").unwrap();
+        assert_eq!(
+            package_entry_ids(&root, "dsh-cost-meter"),
+            vec!["dsh-cost-meter"]
+        );
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn set_disabled_row_hits_every_declared_entry_id() {
+        // The #62 toggle flow: resolve ids from the bundle patch, then gate
+        // each — multi-entry packages must be disabled as a whole.
+        let mut raw = String::new();
+        for id in ["approve-for-me", "permission"] {
+            raw = set_disabled_row(&raw, id, false);
+        }
+        assert!(raw.contains("- id: approve-for-me\n  disabled: true"));
+        assert!(raw.contains("- id: permission\n  disabled: true"));
+        for id in ["approve-for-me", "permission"] {
+            raw = set_disabled_row(&raw, id, true);
+        }
+        assert!(!raw.contains("approve-for-me"), "gates removed: {raw}");
+        assert!(!raw.contains("permission"), "gates removed: {raw}");
+    }
+
+    #[test]
     fn semver_newer_compares_and_tolerates_v_prefix() {
         assert!(semver_newer("1.2.0", "1.0.0"));
         assert!(semver_newer("v1.2.0", "1.0.0"));
@@ -4400,7 +4594,10 @@ mod tests {
         // A plugin mounted via an insert row plus a disabled row for another
         // plugin must leave the other plugin intact.
         let raw = "# header\n- insert:\n    - id: dsh-auxiliary\n      name: '@dsh-plugin/dsh-auxiliary'\n\n- id: dsh-thought-buddy\n  disabled: true\n\n- id: keep\n  config:\n    x: 1\n";
-        let out = strip_cordis_rows(raw, "dsh-auxiliary", "@dsh-plugin/dsh-auxiliary");
+        let out = strip_cordis_rows(
+            raw,
+            &["dsh-auxiliary".into(), "@dsh-plugin/dsh-auxiliary".into()],
+        );
         assert!(!out.contains("dsh-auxiliary"), "insert row removed: {out}");
         assert!(out.contains("dsh-thought-buddy"), "other block kept: {out}");
         assert!(out.contains("keep"), "config block kept: {out}");
@@ -4410,7 +4607,10 @@ mod tests {
     #[test]
     fn strip_cordis_rows_restores_placeholder_when_empty() {
         let raw = "# header\n- id: dsh-auxiliary\n  disabled: true\n";
-        let out = strip_cordis_rows(raw, "dsh-auxiliary", "@dsh-plugin/dsh-auxiliary");
+        let out = strip_cordis_rows(
+            raw,
+            &["dsh-auxiliary".into(), "@dsh-plugin/dsh-auxiliary".into()],
+        );
         assert!(out.contains("[]"), "placeholder restored: {out}");
         assert!(!out.contains("dsh-auxiliary"), "entry removed: {out}");
     }
