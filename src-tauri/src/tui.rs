@@ -99,6 +99,38 @@ pub async fn start_tui_session(
     state: State<'_, AppState>,
     input: TuiSessionInput,
 ) -> Result<(), String> {
+    let _start_guard = state.tui_start_lock.lock().await;
+    let id = input.instance_id.clone();
+    let result = start_tui_session_inner(&app, &state, input).await;
+    if let Some((_, _, mut report)) = state.tui_compat.lock().await.remove(&id) {
+        report.handoff_pending = false;
+        match &result {
+            Ok(()) => report.started = true,
+            Err(error) => {
+                report.status = "failed".into();
+                report.findings.push(crate::compatibility::Finding {
+                    code: "tui-start-failed".into(),
+                    category: "launch".into(),
+                    severity: "unknown".into(),
+                    packages: vec![],
+                    entries: vec![],
+                    evidence: error.clone(),
+                    action: "Profile edits remain; re-enable entries manually if needed".into(),
+                    disable_entry: None,
+                });
+                report.refresh_unresolved();
+            }
+        }
+        let _ = app.emit("instance://compatibility", &report);
+    }
+    result
+}
+
+async fn start_tui_session_inner(
+    app: &AppHandle,
+    state: &State<'_, AppState>,
+    input: TuiSessionInput,
+) -> Result<(), String> {
     let instance_id = input.instance_id.as_str();
     if state.tui_sessions.lock().await.contains_key(instance_id) {
         return Err("TUI 会话已存在".to_string());
@@ -110,7 +142,7 @@ pub async fn start_tui_session(
         }
     }
 
-    let (home_path, version_dir) = crate::plugins::resolve_instance(&state, instance_id)?;
+    let (home_path, version_dir) = crate::plugins::resolve_instance(state, instance_id)?;
     let cfg = state.config.lock().unwrap().clone();
     let inst = cfg
         .instances
@@ -130,7 +162,7 @@ pub async fn start_tui_session(
     // would report a false "install incomplete". Locked by
     // `wsl_boot_precedes_unc_probe` in the tests below.
     if let Some(d) = &wsl_distro {
-        crate::wsl::ensure_distro_running(&state, d).await?;
+        crate::wsl::ensure_distro_running(state, d).await?;
     }
     let Some(profile) = crate::process::tui_active_profile(&cfg, instance_id) else {
         return Err("实例没有可用的 profile".to_string());
@@ -139,6 +171,29 @@ pub async fn start_tui_session(
     // stale window cannot spawn a non-TUI profile through this path.
     if crate::process::profile_kind(&home_path, &profile) != crate::process::InstanceKind::Tui {
         return Err("该实例的 profile 不是 TUI 类型".to_string());
+    }
+    let profile_dir = home_path.join("profiles").join(&profile);
+    let lock = crate::plugins::profile_lock(state, &profile_dir).await;
+    let _guard = lock.lock().await;
+    if let Some((approved_profile, fingerprint, _)) =
+        state.tui_compat.lock().await.get(instance_id).cloned()
+    {
+        if approved_profile != profile {
+            return Err("Compatibility launch profile changed before PTY startup".into());
+        }
+        let path = profile_dir.join("cordis.patch.yml");
+        let current = crate::wsl::run_blocking(move || {
+            std::fs::read_to_string(path).map_err(|e| e.to_string())
+        })
+        .await??;
+        if current != fingerprint {
+            return Err("Compatibility launch patch changed before PTY startup".into());
+        }
+        let report =
+            crate::commands::check_compatibility_internal(state, instance_id, &profile).await?;
+        if !report.launchable() {
+            return Err("Compatibility check failed before PTY startup".into());
+        }
     }
 
     // WSL (issue #19 follow-up): the TUI runs inside the distro. The bin.js
@@ -263,7 +318,7 @@ pub async fn start_tui_session(
         .insert(instance_id.to_string(), session);
 
     emit_instance_status(
-        &app,
+        app,
         &InstanceStatus {
             id: instance_id.to_string(),
             state: InstanceState::Starting,
@@ -274,8 +329,8 @@ pub async fn start_tui_session(
     );
     crate::log_info!("实例 {instance_id} TUI 会话已启动（profile: {profile}）");
 
-    spawn_reader(&app, &state, instance_id).await?;
-    spawn_waiter(&app, instance_id, &profile).await;
+    spawn_reader(app, state, instance_id).await?;
+    spawn_waiter(app, instance_id, &profile).await;
     Ok(())
 }
 
@@ -582,7 +637,7 @@ mod tests {
     fn wsl_boot_precedes_unc_probe() {
         let src = include_str!("tui.rs");
         let body = src
-            .split("pub async fn start_tui_session")
+            .split("async fn start_tui_session_inner")
             .nth(1)
             .expect("start_tui_session must exist")
             .split("#[cfg(test)]")

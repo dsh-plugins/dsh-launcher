@@ -29,6 +29,15 @@
     "download": "Download",
     "settings": "Settings"
   },
+  "compat": {
+    "title": "Plugin compatibility", "launch": "Compatibility launch", "check": "Check compatibility",
+    "complete": "Complete", "partial": "Incomplete", "failed": "Check failed",
+    "spawned": "Process spawned (readiness not verified)", "handoff": "Terminal window opened; PTY startup pending", "notStarted": "Not started",
+    "actions": "Disabled entries", "findings": "Findings", "before": "Before", "after": "Current findings", "unresolved": "Unresolved",
+    "action": { "proposed": "Proposed only.", "applied": "Disable applied.", "uncertain": "Write outcome uncertain; inspect the patch and backup." },
+    "confirmed": "Conflict", "warning": "Warning", "unknown": "Unknown",
+    "clean": "No findings", "reenable": "This change remains in the profile; re-enable manually if needed."
+  },
   "home": {
     "instance": "Instance",
     "profile": "Profile",

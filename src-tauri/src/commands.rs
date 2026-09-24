@@ -1033,6 +1033,285 @@ pub fn check_instance_health(
     Ok(report)
 }
 
+pub(crate) async fn check_compatibility_internal(
+    state: &State<'_, AppState>,
+    id: &str,
+    profile: &str,
+) -> Result<crate::compatibility::Report, String> {
+    if profile.is_empty() || profile == "." || profile == ".." || profile.contains(['/', '\\']) {
+        return Err("Invalid profile name".into());
+    }
+    let (home, version_dir, version) = resolve_instance_paths(state, id)?;
+    {
+        let cfg = state.config.lock().unwrap();
+        let inst = cfg
+            .instances
+            .iter()
+            .find(|i| i.id == id)
+            .ok_or("Instance not found")?;
+        let selected_home = cfg
+            .homes
+            .iter()
+            .find(|h| h.id == inst.home_id)
+            .ok_or("HOME not found")?;
+        let selected_version = cfg
+            .versions
+            .iter()
+            .find(|v| v.id == inst.version_id)
+            .ok_or("Version not found")?;
+        if selected_home.wsl != selected_version.wsl {
+            return Err("DSH version and HOME runtime do not match".into());
+        }
+    }
+    if let Some(distro) = crate::wsl::home_distro_of(state, id) {
+        crate::wsl::ensure_distro_running(state, &distro).await?;
+    }
+    let runtime = if crate::wsl::home_distro_of(state, id).is_some() {
+        "wsl"
+    } else {
+        "windows"
+    };
+    let id = id.to_string();
+    let profile = profile.to_string();
+    let report = crate::wsl::run_blocking(move || {
+        crate::compatibility::inspect(
+            &id,
+            &profile,
+            &version_dir,
+            &version,
+            &home.join("profiles").join(&profile),
+            runtime,
+        )
+    })
+    .await?;
+    Ok(report)
+}
+
+#[tauri::command(rename_all = "snake_case")]
+pub async fn check_plugin_compatibility(
+    state: State<'_, AppState>,
+    instance_id: String,
+    profile: String,
+) -> Result<crate::compatibility::Report, String> {
+    check_compatibility_internal(&state, &instance_id, &profile).await
+}
+
+#[tauri::command(rename_all = "snake_case")]
+pub async fn start_compatible_instance(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    id: String,
+    profile: String,
+) -> Result<crate::compatibility::Report, String> {
+    if profile.is_empty() || profile == "." || profile == ".." || profile.contains(['/', '\\']) {
+        return Err("Invalid profile name".into());
+    }
+    let (home, _, _) = resolve_instance_paths(&state, &id)?;
+    let dir = home.join("profiles").join(&profile);
+    let lock = crate::plugins::profile_lock(&state, &dir).await;
+    let _guard = lock.lock().await;
+    let mut before = check_compatibility_internal(&state, &id, &profile).await?;
+    if state.running.lock().await.contains_key(&id)
+        || state.tui_sessions.lock().await.contains_key(&id)
+    {
+        before.status = "failed".into();
+        before.findings.push(crate::compatibility::Finding {
+            code: "already-running".into(),
+            category: "launch".into(),
+            severity: "unknown".into(),
+            packages: vec![],
+            entries: vec![],
+            evidence: "An instance is already using this profile".into(),
+            action: "Stop the instance before changing its profile".into(),
+            disable_entry: None,
+        });
+        before.refresh_unresolved();
+        return Ok(before);
+    }
+    // Profiles sharing a HOME can live-reload this patch in another instance.
+    let sharing: Vec<String> = {
+        let cfg = state.config.lock().unwrap();
+        let home_id = cfg
+            .instances
+            .iter()
+            .find(|i| i.id == id)
+            .map(|i| &i.home_id);
+        cfg.instances
+            .iter()
+            .filter(|i| i.id != id && Some(&i.home_id) == home_id)
+            .map(|i| i.id.clone())
+            .collect()
+    };
+    let active = {
+        let running = state.running.lock().await;
+        let tui = state.tui_sessions.lock().await;
+        sharing
+            .iter()
+            .any(|other| running.contains_key(other) || tui.contains_key(other))
+    };
+    if active {
+        before.status = "failed".into();
+        before.findings.push(crate::compatibility::Finding {
+            code: "shared-home-running".into(),
+            category: "launch".into(),
+            severity: "unknown".into(),
+            packages: vec![],
+            entries: vec![],
+            evidence: "A shared HOME has an active instance".into(),
+            action: "Stop the other instance before compatibility launch".into(),
+            disable_entry: None,
+        });
+        before.refresh_unresolved();
+        return Ok(before);
+    }
+    if !before.complete() {
+        return Ok(before);
+    }
+    // Any confirmed fault without a uniquely owned profile-local victim
+    // must be resolved manually before a mutating launch.
+    if before
+        .findings
+        .iter()
+        .any(|f| f.severity == "confirmed" && f.disable_entry.is_none())
+    {
+        return Ok(before);
+    }
+    let actions = crate::compatibility::disable_candidates(&before);
+    if !actions.is_empty() {
+        let patch = dir.join("cordis.patch.yml");
+        let actions_copy = actions.clone();
+        if let Err(e) = crate::wsl::run_blocking(move || {
+            crate::compatibility::disable_patch(&patch, &actions_copy)
+        })
+        .await?
+        {
+            before.actions = actions
+                .into_iter()
+                .map(|mut action| {
+                    action.status = "uncertain".into();
+                    action
+                })
+                .collect();
+            before.status = "failed".into();
+            before.findings.push(crate::compatibility::Finding {
+                code: "disable-failed".into(),
+                category: "launch".into(),
+                severity: "unknown".into(),
+                packages: vec![],
+                entries: vec![],
+                evidence: e,
+                action: "Inspect the patch and recovery backup before retrying; entries may have changed".into(),
+                disable_entry: None,
+            });
+            before.refresh_unresolved();
+            return Ok(before);
+        }
+    }
+    let actions: Vec<_> = actions
+        .into_iter()
+        .map(|mut action| {
+            action.status = "applied".into();
+            action
+        })
+        .collect();
+    let mut after = match check_compatibility_internal(&state, &id, &profile).await {
+        Ok(report) => report,
+        Err(e) => {
+            before.actions = actions;
+            before.status = "failed".into();
+            before.findings.push(crate::compatibility::Finding {
+                code: "recheck-failed".into(),
+                category: "launch".into(),
+                severity: "unknown".into(),
+                packages: vec![],
+                entries: vec![],
+                evidence: e,
+                action: "Profile edits remain; re-enable entries manually if needed".into(),
+                disable_entry: None,
+            });
+            before.refresh_unresolved();
+            return Ok(before);
+        }
+    };
+    after.actions = actions;
+    after.initial_findings = before.findings.clone();
+    if !after.launchable() {
+        return Ok(after);
+    }
+    // Keep the lock through the final check and Web spawn. TUI repeats this
+    // check under the same lock at the delayed PTY handoff.
+    if process::profile_kind(&home, &profile) == process::InstanceKind::Tui {
+        let patch = dir.join("cordis.patch.yml");
+        let fingerprint = match crate::wsl::run_blocking(move || {
+            std::fs::read_to_string(patch).map_err(|e| e.to_string())
+        })
+        .await
+        {
+            Ok(Ok(value)) => value,
+            error => {
+                after.status = "failed".into();
+                after.findings.push(crate::compatibility::Finding {
+                    code: "handoff-failed".into(),
+                    category: "launch".into(),
+                    severity: "unknown".into(),
+                    packages: vec![],
+                    entries: vec![],
+                    evidence: format!("{error:?}"),
+                    action: "Profile edits remain; inspect the patch".into(),
+                    disable_entry: None,
+                });
+                after.refresh_unresolved();
+                return Ok(after);
+            }
+        };
+        after.handoff_pending = true;
+        state
+            .tui_compat
+            .lock()
+            .await
+            .insert(id.clone(), (profile.clone(), fingerprint, after.clone()));
+        if let Err(e) = crate::windows::open_tui_window(&app, &id) {
+            state.tui_compat.lock().await.remove(&id);
+            after.status = "failed".into();
+            after.findings.push(crate::compatibility::Finding {
+                code: "launch-failed".into(),
+                category: "launch".into(),
+                severity: "unknown".into(),
+                packages: vec![],
+                entries: vec![],
+                evidence: e,
+                action: "Profile edits remain; re-enable entries manually if needed".into(),
+                disable_entry: None,
+            });
+            after.refresh_unresolved();
+            return Ok(after);
+        }
+    } else if let Err(e) = process::start_instance_process(&app, &state, &id, &profile).await {
+        after.status = "failed".into();
+        after.findings.push(crate::compatibility::Finding {
+            code: "launch-failed".into(),
+            category: "launch".into(),
+            severity: "unknown".into(),
+            packages: vec![],
+            entries: vec![],
+            evidence: e,
+            action: "Profile edits remain; re-enable entries manually if needed".into(),
+            disable_entry: None,
+        });
+        after.refresh_unresolved();
+        return Ok(after);
+    }
+    after.started = !after.handoff_pending;
+    let mut cfg = state.config.lock().unwrap();
+    if let Some(inst) = cfg.instances.iter_mut().find(|i| i.id == id) {
+        inst.last_profile = Some(profile);
+    }
+    if let Err(e) = save_state(&state, &cfg) {
+        crate::log_warn!("Could not persist last profile: {e}");
+    }
+    Ok(after)
+}
+
 #[tauri::command]
 pub async fn start_instance(
     app: AppHandle,
@@ -1040,6 +1319,9 @@ pub async fn start_instance(
     id: String,
     profile: String,
 ) -> Result<(), String> {
+    if state.tui_compat.lock().await.contains_key(&id) {
+        return Err("A compatibility TUI launch is pending for this instance".into());
+    }
     // WSL (issue #49 S4): the preflight and the TUI kind check below read the
     // profile through \\wsl$\, so the distro must be running *before* them.
     // Otherwise a cold start classifies the profile as `Other` and pipes a TUI
@@ -1051,23 +1333,20 @@ pub async fn start_instance(
             crate::wsl::ensure_distro_running(&state, &distro).await?;
         }
     }
-    // Preflight the dependency tree before spawning: a duplicated core copy
-    // in the profile breaks every tool call at runtime with no load-time
-    // error, so it is reported up front instead of being debugged later.
-    // Findings never block the launch.
-    if let Ok((home_path, version_dir, version)) = resolve_instance_paths(&state, &id) {
-        let report = crate::doctor::inspect(
-            &id,
-            &profile,
-            &version_dir,
-            &version,
-            &home_path.join("profiles").join(&profile),
-        );
-        crate::doctor::log_report(&report);
-        if !report.findings.is_empty() {
+    // Ordinary launch remains advisory, including incomplete diagnostics.
+    match check_compatibility_internal(&state, &id, &profile).await {
+        Ok(report) => {
             use tauri::Emitter;
-            let _ = app.emit(crate::doctor::HEALTH_EVENT, &report);
+            let _ = app.emit("instance://compatibility", &report);
+            if !report.launchable() {
+                crate::log_warn!(
+                    "Compatibility preflight for {id}/{profile}: {} ({} unresolved)",
+                    report.status,
+                    report.unresolved.len()
+                );
+            }
         }
+        Err(e) => crate::log_warn!("Compatibility preflight for {id}/{profile} failed: {e}"),
     }
 
     // TUI profiles cannot run as piped child processes (the CLI's
@@ -1102,6 +1381,8 @@ pub async fn stop_instance(
     state: State<'_, AppState>,
     id: String,
 ) -> Result<(), String> {
+    let _tui_start_guard = state.tui_start_lock.lock().await;
+    state.tui_compat.lock().await.remove(&id);
     // A TUI instance lives in its own session map, not `state.running`.
     if state.tui_sessions.lock().await.contains_key(&id) {
         return crate::tui::stop_tui_session(&app, &state, &id).await;

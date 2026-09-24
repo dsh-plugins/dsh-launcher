@@ -93,6 +93,39 @@ export interface DoctorReport {
   findings: DoctorFinding[]
 }
 
+export interface CompatibilityFinding {
+  code: string
+  category: string
+  severity: 'confirmed' | 'warning' | 'unknown'
+  packages: string[]
+  entries: string[]
+  evidence: string
+  action: string
+  disable_entry: string | null
+}
+
+export interface CompatibilityAction {
+  package: string
+  entry: string
+  reason: string
+  status: 'proposed' | 'applied' | 'uncertain'
+}
+
+export interface CompatibilityReport {
+  instance_id: string
+  profile: string
+  version: string
+  runtime: string
+  status: 'complete' | 'partial' | 'failed'
+  checked_at: string
+  findings: CompatibilityFinding[]
+  initial_findings: CompatibilityFinding[]
+  actions: CompatibilityAction[]
+  unresolved: CompatibilityFinding[]
+  started: boolean
+  handoff_pending: boolean
+}
+
 /** Result of checking GitHub for a newer launcher release. */
 export interface LauncherUpdateInfo {
   current: string
