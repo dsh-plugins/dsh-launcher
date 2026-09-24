@@ -4,6 +4,9 @@ import { useRoute, useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { Message, Modal } from '@arco-design/web-vue'
 import { api } from '@/api'
+import type { CompatibilityReport as CompatibilityReportType } from '@/api/types'
+import CompatibilityReport from '@/components/CompatibilityReport.vue'
+import { latestRequest } from '@/utils/latest-request'
 import { useLauncherStore } from '@/stores/launcher'
 import type {
   DshInstance,
@@ -952,6 +955,27 @@ async function createShortcut(profile: string) {
 // --- Plugins tab ---------------------------------------------------------------
 
 const pluginProfile = ref<string>('')
+const compatibility = ref<CompatibilityReportType | null>(null)
+const compatibilityBusy = ref(false)
+const compatibilityRequests = latestRequest()
+watch([editingId, pluginProfile], () => { compatibilityRequests.invalidate(); compatibility.value = null })
+async function checkCompatibility() {
+  const id = editingId.value
+  const profile = pluginProfile.value
+  if (!id || !profile) return
+  const request = compatibilityRequests.begin()
+  compatibility.value = null
+  compatibilityBusy.value = true
+  try {
+    const report = await api.checkPluginCompatibility(id, profile)
+    if (compatibilityRequests.isCurrent(request)) compatibility.value = report
+  } catch (e) {
+    if (compatibilityRequests.isCurrent(request)) Message.error(String(e))
+  } finally {
+    if (compatibilityRequests.isCurrent(request)) compatibilityBusy.value = false
+  }
+}
+function invalidateCompatibility() { compatibilityRequests.invalidate(); compatibility.value = null; compatibilityBusy.value = false }
 const installedPlugins = ref<InstalledPlugin[]>([])
 const pluginsLoading = ref(false)
 const selectedPlugins = ref<string[]>([])
@@ -1087,6 +1111,7 @@ watch(activeTab, async (tab) => {
 })
 
 async function loadPlugins() {
+  invalidateCompatibility()
   installedPlugins.value = []
   selectedPlugins.value = []
   pluginUpdates.value = {}
@@ -1110,6 +1135,7 @@ async function loadPlugins() {
 
 async function onTogglePlugin(p: InstalledPlugin, enabled: boolean) {
   if (!editingId.value || !pluginProfile.value) return
+  invalidateCompatibility()
   pluginsBusy.value = true
   try {
     await api.setPluginsEnabled({
@@ -1134,6 +1160,7 @@ async function onTogglePlugin(p: InstalledPlugin, enabled: boolean) {
 
 async function onUninstallPlugin(p: InstalledPlugin) {
   if (!editingId.value || !pluginProfile.value) return
+  invalidateCompatibility()
   pluginsBusy.value = true
   try {
     await api.uninstallPlugin({
@@ -1157,6 +1184,7 @@ function onSwitchChange(p: InstalledPlugin, val: string | number | boolean) {
 
 async function batchSetEnabled(enabled: boolean) {
   if (!editingId.value || !pluginProfile.value || selectedPlugins.value.length === 0) return
+  invalidateCompatibility()
   pluginsBusy.value = true
   const ids = [...selectedPlugins.value]
   try {
@@ -1211,6 +1239,7 @@ const pendingUpdateTasks = ref<string[]>([])
 /** Starts one background install task per plugin at its latest stable version. */
 async function updatePlugins(ids: string[]) {
   if (!editingId.value || !pluginProfile.value || ids.length === 0) return
+  invalidateCompatibility()
   pluginsBusy.value = true
   let started = 0
   try {
@@ -1538,6 +1567,9 @@ const terminalRunning = ref(false)
 
             <template v-if="homeId && homeId !== DEDICATED">
               <div class="plugins-toolbar">
+                <a-button :disabled="!pluginProfile || pluginsBusy" :loading="compatibilityBusy" @click="checkCompatibility">
+                  {{ t('compat.check') }}
+                </a-button>
                 <a-select
                   v-model="pluginProfile"
                   :placeholder="t('plugins.chooseProfile')"
@@ -1572,6 +1604,7 @@ const terminalRunning = ref(false)
                   {{ t('common.refresh') }}
                 </a-button>
               </div>
+              <CompatibilityReport v-if="compatibility" :report="compatibility" />
 
               <template v-if="pluginProfile">
                 <a-table

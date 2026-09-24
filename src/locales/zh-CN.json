@@ -29,6 +29,15 @@
     "download": "下载",
     "settings": "设置"
   },
+  "compat": {
+    "title": "插件兼容性", "launch": "兼容模式启动", "check": "检查兼容性",
+    "complete": "检查完成", "partial": "检查不完整", "failed": "检查失败",
+    "spawned": "进程已启动（未验证就绪）", "handoff": "终端窗口已打开；PTY 启动待完成", "notStarted": "未启动",
+    "actions": "已禁用条目", "findings": "检查结果", "before": "操作前", "after": "当前结果", "unresolved": "未解决",
+    "action": { "proposed": "仅计划操作。", "applied": "已禁用。", "uncertain": "写入结果未知；请检查补丁和备份。" },
+    "confirmed": "确认冲突", "warning": "警告", "unknown": "未知",
+    "clean": "未发现问题", "reenable": "修改保留在 Profile 中；如有需要请手动重新启用。"
+  },
   "home": {
     "instance": "实例",
     "profile": "Profile",

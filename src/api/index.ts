@@ -5,6 +5,7 @@
 import type {
   CopyInstanceInput,
   DoctorReport,
+  CompatibilityReport,
   DshHome,
   DshInstance,
   DshVersion,
@@ -759,6 +760,7 @@ async function mockCall<T>(cmd: string, args?: Record<string, unknown>): Promise
       saveDb(db)
       return undefined as T
     }
+    case 'start_compatible_instance':
     case 'start_instance': {
       const id = String(args?.id)
       const profile = String(args?.profile)
@@ -784,6 +786,11 @@ async function mockCall<T>(cmd: string, args?: Record<string, unknown>): Promise
         saveDb(cur)
         emitStatus(running)
       }, 1500)
+      if (cmd === 'start_compatible_instance') {
+        return { instance_id: id, profile, version: db.versions.find((v) => v.id === inst.version_id)?.version ?? '',
+          runtime: 'windows', status: 'complete', checked_at: new Date().toISOString(),
+          findings: [], initial_findings: [], actions: [], unresolved: [], started: true, handoff_pending: false } as T
+      }
       return undefined as T
     }
     case 'stop_instance': {
@@ -938,6 +945,10 @@ async function mockCall<T>(cmd: string, args?: Record<string, unknown>): Promise
         profile: String(args?.profile ?? ''),
         findings: [],
       } as T
+    case 'check_plugin_compatibility':
+      return { instance_id: String(args?.instance_id ?? ''), profile: String(args?.profile ?? ''),
+        version: '', runtime: 'windows', status: 'complete', checked_at: new Date().toISOString(),
+        findings: [], initial_findings: [], actions: [], unresolved: [], started: false, handoff_pending: false } as T
     case 'get_settings':
       return db.settings as T
     case 'fetch_news': {
@@ -1438,6 +1449,10 @@ export const api = {
   startInstance: (id: string, profile: string) => call<void>('start_instance', { id, profile }),
   checkInstanceHealth: (instanceId: string, profile: string) =>
     call<DoctorReport>('check_instance_health', { instance_id: instanceId, profile }),
+  checkPluginCompatibility: (instanceId: string, profile: string) =>
+    call<CompatibilityReport>('check_plugin_compatibility', { instance_id: instanceId, profile }),
+  startCompatibleInstance: (id: string, profile: string) =>
+    call<CompatibilityReport>('start_compatible_instance', { id, profile }),
   stopInstance: (id: string) => call<void>('stop_instance', { id }),
   openInstanceWindow: (id: string) => call<void>('open_instance_window', { id }),
   /** Opens an external http(s) URL in the system browser. */

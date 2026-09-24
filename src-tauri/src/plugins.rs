@@ -1958,6 +1958,8 @@ pub async fn set_plugins_enabled(
 ) -> Result<(), String> {
     let (home_path, _) = resolve_instance(&state, &input.instance_id)?;
     let dir = profile_dir(&home_path, &input.profile);
+    let lock = profile_lock(&state, &dir).await;
+    let _guard = lock.lock().await;
     let patch_path = dir.join("cordis.patch.yml");
 
     let mut raw = if patch_path.exists() {
@@ -2280,7 +2282,7 @@ fn strip_cordis_rows(raw: &str, cordis_id: &str, plugin_id: &str) -> String {
 /// are disabled exactly this way — the loader applies bundle layers first,
 /// then this user layer). When `enabled` is true and the id is absent there is
 /// nothing to clear, so the document is returned unchanged.
-fn set_disabled_row(raw: &str, cordis_id: &str, enabled: bool) -> String {
+pub(crate) fn set_disabled_row(raw: &str, cordis_id: &str, enabled: bool) -> String {
     let lines: Vec<&str> = raw.lines().collect();
     let targets = EntryRef::from_id(&lines, cordis_id);
 
@@ -2860,7 +2862,7 @@ fn profile_lock_key(profile_dir: &std::path::Path) -> String {
 }
 
 /// The mutex guarding one profile directory, created on first use.
-async fn profile_lock(
+pub(crate) async fn profile_lock(
     state: &State<'_, AppState>,
     profile_dir: &std::path::Path,
 ) -> std::sync::Arc<tokio::sync::Mutex<()>> {

@@ -1,14 +1,16 @@
 <script setup lang="ts">
-import { computed, nextTick, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
-import { Message, Notification } from '@arco-design/web-vue'
+import { Message } from '@arco-design/web-vue'
 import { Marked } from 'marked'
 import markedAlert from 'marked-alert'
 import markedFootnote from 'marked-footnote'
 import markedKatex from 'marked-katex-extension'
 import DOMPurify from 'dompurify'
 import { api } from '@/api'
+import type { CompatibilityReport as CompatibilityReportType } from '@/api/types'
+import CompatibilityReport from '@/components/CompatibilityReport.vue'
 import { useLauncherStore } from '@/stores/launcher'
 import { markedSpoiler } from '@/utils/marked-spoiler'
 import launcherDefaultIcon from '@/assets/launcher-icon.png'
@@ -82,6 +84,23 @@ const profiles = ref<string[]>([])
 /** Kind per profile name ("web" | "tui" | "other") for dropdown badges. */
 const profileKinds = ref<Record<string, string>>({})
 const selectedProfile = ref<string | undefined>(undefined)
+const compatibility = ref<CompatibilityReportType | null>(null)
+const compatibilityBusy = ref(false)
+const handoffCompleted = ref(false)
+watch([selectedInstanceId, selectedProfile], () => { compatibility.value = null; handoffCompleted.value = false })
+let unlistenCompatibility: (() => void) | null = null
+onMounted(async () => {
+  if (!('__TAURI_INTERNALS__' in window)) return
+  const { listen } = await import('@tauri-apps/api/event')
+  unlistenCompatibility = await listen<CompatibilityReportType>('instance://compatibility', (event) => {
+    const report = event.payload
+    if (selectedInstanceId.value === report.instance_id && selectedProfile.value === report.profile) {
+      compatibility.value = report
+      if (!report.handoff_pending) handoffCompleted.value = true
+    }
+  })
+})
+onBeforeUnmount(() => unlistenCompatibility?.())
 const profilesLoading = ref(false)
 
 const selectedInstance = computed(() =>
@@ -296,6 +315,7 @@ const launchSubtitle = computed(() => {
 
 async function onStart() {
   if (!selectedInstanceId.value || !selectedProfile.value) return
+  compatibility.value = null
   try {
     await api.startInstance(selectedInstanceId.value, selectedProfile.value)
     // TUI profiles: start_instance opens the terminal window; the PTY session
@@ -309,9 +329,6 @@ async function onStart() {
         void store.openWindowWhenReady(selectedInstanceId.value).catch((e) => Message.error(String(e)))
       }
     }
-    // Dependency-tree preflight: advisory only, never blocks the launch. A
-    // duplicated core copy in the profile silently breaks every tool call at
-    // runtime, so surface it here instead of leaving users to dig through logs.
     void reportHealth(selectedInstanceId.value, selectedProfile.value)
   } catch (e) {
     // Sync failure (preflight / spawn): surface the full detail in the
@@ -325,16 +342,39 @@ async function onStart() {
   }
 }
 
+async function onCompatibleStart() {
+  const id = selectedInstanceId.value
+  const profile = selectedProfile.value
+  if (!id || !profile) return
+  compatibility.value = null
+  handoffCompleted.value = false
+  compatibilityBusy.value = true
+  try {
+    const report = await api.startCompatibleInstance(id, profile)
+    if (selectedInstanceId.value === id && selectedProfile.value === profile &&
+        !(report.handoff_pending && handoffCompleted.value)) {
+      compatibility.value = report
+    }
+    if (report.started && selectedProfileKind.value !== 'tui' && store.settings.auto_open_on_launch) {
+      void store.openWindowWhenReady(id).catch((e) => Message.error(String(e)))
+    }
+  } catch (e) {
+    if (selectedInstanceId.value === id && selectedProfile.value === profile) Message.error(String(e))
+  } finally {
+    compatibilityBusy.value = false
+  }
+}
+
 async function reportHealth(instanceId: string, profile: string) {
   try {
-    const report = await api.checkInstanceHealth(instanceId, profile)
-    for (const f of report.findings.slice(0, 3)) {
-      const content = `${t('home.health.prefix')}${f.message}`
-      if (f.level === 'error') Notification.error({ title: t('home.health.errorTitle'), content, duration: 0, closable: true })
-      else Notification.warning({ title: t('home.health.warnTitle'), content, duration: 8000, closable: true })
+    const report = await api.checkPluginCompatibility(instanceId, profile)
+    if (selectedInstanceId.value === instanceId && selectedProfile.value === profile) {
+      report.started = selectedProfileKind.value !== 'tui'
+      report.handoff_pending = selectedProfileKind.value === 'tui'
+      compatibility.value = report
     }
-  } catch {
-    // A failed preflight must never affect the launch.
+  } catch (e) {
+    if (selectedInstanceId.value === instanceId && selectedProfile.value === profile) Message.warning(String(e))
   }
 }
 
@@ -454,6 +494,9 @@ function goEditSelected() {
             <span class="launch-text">{{ starting ? t('home.starting') : t('home.start') }}</span>
             <span v-if="launchSubtitle && !starting" class="launch-sub">{{ launchSubtitle }}</span>
           </a-button>
+          <a-button long :disabled="!canStart || compatibilityBusy" :loading="compatibilityBusy" @click="onCompatibleStart">
+            {{ t('compat.launch') }}
+          </a-button>
         </template>
         <template v-else>
           <a-button type="primary" size="large" long class="launch-button" @click="onOpenWindow">
@@ -472,6 +515,7 @@ function goEditSelected() {
             {{ t('home.editSelected') }}
           </a-button>
         </div>
+        <CompatibilityReport v-if="compatibility" :report="compatibility" class="home-compat" />
       </div>
     </aside>
 
@@ -589,6 +633,8 @@ function goEditSelected() {
   flex-direction: column;
   gap: 10px;
 }
+
+.home-compat { max-height: 260px; overflow: auto; }
 
 .launch-button {
   height: 64px;

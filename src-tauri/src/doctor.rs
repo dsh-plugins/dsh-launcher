@@ -31,8 +31,6 @@
 use serde::Serialize;
 use std::path::Path;
 
-pub const HEALTH_EVENT: &str = "instance://health";
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum FindingLevel {

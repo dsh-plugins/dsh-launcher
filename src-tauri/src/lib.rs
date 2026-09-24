@@ -1,5 +1,6 @@
 mod applog;
 mod commands;
+mod compatibility;
 mod config;
 mod doctor;
 mod icons;
@@ -42,6 +43,10 @@ pub struct AppState {
     /// package.json, so concurrent runs against one profile overwrite each
     /// other and only the last plugin survives.
     pub profile_locks: tokio::sync::Mutex<HashMap<String, std::sync::Arc<tokio::sync::Mutex<()>>>>,
+    /// Compatibility TUI handoff: only a fresh, matching patch may start a PTY.
+    pub tui_compat: tokio::sync::Mutex<HashMap<String, (String, String, compatibility::Report)>>,
+    /// Serializes the entire window-to-PTY handoff, including approval consumption.
+    pub tui_start_lock: tokio::sync::Mutex<()>,
     /// Instance whose webview window was opened/focused most recently.
     pub last_focused_instance: StdMutex<Option<String>>,
     /// Embedded PTY terminal sessions per instance id.
@@ -172,6 +177,8 @@ pub fn run() {
                 running: tokio::sync::Mutex::new(HashMap::new()),
                 tasks: tokio::sync::Mutex::new(HashMap::new()),
                 profile_locks: tokio::sync::Mutex::new(HashMap::new()),
+                tui_compat: tokio::sync::Mutex::new(HashMap::new()),
+                tui_start_lock: tokio::sync::Mutex::new(()),
                 last_focused_instance: StdMutex::new(None),
                 terminals: tokio::sync::Mutex::new(HashMap::new()),
                 tui_sessions: tokio::sync::Mutex::new(HashMap::new()),
@@ -244,6 +251,8 @@ pub fn run() {
             commands::start_instance,
             commands::stop_instance,
             commands::check_instance_health,
+            commands::check_plugin_compatibility,
+            commands::start_compatible_instance,
             commands::list_instance_status,
             commands::open_instance_window,
             commands::open_external,
