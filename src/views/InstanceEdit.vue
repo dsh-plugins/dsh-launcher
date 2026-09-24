@@ -1053,9 +1053,22 @@ function joinLinkPath(root: string, entry: string): string {
  * Normalizes a user/picker supplied path: strips the Windows `\\?\` long-path
  * prefix the native dialog may return (the backend `canonicalize` validation
  * is sensitive to it) and any trailing separator.
+ *
+ * Two edges are deliberate (issue #65 F3/F4):
+ * - the verbatim **UNC** form `\\?\UNC\srv\share` would lose its leading `\\`
+ *   if the prefix were stripped naively, degrading to the *relative* path
+ *   `UNC\srv\share`; it is rewritten to `\\srv\share` instead;
+ * - a bare **drive root** (`D:\`) must not become the drive-relative `D:` —
+ *   the separator is put back once the trailing one is trimmed.
  */
 function normalizeLinkPath(p: string): string {
-  return p.trim().replace(/^\\\\\?\\/, '').replace(/[\\/]+$/, '')
+  const stripped = p
+    .trim()
+    .replace(/^\\\\\?\\UNC\\/i, '\\\\')
+    .replace(/^\\\\\?\\/, '')
+  const trimmed = stripped.replace(/[\\/]+$/, '')
+  if (/^[A-Za-z]:$/.test(trimmed)) return `${trimmed}\\`
+  return trimmed || stripped
 }
 
 function cfgInsensitiveEqual(a: string, b: string): boolean {
@@ -1063,17 +1076,36 @@ function cfgInsensitiveEqual(a: string, b: string): boolean {
 }
 
 /** True when `target` is the HOME itself or lives inside it (case-insensitive
- * on Windows). Mirrors the backend rule that rejects such targets. */
+ * on Windows). Mirrors the backend rule that rejects such targets.
+ *
+ * Both separators are folded to `/` before comparing, so a Windows HOME typed
+ * with forward slashes (`C:/Users/x/.dsh`) is still caught (issue #65 F7).
+ * The backend stays the authority; this is only a round-trip saver. */
 function isInsideHome(target: string, home: string): boolean {
-  const t = normalizeLinkPath(target)
-  const h = normalizeLinkPath(home)
+  const t = normalizeLinkPath(target).replace(/\\/g, '/')
+  const h = normalizeLinkPath(home).replace(/\\/g, '/')
   if (!t || !h) return false
-  if (cfgInsensitiveEqual(t, h)) return true
-  const sep = h.includes('\\') ? '\\' : '/'
-  return cfgInsensitiveEqual(t.slice(0, h.length), h) && t.charAt(h.length) === sep
+  // A drive root normalizes to `D:\` → `D:/`; trim it so the containment
+  // check below stays a plain prefix test.
+  const base = h.replace(/\/+$/, '')
+  if (!base) return t.startsWith('/')
+  if (cfgInsensitiveEqual(t, base)) return true
+  return (
+    t.length > base.length &&
+    cfgInsensitiveEqual(t.slice(0, base.length), base) &&
+    t.charAt(base.length) === '/'
+  )
 }
 
+/**
+ * Monotonic id bumped every time a dialog opens. A preset response that comes
+ * back after a newer dialog was opened belongs to the previous entry and would
+ * otherwise overwrite the current one's candidates (issue #65 F6).
+ */
+let linkPresetReqSeq = 0
+
 async function loadLinkPresets(entry: string) {
+  const reqId = linkPresetReqSeq
   const key = `${homeId.value}::${entry}`
   const cached = linkPresetCache.get(key)
   if (cached) {
@@ -1084,13 +1116,16 @@ async function loadLinkPresets(entry: string) {
   try {
     const list = await api.suggestHomeLinkTargets(homeId.value!, entry)
     linkPresetCache.set(key, list)
+    if (reqId !== linkPresetReqSeq) return
     linkPresets.value = list
   } catch (e) {
-    // Presets are advisory: a failure must not block hand-entry.
+    // Presets are advisory: a failure must not block hand-entry. A stale
+    // failure must not toast over an unrelated dialog either.
+    if (reqId !== linkPresetReqSeq) return
     linkPresets.value = []
     Message.error(String(e))
   } finally {
-    linkPresetsLoading.value = false
+    if (reqId === linkPresetReqSeq) linkPresetsLoading.value = false
   }
 }
 
@@ -1107,17 +1142,34 @@ async function openLinkDialog(link: HomeLinkInfo) {
   linkPresetId.value = ''
   linkPresets.value = []
   linkDialogVisible.value = true
+  linkPresetReqSeq += 1
   await loadLinkPresets(link.entry)
 }
 
-/** Fills the path input from a preset; the value stays editable (D3). */
+/**
+ * Fills the path input from a preset; the value stays editable (D3).
+ *
+ * Directory entries only: the candidates are **roots**, so joining the entry
+ * name onto one yields an existing file path for `settings.yaml`-style entries
+ * only by coincidence — the backend requires such a target to already exist
+ * (links.rs), making a preset click almost always fail (issue #65 F1). File
+ * entries pick their target through the browse dialog instead.
+ */
 function applyLinkPreset(id: unknown) {
   const presetId = typeof id === 'string' ? id : ''
   linkPresetId.value = presetId
-  if (!presetId) return
+  if (!presetId || !linkIsDir.value) return
   const preset = linkPresets.value.find((p) => p.id === presetId)
   if (!preset?.path) return
   linkTarget.value = joinLinkPath(preset.path, linkEntry.value)
+}
+
+/** The directory a file-entry browse dialog should open in: the first preset
+ * root when it exists, else the HOME itself. */
+function browseStartDir(): string {
+  const existing = linkPresets.value.find((p) => p.exists) ?? linkPresets.value[0]
+  const home = store.homes.find((h) => h.id === homeId.value)?.path ?? ''
+  return normalizeLinkPath(existing?.path ?? '') || normalizeLinkPath(home)
 }
 
 /** Browse button: a directory picker for directory entries, a filtered file
@@ -1133,8 +1185,10 @@ async function pickLinkTarget() {
   linkPicking.value = true
   try {
     const { open } = await import('@tauri-apps/plugin-dialog')
-    const home = store.homes.find((h) => h.id === homeId.value)?.path
-    const defaultPath = normalizeLinkPath(linkTarget.value) || home
+    // An already-typed path wins (it is what the user is editing); otherwise
+    // fall back to a candidate root so the dialog opens somewhere meaningful
+    // instead of the HOME — which is rejected as a target anyway.
+    const defaultPath = normalizeLinkPath(linkTarget.value) || browseStartDir()
     const picked = linkIsDir.value
       ? await open({
           directory: true,
@@ -2266,7 +2320,10 @@ const terminalRunning = ref(false)
       @cancel="linkDialogVisible = false"
     >
       <a-form layout="vertical" :model="{}">
-        <a-form-item :label="t('instanceEdit.storagePreset')">
+        <!-- Directory entries only: the candidates are roots, and joining the
+             entry name onto one cannot produce the *existing file* the backend
+             demands for file entries (issue #65 F1). Those use Browse instead. -->
+        <a-form-item v-if="linkIsDir" :label="t('instanceEdit.storagePreset')">
           <a-select
             :model-value="linkPresetId"
             :placeholder="t('instanceEdit.storagePresetNone')"
@@ -2279,13 +2336,18 @@ const terminalRunning = ref(false)
               {{ preset.label }}
               <span class="storage-preset-path">
                 {{ preset.path }}
+                <!-- A missing root is the normal first-run state: the backend
+                     creates it on submit, so it is not "unavailable" (F2). -->
                 <template v-if="!preset.exists">
-                  · {{ t('instanceEdit.storagePresetUnavailable') }}
+                  · {{ t('instanceEdit.storagePresetWillCreate') }}
                 </template>
               </span>
             </a-option>
           </a-select>
         </a-form-item>
+        <a-alert v-else type="info" class="storage-file-hint">
+          {{ t('instanceEdit.storageFileEntryHint') }}
+        </a-alert>
         <a-form-item :label="t('instanceEdit.storageTargetPath')">
           <a-input-group>
             <a-input
@@ -2465,6 +2527,11 @@ const terminalRunning = ref(false)
   margin-left: 8px;
   color: var(--color-text-3);
   font-size: 12px;
+}
+
+/* File entries get guidance instead of the (root-based) preset dropdown. */
+.storage-file-hint {
+  margin-bottom: 16px;
 }
 
 .env-title {

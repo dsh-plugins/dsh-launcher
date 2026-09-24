@@ -1,11 +1,11 @@
-# Issue #65 任务清单 — 重定向「sessions」添加下拉预设和文件选择器
+# Issue #65 任务树 — 重定向「sessions」添加下拉预设和文件选择器
 
 > 来源：<https://github.com/dsh-plugins/dsh-launcher/issues/65>
 > 父议题：<https://github.com/dsh-plugins/dsh-launcher/issues/4>（TODO List）
 > 标签：`📋️ TODO` · 状态：OPEN · 作者：Gu-ZT · 创建：2026-09-23
 > 核验基线：本地 `D:\DSH\DSH-Launcher` @ `a5a770b`（2026-09-24，分支 `fix/issue-66-plugin-diagnostics-and-compat-launch`）
 > 关联前置：#51（DSH_HOME 存储重定向，提交 `5ca1bb7`）· #49（WSL2 HOME 可操作性，`links.rs` 对 WSL 硬拒绝）
-> 文档状态：**implemented v2**。既是规划文档，也是执行时回填进度的活文档（勾选框 + §7 回填日志）。v2 于 2026-09-24 完成实现与验收，§2/§4/§5 已按实际结果回填。
+> 文档状态：**implemented v3**。既是规划文档，也是执行时回填进度的活文档（勾选框 + §7 回填日志）。v2 于 2026-09-24 完成实现与验收；v3 同日处理 PR #68 独立复核的 F1~F8 全部条目（见 §7.2），文件名按仓库惯例由 `TASK_LIST` 更正为 `TASK_TREE`。
 
 ---
 
@@ -255,9 +255,12 @@ pub async fn suggest_home_link_targets(
 | `storageBrowseDirTitle` | 选择目标目录 | Select target directory |
 | `storageBrowseFileTitle` | 选择目标文件 | Select target file |
 | `storageTargetInsideHome` | 目标不能位于该 DSH_HOME 内部 | The target must not live inside this DSH_HOME |
-| `storagePresetUnavailable` | 该位置当前不可用 | This location is currently unavailable |
+| `storagePresetWillCreate` | 尚无此目录，提交时自动创建 | Created automatically on submit |
+| `storageFileEntryHint` | 文件条目需要一个已存在的目标文件，请用「浏览…」选择（预设仅适用于目录条目）。 | A file entry needs an existing target file — use Browse (presets apply to directory entries only). |
 
 > 现有键 `storageTargetPlaceholder`（`例如 D:\dsh-data\sessions`）在加了浏览按钮后**建议保留**，作为手填模式的提示。
+>
+> **v3 变更**：原拟的 `storagePresetUnavailable`（「该位置当前不可用」）**已删除**——`exists=false` 对目录条目是首次安装的正常态而非不可用（复核 F2），改由 `storagePresetWillCreate` 承载准确语义，并新增 `storageFileEntryHint` 说明文件条目为何没有预设下拉（复核 F1）。
 
 ---
 
@@ -300,7 +303,7 @@ pub async fn suggest_home_link_targets(
 
 - [x] `api/types.ts` 新增 `HomeLinkSuggestion`（带注释指向 `links.rs`）+ `LauncherSettings.last_link_root`。
 - [x] `api/index.ts` 新增 `suggestHomeLinkTargets` + mock 分支（镜像真实命令：去重 + 「上次使用」跟随 `last_link_root`），保证浏览器预览可点。
-- [x] 两个 locale 文件补齐 §3.4 全部键；**中英键集合实测完全一致**（各 637 键，零漂移，脚本比对）。
+- [x] 两个 locale 文件补齐 §3.4 全部键；**中英键集合实测完全一致**（v2 各 637 键、v3 各 638 键，零漂移，脚本比对）。
 - [x] 未引入新行为文案变更（D2 的「上次使用」由新键 `storagePresetLastUsed` 承载），`storageDesc` / `storageSetHint` 无需改动。
 
 ### 阶段 5：测试与验收（1 轮）
@@ -319,6 +322,7 @@ pub async fn suggest_home_link_targets(
 
 - [x] 打开「重定向『sessions』」对话框，**能看到下拉预设**且至少有一个可选项（实测 3 项）。
 - [x] 选择预设后，目标路径输入框被正确填充（`<root>\<entry>`），且**仍可手动修改**。
+- [x] **文件条目（`settings.yaml` / `.credentials.yaml` / `cordis.patch.yml`）不渲染预设下拉**（v3/F1），改为 `storageFileEntryHint` 提示，目标经「浏览…」选择；候选根改作文件选择器的 `defaultPath`。
 - [x] 点「浏览…」弹出**目录选择器**（`sessions` 是目录条目）——`is_dir=true` 分支已实现，**桌面端调用未在本机执行**（无 Tauri 运行态，见下方说明）。
 - [x] 对**文件条目**（`settings.yaml` / `.credentials.yaml` / `cordis.patch.yml`）点「浏览…」弹出**文件选择器**且过滤 `yaml` ——`is_dir=false` 分支已实现并经代码路径核对，桌面端弹窗未实测。
 - [x] 浏览器预览态（非 Tauri）点「浏览…」→ 提示 `settings.browserPickHint`（实测文案「浏览器预览模式不支持系统目录选择，请手动输入路径」），**不抛异常、不刷控制台错误**。
@@ -338,8 +342,8 @@ pub async fn suggest_home_link_targets(
 | 语言 | zh-CN / en-US |
 
 - [x] 上表**代码路径**逐项走查完成。
-- [x] **实际执行覆盖**：浏览器 mock 预览（zh-CN）全流程：目录条目 `sessions` 打开对话框 → 预设下拉（3 项，含「不可用」标注）→ 选预设填充 `…\dsh-data\sessions` → 浏览按钮降级提示 → HOME 内路径被拦截且无写入 → 合法外部路径写入成功、表格转「已生效」、`last_link_root` 记录 → 重新打开文件条目 `cordis.patch.yml`，预设拼接为 `D:\dsh-data-external\cordis.patch.yml`，下拉出现「上次使用的位置」。
-- [x] 双语静态核验：两个 locale 各 637 键、键集合完全一致；后端 3 个 `label_key` 在 zh/en 均可解析出非空标签（脚本比对）。
+- [x] **实际执行覆盖**：浏览器 mock 预览（zh-CN + en-US）全流程：目录条目 `sessions` 打开对话框 → 预设下拉（3 项，缺失根标注「尚无此目录，提交时自动创建」）→ 选预设填充 `…\dsh-data\sessions` → 浏览按钮降级提示 → HOME 内路径被拦截且无写入 → 合法外部路径写入成功、表格转「已生效」、`last_link_root` 记录 → 重新打开文件条目 `cordis.patch.yml`：**无预设下拉**、显示新提示 → 目录条目下拉出现「上次使用的位置」（v3 实测）。
+- [x] 双语静态核验：两个 locale 各 **638** 键、键集合完全一致；后端 3 个 `label_key` 在 zh/en 均可解析出非空标签（脚本比对）。
 - [ ] **未覆盖（明确声明，不得声称通过）**：
   - **Tauri 桌面运行态**：本机未启动 launcher 桌面窗口，`plugin-dialog` 的真实目录/文件弹窗、`defaultPath` 生效、`\\?\` 前缀剥离的**真实返回值**均未实测，仅有代码路径核对。
   - **WSL HOME**：本机无可用 WSL 发行版，`storageWslUnsupported` 提前避让未实测。
@@ -377,16 +381,51 @@ pub async fn suggest_home_link_targets(
 | 2026-09-24 | 阶段 2 | `InstanceEdit.vue`：预设 `a-select` + 「浏览…」`a-input-group` + HOME 包含预检 + `\\?\` 剥离 + 预设缓存 | ✅ 前端 +201 行 |
 | 2026-09-24 | 阶段 5 | `cargo fmt --check` ✅ / `clippy -D warnings` ✅ / `cargo test` 187 passed ✅ / `pnpm build` ✅ | ✅ 全绿 |
 | 2026-09-24 | 阶段 5 | 浏览器 mock 预览手工冒烟（zh-CN）：预设填充、浏览降级提示、HOME 内拦截无写入、合法路径生效、文件条目拼接、上次使用预设出现 | ✅；Tauri 桌面态与 WSL 列**未覆盖**（见 §5.2） |
+| 2026-09-24 | 复核 v3 | 处理 PR #68 复核 F1~F8：文件条目去预设（F1）、`exists` 文案（F2）、verbatim UNC 与盘符根（F3/F4）、mock `exists` 自洽（F5）、过期响应守卫（F6）、混合分隔符（F7）、文档改名（F8） | ✅ 8/8，见 §7.2 |
+| 2026-09-24 | 复核 v3 | 复验：fmt ✅ / clippy ✅ / 187 passed ✅ / `vue-tsc` ✅ / `pnpm build` 46.21s ✅ / 双语各 638 零差集 / 抽取函数 20 条断言 / zh+en mock 实测 / F7 端到端拦截且无写入 | ✅ 全绿 |
 
 ### 7.1 实现要点与偏差说明
 
 1. **`label_key` 而非文案**：后端只发 `storagePresetLauncherData` 之类裸键，前端补 `instanceEdit.` 前缀并用 `te()` 兜底，避免后端硬编码语言；已脚本核验 3 个键在 zh/en 均可解析。
-2. **候选集为「根目录」而非「完整目标路径」**：一套候选服务全部 7 个条目，前端 `joinLinkPath` 按根目录自身的分隔符拼接（Windows `\`、POSIX `/`），无需条目→建议表。
+2. **候选集为「根目录」而非「完整目标路径」**：一套候选服务全部**目录条目**，前端 `joinLinkPath` 按根目录自身的分隔符拼接（Windows `\`、POSIX `/`），无需条目→建议表。**v3（F1）**：正因为候选是根目录，文件条目无法由它拼出「已存在」的目标文件，故文件条目不使用预设，候选根改作「浏览…」的 `defaultPath`。
 3. **`same_volume_root` 的盘符处理**：Windows 走 `Component::Prefix`（`Disk` / `VerbatimDisk`），无盘符（unix、UNC）回退到 `<home 父目录>/dsh-data`；根目录无父目录时返回 `None` 而不是提议 HOME 内部路径（会被后端直接拒绝）。
 4. **`exists` 只读探测**：仅 `Path::exists()`，不创建目录、不写配置、不做临时文件可写性探测（与 §3.2 约定一致，单测断言探测后目录仍不存在）。
-5. **mock 忠实度**：mock 的 `suggest_home_link_targets` 同样做去重并读取 `last_link_root`，`set_home_link` 也镜像记录父目录，使浏览器预览行为与真实后端一致。
+5. **mock 忠实度**：mock 的 `suggest_home_link_targets` 同样做去重并读取 `last_link_root`，`set_home_link` 也镜像记录父目录，使浏览器预览行为与真实后端一致。**v3（F5）**：唯一刻意不忠实的是 `exists`——mock 无文件系统，按候选 id 给固定预览值并在注释里写明（原先的 `c.id !== 'same-drive'` 与注释自相矛盾，已改）。
 6. **偏差**：§3.1 交互稿画的是「( ) 使用预设 / ( ) 自定义」单选，实际实现简化为「一个可清空的 `a-select` + 始终可编辑的输入框」。二者都满足 D3（预设填充后可继续编辑），但实现更轻、少一层状态机；如需严格单选 UI 可后续调整。
 7. **未执行项**：Tauri 桌面运行态的 `plugin-dialog` 真实弹窗未实测（本机未启动桌面窗口）；WSL 列无可用发行版。均已在 §5.2 明确标注为「未覆盖」。
+
+### 7.2 复核修复记录（v3，PR #68 review）
+
+独立复核（[PR #68 评论](https://github.com/dsh-plugins/dsh-launcher/pull/68)）确认方向与能力边界站得住（`links.rs` +215/−0 纯新增、白名单与 `set_home_link` 校验零改动），提出 4 条建议合并前处理（F1~F4）与 4 条小项（F5~F8）。**8 条全部处理**：
+
+| 编号 | 问题 | 处置 |
+| --- | --- | --- |
+| F1 | 文件条目点预设几乎必被后端拒（候选是**根目录**，`joinLinkPath` 拼出的文件路径基本不存在，而后端要求文件目标已存在） | 文件条目不渲染预设下拉（`v-if="linkIsDir"`），改为 `storageFileEntryHint` 提示；`applyLinkPreset` 同时加 `!linkIsDir` 守卫。候选根改用于「浏览…」的 `defaultPath` |
+| F2 | `exists=false` 标成「该位置当前不可用」，但目录不存在正是首次安装的正常可用态 | 文案改为 `storagePresetWillCreate`（「尚无此目录，提交时自动创建」）；删除 `storagePresetUnavailable` |
+| F3 | `normalizeLinkPath` 剥 `\\?\` 会把 verbatim UNC `\\?\UNC\srv\share\x` 变成**相对路径** `UNC\srv\share\x` | 先识别 `\\?\UNC\` 并改写为 `\\`（大小写不敏感），再剥普通 `\\?\` |
+| F4 | `normalizeLinkPath` 把盘符根 `D:\` 变成盘符相对 `D:` | 剥尾分隔符后若结果为 `^[A-Za-z]:$`，补回 `\` |
+| F5 | mock 的 `exists: c.id !== 'same-drive'` 与自身注释、与真实探测均不一致（`last-used` 恒 true 而 `same-drive` 恒 false，自相矛盾） | 改为显式 `mockExists` 固定表（`launcher-data`/`same-drive` 为 false、`last-used` 为 true），并写明 mock 无文件系统、这是刻意预览近似 |
+| F6 | `loadLinkPresets` 缺过期响应守卫，快速连开两个对话框时先发后到的响应会串台 | 加单调递增的 `linkPresetReqSeq`；返回时 `reqId !== linkPresetReqSeq` 则丢弃（含 `catch` 的报错与 `finally` 的 loading） |
+| F7 | `isInsideHome` 只按 HOME 自身分隔符判定，`C:/Users/x/.dsh/...`（正斜杠）漏检 | 比较前把两侧 `\` 统一折叠为 `/`，并对 HOME 剥尾分隔符 |
+| F8 | 文档名 `TASK_LIST` 与仓库既有 `TASK_TREE` 惯例不一致 | `git mv` 改为 `docs/ISSUE65_TASK_TREE.md`，H1 同步为「任务树」 |
+
+**v3 复验**（全部实测，非照抄）：
+
+| 检查 | 结果 |
+| --- | --- |
+| `cargo fmt --all -- --check` | ✅ |
+| `cargo clippy --workspace --all-targets -- -D warnings` | ✅ |
+| `cargo test --workspace --locked` | ✅ 187 passed / 0 failed |
+| `vue-tsc --noEmit` | ✅ 0（先于 vite 单独通过） |
+| `pnpm build` | ✅ 46.21s（沙箱下 esbuild `spawn EPERM`，放宽后成功） |
+| 双语键集合 | ✅ 各 **638** 键、双向零差集（v2 为 637，删 1 增 2） |
+| F3/F4/F7 纯函数断言 | ✅ 从 `InstanceEdit.vue` **提取真实函数**跑 20 条断言：verbatim UNC → `\\srv\share\x`、`D:\` 保持盘符根、混用分隔符的 HOME 内路径判为内部 |
+| 浏览器 mock 实测（zh-CN） | ✅ 目录条目「预设位置」下拉 3 项 + 「尚无此目录，提交时自动创建」；**文件条目无下拉**、显示新提示；`last-used`（真实存在）不带后缀 |
+| 浏览器 mock 实测（en-US） | ✅ `Preset location` / `Created automatically on submit` / 文件条目英文提示 |
+| F7 端到端 | ✅ 输入 `C:/Users/Administrator/.dsh/cordis.patch.yml` → 提交前被拦（「目标不能位于该 DSH_HOME 内部」）、对话框保持打开、**`home.links` 无写入**（修复前该形态漏检） |
+| 合法路径回归 | ✅ `D:/dsh-data-external/cordis.patch.yml` 写入成功、`last_link_root` 记为 `D:/dsh-data-external`、浏览按钮仍走 `browserPickHint` 降级 |
+
+**仍未覆盖（同 §5.2，未变）**：Tauri 桌面真实弹窗与 `\\?\` 的**真实返回值**、WSL 列。F3/F4 的修复正是针对桌面态返回值，其**代码路径已由抽取函数的断言覆盖**，但真实弹窗未跑。
 
 ---
 

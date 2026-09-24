@@ -375,6 +375,17 @@ async function mockCall<T>(cmd: string, args?: Record<string, unknown>): Promise
         },
       ]
       const seen = new Set<string>()
+      // The mock has no filesystem, so `exists` is a fixed preview value per
+      // candidate rather than a real probe. The values mirror the usual real
+      // state: `<data>/dsh-data` and `<drive>:\dsh-data` are not created yet on
+      // a first run (the backend's `create_dir_all` makes them on submit), while
+      // `last-used` was redirected into before, so it does exist. Every
+      // candidate is still rendered, so both UI branches stay reachable.
+      const mockExists: Record<string, boolean> = {
+        'launcher-data': false,
+        'same-drive': false,
+        'last-used': true,
+      }
       const out = candidates
         .filter((c) => c.path)
         .filter((c) => {
@@ -385,8 +396,7 @@ async function mockCall<T>(cmd: string, args?: Record<string, unknown>): Promise
         })
         .map((c) => ({
           ...c,
-          // Mock roots: only the launcher data + literal D: look "present".
-          exists: c.id !== 'same-drive',
+          exists: mockExists[c.id] ?? false,
         }))
       return out as T
     }
