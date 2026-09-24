@@ -277,8 +277,16 @@ pub async fn open_skills_directory(
         crate::wsl::ensure_distro_running(&state, d).await?;
     }
     let dir = skills_dir(&fs);
-    if !dir.is_dir() {
-        std::fs::create_dir_all(&dir).map_err(|e| format!("创建目录失败: {e}"))?;
+    // UNC create on the blocking pool (issue #71).
+    {
+        let dir = dir.clone();
+        crate::wsl::run_blocking(move || -> Result<(), String> {
+            if !dir.is_dir() {
+                std::fs::create_dir_all(&dir).map_err(|e| format!("创建目录失败: {e}"))?;
+            }
+            Ok(())
+        })
+        .await??;
     }
     open::that(&dir).map_err(|e| format!("打开目录失败: {e}"))?;
     Ok(dir.to_string_lossy().to_string())

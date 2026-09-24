@@ -125,18 +125,25 @@ pub async fn set_instance_icon(
         ensure_decodable(&fetch_icon(&source).await?)?;
         source
     } else {
-        let src = PathBuf::from(&source);
-        let bytes =
-            std::fs::read(&src).map_err(|e| format!("读取图标文件失败 {}: {e}", src.display()))?;
-        if bytes.len() > ICON_MAX_BYTES {
-            return Err("图标文件过大（超过 16 MiB）".to_string());
-        }
-        let png = crop_square_png(&bytes)?;
-        let dest = local_icon_path(&home, &instance_id);
-        if let Some(parent) = dest.parent() {
-            std::fs::create_dir_all(parent).map_err(|e| format!("创建图标目录失败: {e}"))?;
-        }
-        std::fs::write(&dest, png).map_err(|e| format!("写入图标失败: {e}"))?;
+        // Local file → crop → write under the HOME's icons dir. The write can
+        // be a UNC round trip for WSL homes: blocking pool (issue #71).
+        let home = home.clone();
+        let instance_id_c = instance_id.clone();
+        crate::wsl::run_blocking(move || -> Result<(), String> {
+            let src = PathBuf::from(&source);
+            let bytes = std::fs::read(&src)
+                .map_err(|e| format!("读取图标文件失败 {}: {e}", src.display()))?;
+            if bytes.len() > ICON_MAX_BYTES {
+                return Err("图标文件过大（超过 16 MiB）".to_string());
+            }
+            let png = crop_square_png(&bytes)?;
+            let dest = local_icon_path(&home, &instance_id_c);
+            if let Some(parent) = dest.parent() {
+                std::fs::create_dir_all(parent).map_err(|e| format!("创建图标目录失败: {e}"))?;
+            }
+            std::fs::write(&dest, png).map_err(|e| format!("写入图标失败: {e}"))
+        })
+        .await??;
         "local".to_string()
     };
 

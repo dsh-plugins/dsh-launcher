@@ -728,15 +728,22 @@ pub async fn rename_profile(
     };
 
     let from = profiles_dir.join(&old_name);
-    if !from.is_dir() {
-        return Err(format!("Profile「{old_name}」不存在"));
-    }
     let to = profiles_dir.join(&new_name);
-    if to.exists() {
-        return Err(format!("Profile「{new_name}」已存在"));
+    // UNC rename + metadata checks on the blocking pool (issue #71).
+    {
+        let old = old_name.clone();
+        let new = new_name.clone();
+        crate::wsl::run_blocking(move || -> Result<(), String> {
+            if !from.is_dir() {
+                return Err(format!("Profile「{old}」不存在"));
+            }
+            if to.exists() {
+                return Err(format!("Profile「{new}」已存在"));
+            }
+            std::fs::rename(&from, &to).map_err(|e| format!("重命名 Profile 失败: {e}"))
+        })
+        .await??;
     }
-
-    std::fs::rename(&from, &to).map_err(|e| format!("重命名 Profile 失败: {e}"))?;
 
     // Keep the instance's default/last profile references in sync.
     {
@@ -779,14 +786,20 @@ pub async fn delete_profile(
     };
 
     let target = profiles_dir.join(&name);
-    if !target.is_dir() {
-        return Err(format!("Profile「{name}」不存在"));
-    }
     if name == "__temp__" || name == "node_modules" {
         return Err(format!("「{name}」为保留名称，不能删除"));
     }
-
-    std::fs::remove_dir_all(&target).map_err(|e| format!("删除 Profile 失败: {e}"))?;
+    // UNC recursive delete on the blocking pool (issue #71).
+    {
+        let name = name.clone();
+        crate::wsl::run_blocking(move || -> Result<(), String> {
+            if !target.is_dir() {
+                return Err(format!("Profile「{name}」不存在"));
+            }
+            std::fs::remove_dir_all(&target).map_err(|e| format!("删除 Profile 失败: {e}"))
+        })
+        .await??;
+    }
 
     {
         let mut cfg = state.config.lock().unwrap();

@@ -2122,8 +2122,12 @@ pub async fn uninstall_plugin(
         None => home_path.clone(),
     };
     let dir = profile_dir(&fs_home, &input.profile);
-    if !dir.exists() {
-        return Err(format!("Profile「{}」不存在", input.profile));
+    {
+        // UNC metadata call on the blocking pool (issue #71).
+        let dir = dir.clone();
+        if !crate::wsl::run_blocking(move || dir.exists()).await? {
+            return Err(format!("Profile「{}」不存在", input.profile));
+        }
     }
 
     // 0. Same profile serialization as installs: a removal also rewrites the
@@ -2552,11 +2556,15 @@ pub async fn start_install_plugin_task(
     state: State<'_, AppState>,
     input: InstallPluginInput,
 ) -> Result<String, String> {
-    // Validate instance + profile early.
+    // Validate instance + profile early. The exists() check can hit a cold
+    // \\wsl$\ share, so it runs on the blocking pool (issue #71).
     let (home_path, _version) = resolve_instance(&state, &input.instance_id)?;
     let dir = profile_dir(&home_path, &input.profile);
-    if !dir.exists() {
-        return Err(format!("Profile「{}」不存在", input.profile));
+    {
+        let dir = dir.clone();
+        if !crate::wsl::run_blocking(move || dir.exists()).await? {
+            return Err(format!("Profile「{}」不存在", input.profile));
+        }
     }
 
     let (label, display_name) = match input.plugin_id.strip_prefix("tgz:") {
@@ -2653,7 +2661,16 @@ pub async fn start_install_plugin_file_task(
         // scratch dir inside the distro (recreated on demand).
         let linux_target = format!("{tmp_dir}/{0}-{1}", base, uuid::Uuid::new_v4());
         let unc_target = crate::wsl::unc_path(&distro, &linux_target);
-        std::fs::copy(&path, &unc_target).map_err(|e| format!("复制插件包到 WSL 失败: {e}"))?;
+        // UNC copy on the blocking pool: a cold \\wsl$\ share can stall for
+        // seconds and must not park the async runtime (issue #71).
+        {
+            let src = path.clone();
+            let dst = unc_target.clone();
+            crate::wsl::run_blocking(move || {
+                std::fs::copy(&src, &dst).map_err(|e| format!("复制插件包到 WSL 失败: {e}"))
+            })
+            .await??;
+        }
         scratch = Some(linux_target.clone());
         linux_target
     } else {
@@ -2857,7 +2874,14 @@ async fn do_install_plugin(
     //    (bundles check, cordis mount row) needs the real name — mounting the
     //    raw github: spec makes cordis import it as an ESM URL and the whole
     //    profile fails to boot with ERR_UNSUPPORTED_ESM_URL_SCHEME.
-    let installed_name = match resolve_installed_name(&dir, &input.plugin_id, &spec) {
+    // UNC manifest read on the blocking pool (issue #71).
+    let resolved_name = {
+        let dir = dir.clone();
+        let plugin_id = input.plugin_id.clone();
+        let spec = spec.clone();
+        crate::wsl::run_blocking(move || resolve_installed_name(&dir, &plugin_id, &spec)).await?
+    };
+    let installed_name = match resolved_name {
         Some(name) => {
             if name != input.plugin_id {
                 crate::tasks::push_task_log_pub(
@@ -2892,7 +2916,13 @@ async fn do_install_plugin(
     //    then fails with `duplicate loader entry id`. Only a plain package
     //    (no `dsh.bundle.patch`, so not reconciled into bundles) needs the
     //    explicit insert row.
-    if manifest_lists_bundle(&dir, &installed_name)? {
+    // UNC manifest read on the blocking pool (issue #71).
+    let is_bundle_layer = {
+        let dir = dir.clone();
+        let name = installed_name.clone();
+        crate::wsl::run_blocking(move || manifest_lists_bundle(&dir, &name)).await??
+    };
+    if is_bundle_layer {
         crate::tasks::push_task_log_pub(
             app,
             state,
@@ -2901,7 +2931,9 @@ async fn do_install_plugin(
         )
         .await;
     } else {
-        ensure_cordis_insert(&dir, &installed_name)?;
+        let dir = dir.clone();
+        let name = installed_name.clone();
+        crate::wsl::run_blocking(move || ensure_cordis_insert(&dir, &name)).await??;
         crate::tasks::push_task_log_pub(
             app,
             state,
@@ -3091,10 +3123,20 @@ async fn run_dsh_plugin(
         None => home_path.to_path_buf(),
     };
     let dir = profile_dir(&fs_home, profile);
-    std::fs::create_dir_all(&dir).map_err(|e| format!("创建 profile 目录失败: {e}"))?;
-    ensure_build_scripts_allowed(&dir)?;
-    // Never let a plugin's peers pull a second copy of a core package in.
-    ensure_profile_npmrc(&dir)?;
+    // UNC round trips (WSL profiles) must not stall the async runtime (issue
+    // #49 G3 / #71): directory creation + the two manifest fixups run on the
+    // blocking pool.
+    {
+        let dir = dir.clone();
+        crate::wsl::run_blocking(move || -> Result<(), String> {
+            std::fs::create_dir_all(&dir).map_err(|e| format!("创建 profile 目录失败: {e}"))?;
+            ensure_build_scripts_allowed(&dir)?;
+            // Never let a plugin's peers pull a second copy of a core package in.
+            ensure_profile_npmrc(&dir)?;
+            Ok(())
+        })
+        .await??;
+    }
 
     // Resolve the CLI's node + pnpm: local uses the launcher-managed Windows
     // pnpm; WSL ensures the distro's node/pnpm are installed first.
@@ -3124,7 +3166,12 @@ async fn run_dsh_plugin(
     // ERR_PNPM_UNEXPECTED_STORE. Detect the mismatch up front — with
     // `--loglevel=warn` (removals) pnpm prints nothing the log matcher could
     // catch, so the log-based retry below would never fire — and relink.
-    if let Some(linked) = linked_store_dir(&dir) {
+    // UNC read on the blocking pool (issue #71).
+    let linked_store = {
+        let dir = dir.clone();
+        crate::wsl::run_blocking(move || linked_store_dir(&dir)).await?
+    };
+    if let Some(linked) = linked_store {
         if !store_paths_match(&linked, &linux_store) {
             crate::tasks::push_task_log_pub(
                 app,
@@ -3163,7 +3210,8 @@ async fn run_dsh_plugin(
                     "pnpm 11 拦截了依赖构建脚本，正在批准 allowBuilds 后重试…",
                 )
                 .await;
-                ensure_build_scripts_allowed(&dir)?;
+                let dir = dir.clone();
+                crate::wsl::run_blocking(move || ensure_build_scripts_allowed(&dir)).await??;
             }
             Err(_e) if attempt == 1 && task_log_mentions_unexpected_store(state, task_id) => {
                 crate::tasks::push_task_log_pub(

@@ -63,11 +63,12 @@ async function loadChannel(ch: PluginChannel) {
   }
 }
 
-/** Reload every channel from its first page. */
+/** Reload every channel from its first page — all three channels fetch in
+ * parallel (issue #71): alpha used to wait for stable+beta, adding a full
+ * GitHub round trip to the page's first paint for no dependency reason. */
 async function reloadAll() {
   pagesLoaded.value = { stable: 1, beta: 1, alpha: 1 }
-  await Promise.all([loadChannel('stable'), loadChannel('beta')])
-  await loadChannel('alpha')
+  await Promise.all([loadChannel('stable'), loadChannel('beta'), loadChannel('alpha')])
 }
 
 /** Load the next page for a channel, appending to the accumulated list. */

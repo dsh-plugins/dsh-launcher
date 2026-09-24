@@ -972,236 +972,251 @@ pub async fn export_modpack(
     state: State<'_, AppState>,
     input: ExportModpackInput,
 ) -> Result<String, String> {
-    let contents = input.contents.unwrap_or_default();
+    let contents = input.contents.clone().unwrap_or_default();
+    let home_id = input.home_id.clone();
     let home = home_path_of(&state, &input.home_id)?;
     let profile_dir = crate::plugins::profile_dir_pub(&home, &input.profile);
-    let pkg_path = profile_dir.join("package.json");
-    let raw = std::fs::read_to_string(&pkg_path)
-        .map_err(|e| format!("读取 profile manifest 失败: {e}"))?;
-    let pkg: serde_json::Value =
-        serde_json::from_str(&raw).map_err(|e| format!("解析 profile manifest 失败: {e}"))?;
 
-    let bundles: Vec<String> = pkg
-        .pointer("/dsh/profile/bundles")
-        .and_then(|b| b.as_array())
-        .map(|arr| {
-            arr.iter()
-                .filter_map(|b| b.as_str().map(|s| s.to_string()))
-                .collect()
-        })
-        .unwrap_or_default();
-
-    let lock_text = std::fs::read_to_string(profile_dir.join("pnpm-lock.yaml")).ok();
-    let mut pinned = BTreeMap::new();
-    if let Some(deps) = pkg.get("dependencies").and_then(|d| d.as_object()) {
-        for (name, spec) in deps {
-            let spec = spec.as_str().unwrap_or_default();
-            if is_git_spec(spec) {
-                let Some((repo, sub, spec_ref)) = github_repo_from_spec(spec) else {
-                    crate::log_warn!("整合包导出：无法解析 git 依赖 {name}: {spec}，按原样保留");
-                    pinned.insert(name.clone(), spec.to_string());
-                    continue;
-                };
-                let sha = lock_text
-                    .as_deref()
-                    .and_then(|l| locked_git_commit(l, name))
-                    .or(spec_ref)
-                    .unwrap_or_else(|| "HEAD".to_string());
-                let coord = match &sub {
-                    Some(p) => format!("github:{repo}#path:/{p}"),
-                    None => format!("github:{repo}"),
-                };
-                pinned.insert(coord, sha);
-            } else {
-                let version = installed_npm_version(&profile_dir, name)
-                    .unwrap_or_else(|| spec.trim_start_matches(['^', '~']).to_string());
-                pinned.insert(name.clone(), version);
-            }
-        }
-    }
-
-    // dshVersion: pinned to the exact version of the first instance bound to
-    // this HOME, so import installs the same DSH the pack was built with.
+    // Config snapshots: cheap in-memory locks, taken on the async side so the
+    // blocking stage below never touches State.
+    let instance_info = {
+        let cfg = state.config.lock().unwrap();
+        cfg.instances
+            .iter()
+            .find(|i| i.home_id == home_id)
+            .map(|i| (i.id.clone(), i.name.clone(), i.icon.clone()))
+    };
     let dsh_version = {
         let cfg = state.config.lock().unwrap();
         cfg.instances
             .iter()
-            .find(|i| i.home_id == input.home_id)
+            .find(|i| i.home_id == home_id)
             .and_then(|i| cfg.versions.iter().find(|v| v.id == i.version_id))
             .map(|v| v.version.clone())
             .unwrap_or_else(|| "0.1.0".to_string())
     };
 
-    let name = input
-        .name
-        .filter(|n| !n.trim().is_empty())
-        .unwrap_or_else(|| input.profile.clone());
-    let version = input
-        .version
-        .filter(|v| !v.trim().is_empty())
-        .unwrap_or_else(|| "1.0.0".to_string());
-
-    let patch = if contents.patch {
-        std::fs::read_to_string(profile_dir.join("cordis.patch.yml")).ok()
-    } else {
-        None
-    };
-
-    // Instance metadata (issue #8 icon; issue #12: displayName defaults to
-    // the instance name, description to an empty string).
-    let instance_info = {
-        let cfg = state.config.lock().unwrap();
-        cfg.instances
-            .iter()
-            .find(|i| i.home_id == input.home_id)
-            .map(|i| (i.id.clone(), i.name.clone(), i.icon.clone()))
-    };
-    let instance_icon = instance_info
-        .as_ref()
-        .map(|(id, _, icon)| (id.clone(), icon.clone()));
+    // Remote icon fetch is network I/O: run it on the async side before the
+    // blocking stage. A local icon file is read inside the blocking stage.
     let mut icon_field: Option<String> = None;
     let mut icon_png: Option<Vec<u8>> = None;
+    let mut icon_local_instance: Option<String> = None;
     if contents.icon {
-        if let Some((inst_id, Some(icon))) = instance_icon {
+        if let Some((inst_id, _, Some(icon))) = &instance_info {
             if icon == "local" {
-                if let Ok(bytes) = std::fs::read(crate::icons::local_icon_path(&home, &inst_id)) {
-                    icon_png = Some(bytes);
-                    icon_field = Some("icon.png".to_string());
-                }
+                icon_local_instance = Some(inst_id.clone());
             } else if icon.starts_with("http") {
-                match fetch_remote_icon(&icon).await {
+                match fetch_remote_icon(icon).await {
                     Some(png) => {
                         icon_png = Some(png);
                         icon_field = Some("icon.png".to_string());
                     }
-                    None => icon_field = Some(icon),
+                    None => icon_field = Some(icon.clone()),
                 }
             }
         }
     }
 
-    let manifest = ModpackManifest {
-        manifest_version: EXPORT_MANIFEST_VERSION,
-        pack_type: Some("profile".to_string()),
-        name: name.clone(),
-        display_name: input
-            .display_name
-            .filter(|d| d.as_str().map(|s| !s.trim().is_empty()).unwrap_or(true))
-            .or_else(|| {
-                instance_info
-                    .as_ref()
-                    .map(|(_, name, _)| serde_json::Value::String(name.clone()))
-            }),
-        version: version.clone(),
-        description: Some(
-            input
-                .description
-                .unwrap_or_else(|| serde_json::Value::String(String::new())),
-        ),
-        author: input
-            .author
-            .filter(|a| !a.trim().is_empty())
-            .or_else(os_username),
-        icon: icon_field,
-        dsh_version: Some(dsh_version),
-        profile_name: Some(input.profile.clone()),
-        bundles: bundles.clone(),
-        dependencies: pinned,
-        patch,
-        files: Vec::new(),
-        // dshhome-only fields stay empty: exports are single-profile packs.
-        default_profile: None,
-        profiles: None,
-        presets: None,
-        skills: None,
-        instructions: None,
-    };
+    // Everything below reads the profile/HOME filesystem — UNC round trips
+    // for WSL homes — and writes the zip: blocking pool (issue #49 G3, #71).
+    crate::wsl::run_blocking(move || {
+        let pkg_path = profile_dir.join("package.json");
+        let raw = std::fs::read_to_string(&pkg_path)
+            .map_err(|e| format!("读取 profile manifest 失败: {e}"))?;
+        let pkg: serde_json::Value =
+            serde_json::from_str(&raw).map_err(|e| format!("解析 profile manifest 失败: {e}"))?;
 
-    let profile_pkg = serde_json::json!({
-        "name": format!("dsh-profile-{}", input.profile),
-        "private": true,
-        "dependencies": manifest_pkg_deps(&manifest),
-        "dsh": { "profile": { "bundles": bundles } },
-    });
+        let bundles: Vec<String> = pkg
+            .pointer("/dsh/profile/bundles")
+            .and_then(|b| b.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|b| b.as_str().map(|s| s.to_string()))
+                    .collect()
+            })
+            .unwrap_or_default();
 
-    let mut files: Vec<(String, Vec<u8>)> = vec![
-        ("dspack.json".to_string(), DSPACK_MARKER.as_bytes().to_vec()),
-        (
-            "manifest.json".to_string(),
-            serde_json::to_vec_pretty(&manifest)
-                .map_err(|e| format!("序列化 manifest 失败: {e}"))?,
-        ),
-        (
-            "package.json".to_string(),
-            serde_json::to_vec_pretty(&profile_pkg)
-                .map_err(|e| format!("序列化 package.json 失败: {e}"))?,
-        ),
-    ];
-    // pack-structure v2: user files live under overrides/ (file takes
-    // precedence over the manifest's inline patch on import).
-    if let Some(p) = &manifest.patch {
-        files.push((
-            "overrides/cordis.patch.yml".to_string(),
-            p.clone().into_bytes(),
-        ));
-    }
-    if contents.lockfile {
-        if let Ok(lock) = std::fs::read(profile_dir.join("pnpm-lock.yaml")) {
-            files.push(("pnpm-lock.yaml".to_string(), lock));
+        let lock_text = std::fs::read_to_string(profile_dir.join("pnpm-lock.yaml")).ok();
+        let mut pinned = BTreeMap::new();
+        if let Some(deps) = pkg.get("dependencies").and_then(|d| d.as_object()) {
+            for (name, spec) in deps {
+                let spec = spec.as_str().unwrap_or_default();
+                if is_git_spec(spec) {
+                    let Some((repo, sub, spec_ref)) = github_repo_from_spec(spec) else {
+                        crate::log_warn!(
+                            "整合包导出：无法解析 git 依赖 {name}: {spec}，按原样保留"
+                        );
+                        pinned.insert(name.clone(), spec.to_string());
+                        continue;
+                    };
+                    let sha = lock_text
+                        .as_deref()
+                        .and_then(|l| locked_git_commit(l, name))
+                        .or(spec_ref)
+                        .unwrap_or_else(|| "HEAD".to_string());
+                    let coord = match &sub {
+                        Some(p) => format!("github:{repo}#path:/{p}"),
+                        None => format!("github:{repo}"),
+                    };
+                    pinned.insert(coord, sha);
+                } else {
+                    let version = installed_npm_version(&profile_dir, name)
+                        .unwrap_or_else(|| spec.trim_start_matches(['^', '~']).to_string());
+                    pinned.insert(name.clone(), version);
+                }
+            }
         }
-    }
-    if contents.workspace {
-        if let Ok(ws) = std::fs::read(profile_dir.join("pnpm-workspace.yaml")) {
-            files.push(("pnpm-workspace.yaml".to_string(), ws));
-        }
-    }
-    if let Some(png) = icon_png {
-        files.push(("icon.png".to_string(), png));
-    }
-    if contents.extra_files {
-        files.extend(collect_extra_files(&profile_dir)?);
-    }
-    // issue #58: HOME-level payload — selected skills + AGENTS.md ship under
-    // `home/`, which import applies onto the DSH_HOME root (pack-structure
-    // v3). Skill entry names come from list_instance_skills' `entry` field;
-    // anything that could escape the skills directory is rejected.
-    if contents.agents_md {
-        if let Ok(md) = std::fs::read(home.join("AGENTS.md")) {
-            files.push(("home/AGENTS.md".to_string(), md));
-        }
-    }
-    for entry in &contents.skills {
-        if entry.is_empty()
-            || entry.contains('/')
-            || entry.contains('\\')
-            || entry == "."
-            || entry == ".."
-        {
-            return Err(format!("非法的 SKILL 条目名: {entry}"));
-        }
-        let path = home.join("skills").join(entry);
-        if path.is_dir() {
-            collect_skill_tree(&mut files, &path, &format!("home/skills/{entry}"))?;
-        } else if path.is_file() {
-            let bytes =
-                std::fs::read(&path).map_err(|e| format!("读取 SKILL 失败 {entry}: {e}"))?;
-            files.push((format!("home/skills/{entry}"), bytes));
+
+        let name = input
+            .name
+            .filter(|n| !n.trim().is_empty())
+            .unwrap_or_else(|| input.profile.clone());
+        let version = input
+            .version
+            .filter(|v| !v.trim().is_empty())
+            .unwrap_or_else(|| "1.0.0".to_string());
+
+        let patch = if contents.patch {
+            std::fs::read_to_string(profile_dir.join("cordis.patch.yml")).ok()
         } else {
-            return Err(format!("SKILL 不存在: {entry}"));
-        }
-    }
+            None
+        };
 
-    // The save dialog may return a path without the extension (or with a
-    // different one); append `.dspack` instead of rejecting.
-    let raw_path = input.out_file.trim();
-    let out_path = if raw_path.to_lowercase().ends_with(".dspack") {
-        PathBuf::from(raw_path)
-    } else {
-        PathBuf::from(format!("{raw_path}.dspack"))
-    };
-    let out = write_modpack_dspack(&out_path, &files)?;
-    crate::log_info!("已导出整合包 {}", out.display());
-    Ok(out.to_string_lossy().to_string())
+        // Local instance icon (issue #8): read from <home>/icons here; the
+        // remote case was fetched on the async side already.
+        let mut icon_field = icon_field;
+        let mut icon_png = icon_png;
+        if let Some(inst_id) = &icon_local_instance {
+            if let Ok(bytes) = std::fs::read(crate::icons::local_icon_path(&home, inst_id)) {
+                icon_png = Some(bytes);
+                icon_field = Some("icon.png".to_string());
+            }
+        }
+
+        let manifest = ModpackManifest {
+            manifest_version: EXPORT_MANIFEST_VERSION,
+            pack_type: Some("profile".to_string()),
+            name: name.clone(),
+            display_name: input
+                .display_name
+                .filter(|d| d.as_str().map(|s| !s.trim().is_empty()).unwrap_or(true))
+                .or_else(|| {
+                    instance_info
+                        .as_ref()
+                        .map(|(_, name, _)| serde_json::Value::String(name.clone()))
+                }),
+            version: version.clone(),
+            description: Some(
+                input
+                    .description
+                    .unwrap_or_else(|| serde_json::Value::String(String::new())),
+            ),
+            author: input
+                .author
+                .filter(|a| !a.trim().is_empty())
+                .or_else(os_username),
+            icon: icon_field,
+            dsh_version: Some(dsh_version),
+            profile_name: Some(input.profile.clone()),
+            bundles: bundles.clone(),
+            dependencies: pinned,
+            patch,
+            files: Vec::new(),
+            // dshhome-only fields stay empty: exports are single-profile packs.
+            default_profile: None,
+            profiles: None,
+            presets: None,
+            skills: None,
+            instructions: None,
+        };
+
+        let profile_pkg = serde_json::json!({
+            "name": format!("dsh-profile-{}", input.profile),
+            "private": true,
+            "dependencies": manifest_pkg_deps(&manifest),
+            "dsh": { "profile": { "bundles": bundles } },
+        });
+
+        let mut files: Vec<(String, Vec<u8>)> = vec![
+            ("dspack.json".to_string(), DSPACK_MARKER.as_bytes().to_vec()),
+            (
+                "manifest.json".to_string(),
+                serde_json::to_vec_pretty(&manifest)
+                    .map_err(|e| format!("序列化 manifest 失败: {e}"))?,
+            ),
+            (
+                "package.json".to_string(),
+                serde_json::to_vec_pretty(&profile_pkg)
+                    .map_err(|e| format!("序列化 package.json 失败: {e}"))?,
+            ),
+        ];
+        // pack-structure v2: user files live under overrides/ (file takes
+        // precedence over the manifest's inline patch on import).
+        if let Some(p) = &manifest.patch {
+            files.push((
+                "overrides/cordis.patch.yml".to_string(),
+                p.clone().into_bytes(),
+            ));
+        }
+        if contents.lockfile {
+            if let Ok(lock) = std::fs::read(profile_dir.join("pnpm-lock.yaml")) {
+                files.push(("pnpm-lock.yaml".to_string(), lock));
+            }
+        }
+        if contents.workspace {
+            if let Ok(ws) = std::fs::read(profile_dir.join("pnpm-workspace.yaml")) {
+                files.push(("pnpm-workspace.yaml".to_string(), ws));
+            }
+        }
+        if let Some(png) = icon_png {
+            files.push(("icon.png".to_string(), png));
+        }
+        if contents.extra_files {
+            files.extend(collect_extra_files(&profile_dir)?);
+        }
+        // issue #58: HOME-level payload — selected skills + AGENTS.md ship under
+        // `home/`, which import applies onto the DSH_HOME root (pack-structure
+        // v3). Skill entry names come from list_instance_skills' `entry` field;
+        // anything that could escape the skills directory is rejected.
+        if contents.agents_md {
+            if let Ok(md) = std::fs::read(home.join("AGENTS.md")) {
+                files.push(("home/AGENTS.md".to_string(), md));
+            }
+        }
+        for entry in &contents.skills {
+            if entry.is_empty()
+                || entry.contains('/')
+                || entry.contains('\\')
+                || entry == "."
+                || entry == ".."
+            {
+                return Err(format!("非法的 SKILL 条目名: {entry}"));
+            }
+            let path = home.join("skills").join(entry);
+            if path.is_dir() {
+                collect_skill_tree(&mut files, &path, &format!("home/skills/{entry}"))?;
+            } else if path.is_file() {
+                let bytes =
+                    std::fs::read(&path).map_err(|e| format!("读取 SKILL 失败 {entry}: {e}"))?;
+                files.push((format!("home/skills/{entry}"), bytes));
+            } else {
+                return Err(format!("SKILL 不存在: {entry}"));
+            }
+        }
+
+        // The save dialog may return a path without the extension (or with a
+        // different one); append `.dspack` instead of rejecting.
+        let raw_path = input.out_file.trim();
+        let out_path = if raw_path.to_lowercase().ends_with(".dspack") {
+            PathBuf::from(raw_path)
+        } else {
+            PathBuf::from(format!("{raw_path}.dspack"))
+        };
+        let out = write_modpack_dspack(&out_path, &files)?;
+        crate::log_info!("已导出整合包 {}", out.display());
+        Ok(out.to_string_lossy().to_string())
+    })
+    .await?
 }
 
 // ---------------------------------------------------------------------------
@@ -1412,38 +1427,17 @@ pub async fn export_dshhome_modpack(
         .filter(|v| !v.trim().is_empty())
         .unwrap_or_else(|| "1.0.0".to_string());
 
-    // Per-profile payloads.
-    let mut units: BTreeMap<String, ProfileUnit> = BTreeMap::new();
-    let mut collected: Vec<(String, ProfileExport)> = Vec::new();
-    for spec in &input.profiles {
-        let pname = spec.profile.trim().to_string();
-        let contents = spec.contents.clone().unwrap_or_default();
-        let dir = crate::plugins::profile_dir_pub(&home, &pname);
-        let payload = collect_profile_export(&dir, &contents)
-            .map_err(|e| format!("profile「{pname}」: {e}"))?;
-        units.insert(
-            pname.clone(),
-            ProfileUnit {
-                bundles: payload.bundles.clone(),
-                dependencies: payload.pinned.clone(),
-                patch: None, // the patch ships as a file under overrides/
-            },
-        );
-        collected.push((pname, payload));
-    }
-
-    // Icon (same rules as the single-profile export).
+    // Icon (same rules as the single-profile export): the remote fetch is
+    // network I/O and stays on the async side; the local file read happens in
+    // the blocking stage below.
     let mut icon_field: Option<String> = None;
     let mut icon_png: Option<Vec<u8>> = None;
+    let mut icon_local_instance: Option<String> = None;
     if input.icon {
         if let Some(inst) = &instance {
             if let Some(icon) = &inst.icon {
                 if icon == "local" {
-                    if let Ok(bytes) = std::fs::read(crate::icons::local_icon_path(&home, &inst.id))
-                    {
-                        icon_png = Some(bytes);
-                        icon_field = Some("icon.png".to_string());
-                    }
+                    icon_local_instance = Some(inst.id.clone());
                 } else if icon.starts_with("http") {
                     match fetch_remote_icon(icon).await {
                         Some(png) => {
@@ -1457,80 +1451,116 @@ pub async fn export_dshhome_modpack(
         }
     }
 
-    let manifest = ModpackManifest {
-        manifest_version: MANIFEST_VERSION,
-        pack_type: Some("dshhome".to_string()),
-        name: name.clone(),
-        display_name: input
-            .display_name
-            .filter(|d| d.as_str().map(|s| !s.trim().is_empty()).unwrap_or(true)),
-        version: version.clone(),
-        description: Some(
-            input
-                .description
-                .unwrap_or_else(|| serde_json::Value::String(String::new())),
-        ),
-        author: input
-            .author
-            .filter(|a| !a.trim().is_empty())
-            .or_else(os_username),
-        icon: icon_field,
-        dsh_version: Some(dsh_version),
-        profile_name: None,
-        bundles: vec![],
-        dependencies: BTreeMap::new(),
-        patch: None,
-        files: Vec::new(),
-        default_profile: Some(default_profile),
-        profiles: Some(units),
-        presets: None,
-        skills: None,
-        instructions: None,
-    };
+    // Per-profile collection walks the HOME filesystem (UNC for WSL homes)
+    // and the zip encode is CPU-heavy: run the whole sync stage on the
+    // blocking pool (issue #49 G3, #71).
+    crate::wsl::run_blocking(move || {
+        // Per-profile payloads.
+        let mut units: BTreeMap<String, ProfileUnit> = BTreeMap::new();
+        let mut collected: Vec<(String, ProfileExport)> = Vec::new();
+        for spec in &input.profiles {
+            let pname = spec.profile.trim().to_string();
+            let contents = spec.contents.clone().unwrap_or_default();
+            let dir = crate::plugins::profile_dir_pub(&home, &pname);
+            let payload = collect_profile_export(&dir, &contents)
+                .map_err(|e| format!("profile「{pname}」: {e}"))?;
+            units.insert(
+                pname.clone(),
+                ProfileUnit {
+                    bundles: payload.bundles.clone(),
+                    dependencies: payload.pinned.clone(),
+                    patch: None, // the patch ships as a file under overrides/
+                },
+            );
+            collected.push((pname, payload));
+        }
 
-    let mut files: Vec<(String, Vec<u8>)> = vec![
-        (
-            "dspack.json".to_string(),
-            DSPACK_MARKER_V3.as_bytes().to_vec(),
-        ),
-        (
-            "manifest.json".to_string(),
-            serde_json::to_vec_pretty(&manifest)
-                .map_err(|e| format!("序列化 manifest 失败: {e}"))?,
-        ),
-    ];
-    for (pname, payload) in &collected {
-        let base = format!("overrides/profiles/{pname}");
-        if let Some(p) = &payload.patch {
-            files.push((format!("{base}/cordis.patch.yml"), p.clone().into_bytes()));
+        // Local icon file read (UNC-capable path).
+        let mut icon_field = icon_field;
+        let mut icon_png = icon_png;
+        if let Some(inst_id) = &icon_local_instance {
+            if let Ok(bytes) = std::fs::read(crate::icons::local_icon_path(&home, inst_id)) {
+                icon_png = Some(bytes);
+                icon_field = Some("icon.png".to_string());
+            }
         }
-        if let Some(lock) = &payload.lockfile {
-            files.push((format!("{base}/pnpm-lock.yaml"), lock.clone()));
-        }
-        if let Some(ws) = &payload.workspace {
-            files.push((format!("{base}/pnpm-workspace.yaml"), ws.clone()));
-        }
-        for (rel, bytes) in &payload.extra {
-            files.push((format!("{base}/{rel}"), bytes.clone()));
-        }
-    }
-    if let Some(png) = icon_png {
-        files.push(("icon.png".to_string(), png));
-    }
 
-    let raw_path = input.out_file.trim();
-    let out_path = if raw_path.to_lowercase().ends_with(".dspack") {
-        PathBuf::from(raw_path)
-    } else {
-        PathBuf::from(format!("{raw_path}.dspack"))
-    };
-    let out = write_modpack_dspack(&out_path, &files)?;
-    crate::log_info!(
-        "已导出 dshhome 整合包 {}（{} 个 profile）",
-        out.display(),
-        collected.len()
-    );
-    Ok(out.to_string_lossy().to_string())
+        let manifest = ModpackManifest {
+            manifest_version: MANIFEST_VERSION,
+            pack_type: Some("dshhome".to_string()),
+            name: name.clone(),
+            display_name: input
+                .display_name
+                .filter(|d| d.as_str().map(|s| !s.trim().is_empty()).unwrap_or(true)),
+            version: version.clone(),
+            description: Some(
+                input
+                    .description
+                    .unwrap_or_else(|| serde_json::Value::String(String::new())),
+            ),
+            author: input
+                .author
+                .filter(|a| !a.trim().is_empty())
+                .or_else(os_username),
+            icon: icon_field,
+            dsh_version: Some(dsh_version),
+            profile_name: None,
+            bundles: vec![],
+            dependencies: BTreeMap::new(),
+            patch: None,
+            files: Vec::new(),
+            default_profile: Some(default_profile),
+            profiles: Some(units),
+            presets: None,
+            skills: None,
+            instructions: None,
+        };
+
+        let mut files: Vec<(String, Vec<u8>)> = vec![
+            (
+                "dspack.json".to_string(),
+                DSPACK_MARKER_V3.as_bytes().to_vec(),
+            ),
+            (
+                "manifest.json".to_string(),
+                serde_json::to_vec_pretty(&manifest)
+                    .map_err(|e| format!("序列化 manifest 失败: {e}"))?,
+            ),
+        ];
+        for (pname, payload) in &collected {
+            let base = format!("overrides/profiles/{pname}");
+            if let Some(p) = &payload.patch {
+                files.push((format!("{base}/cordis.patch.yml"), p.clone().into_bytes()));
+            }
+            if let Some(lock) = &payload.lockfile {
+                files.push((format!("{base}/pnpm-lock.yaml"), lock.clone()));
+            }
+            if let Some(ws) = &payload.workspace {
+                files.push((format!("{base}/pnpm-workspace.yaml"), ws.clone()));
+            }
+            for (rel, bytes) in &payload.extra {
+                files.push((format!("{base}/{rel}"), bytes.clone()));
+            }
+        }
+        if let Some(png) = icon_png {
+            files.push(("icon.png".to_string(), png));
+        }
+
+        let raw_path = input.out_file.trim();
+        let out_path = if raw_path.to_lowercase().ends_with(".dspack") {
+            PathBuf::from(raw_path)
+        } else {
+            PathBuf::from(format!("{raw_path}.dspack"))
+        };
+        let out = write_modpack_dspack(&out_path, &files)?;
+        crate::log_info!(
+            "已导出 dshhome 整合包 {}（{} 个 profile）",
+            out.display(),
+            collected.len()
+        );
+        Ok(out.to_string_lossy().to_string())
+    })
+    .await?
 }
 
 /// Converts manifest dependencies into pnpm-installable package.json specs.
