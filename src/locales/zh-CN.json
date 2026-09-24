@@ -271,6 +271,15 @@
       "clear": "恢复默认",
       "saved": "图标已更新"
     },
+    "sections": {
+      "launch": "启动",
+      "personal": "个性化",
+      "network": "网络",
+      "misc": "其它"
+    },
+    "log": {
+      "title": "日志"
+    },
     "skillRepos": {
       "title": "SKILL 仓库",
       "hint": "格式：https://[user:password{'@'}]github.com/user/repo[.git][#/path/to/skill]；在实例设置的 SKILL 页中从仓库安装或更新 SKILL，以 commit / tag 识别版本。",

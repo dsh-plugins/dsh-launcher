@@ -19,6 +19,10 @@ import HintIcon from '@/components/HintIcon.vue'
 const { t } = useI18n()
 const store = useLauncherStore()
 
+// Sidebar sections (issue #70): launch / personalization / network / misc.
+type SettingsSection = 'launch' | 'personal' | 'network' | 'misc'
+const section = ref<SettingsSection>('launch')
+
 /** Local-environment import wizard (issue #31). */
 const importScanVisible = ref(false)
 
@@ -473,17 +477,22 @@ const pluginSourceColumns = computed(() => [
 </script>
 
 <template>
-  <div class="dl-page">
-    <div class="dl-card">
-      <div class="dl-card-title">
-        <h3>{{ t('settings.importScan.title') }}</h3>
-      </div>
-      <p class="news-source-hint">{{ t('settings.importScan.hint') }}</p>
-      <a-button type="primary" @click="importScanVisible = true">
-        {{ t('settings.importScan.open') }}
-      </a-button>
-    </div>
-
+  <div class="dl-page settings-page">
+    <aside class="settings-sidebar">
+      <a-menu
+        :selected-keys="[section]"
+        @menu-item-click="(key: string) => (section = key as SettingsSection)"
+      >
+        <a-menu-item key="launch">{{ t('settings.sections.launch') }}</a-menu-item>
+        <a-menu-item key="personal">{{ t('settings.sections.personal') }}</a-menu-item>
+        <a-menu-item key="network">{{ t('settings.sections.network') }}</a-menu-item>
+        <a-menu-item key="misc">{{ t('settings.sections.misc') }}</a-menu-item>
+      </a-menu>
+    </aside>
+    <section class="settings-content">
+      <a-scrollbar type="track" outer-style="height: 100%" style="height: 100%; overflow-y: auto">
+        <div class="settings-inner">
+    <template v-if="section === 'personal'">
     <div class="dl-card">
       <div class="dl-card-title">
         <h3>{{ t('settings.general') }}</h3>
@@ -511,17 +520,6 @@ const pluginSourceColumns = computed(() => [
             </a-option>
           </a-select>
         </a-form-item>
-        <a-form-item><template #label>{{ t('settings.logLevel.label') }}<HintIcon :content="t('settings.logLevel.hint')" /></template>
-          <a-select
-            :model-value="store.settings.log_level"
-            style="width: 220px"
-            @change="onLogLevelChange"
-          >
-            <a-option v-for="o in LOG_LEVEL_OPTIONS" :key="o.value" :value="o.value">
-              {{ o.label }}
-            </a-option>
-          </a-select>
-          </a-form-item>
         <a-form-item><template #label>{{ t('settings.newsSource') }}<HintIcon :content="t('settings.newsSourceHint')" /></template>
           <a-input
             v-model="newsSource"
@@ -575,7 +573,9 @@ const pluginSourceColumns = computed(() => [
         </a-form-item>
       </a-form>
     </div>
+    </template>
 
+    <template v-else-if="section === 'launch'">
     <div class="dl-card">
       <div class="dl-card-title">
         <h3>{{ t('settings.launchBehavior.title') }}</h3>
@@ -612,6 +612,69 @@ const pluginSourceColumns = computed(() => [
       </a-form>
     </div>
 
+    <div class="dl-card">
+      <div class="dl-card-title">
+        <h3>{{ t('settings.dataDir.title') }}<HintIcon :content="t('settings.dataDir.hint')" /></h3>
+      </div>
+      <div class="update-row">
+        <span class="data-dir-path" :title="dataDir">{{ dataDir || t('settings.dataDir.unknown') }}</span>
+        <a-button size="small" @click="onOpenDataDir">{{ t('settings.dataDir.open') }}</a-button>
+        <a-button size="small" type="primary" @click="onMoveDataDir">{{ t('settings.dataDir.moveTo') }}</a-button>
+      </div>
+      <div class="data-dir-source" :class="`source-${dataDirSource}`">
+        {{ dataDirSourceTip }}
+      </div>
+      <a-modal
+        v-model:visible="moveModalVisible"
+        :title="t('settings.dataDir.moveTo')"
+        :ok-text="t('common.confirm')"
+        :cancel-text="t('common.cancel')"
+        :confirm-loading="moveBusy"
+        @ok="onConfirmMove"
+      >
+        <p class="move-target">{{ moveTarget }}</p>
+        <p class="move-hint">{{ t('settings.dataDir.restartHint') }}</p>
+      </a-modal>
+    </div>
+
+    <div class="dl-card">
+      <div class="dl-card-title">
+        <h3>{{ t('settings.homes') }}</h3>
+      </div>
+
+      <div class="home-add-row">
+        <a-input v-model="newHomeName" :placeholder="t('settings.homeNamePlaceholder')" style="width: 200px" />
+        <a-input v-model="newHomePath" :placeholder="t('settings.homePathPlaceholder')" class="home-path-input" />
+        <a-button @click="onPickDir">{{ t('settings.pickDir') }}</a-button>
+        <a-button type="primary" :disabled="!newHomeName.trim() || !newHomePath.trim()" @click="onAddHome">
+          {{ t('settings.addHome') }}
+        </a-button>
+      </div>
+
+      <a-table :columns="homeColumns" :data="store.homes" :pagination="false" :scroll="{ x: 700 }" row-key="id">
+        <template #actions="{ record }">
+          <a-popconfirm
+            :content="t('settings.confirmDeleteHome', { name: record.name })"
+            @ok="onRemoveHome(record.id)"
+          >
+            <a-button size="small" status="danger">{{ t('settings.deleteHome') }}</a-button>
+          </a-popconfirm>
+        </template>
+      </a-table>
+    </div>
+
+    <div class="dl-card">
+      <div class="dl-card-title">
+        <h3>{{ t('settings.importScan.title') }}</h3>
+      </div>
+      <p class="news-source-hint">{{ t('settings.importScan.hint') }}</p>
+      <a-button type="primary" @click="importScanVisible = true">
+        {{ t('settings.importScan.open') }}
+      </a-button>
+    </div>
+    </template>
+
+    <template v-else-if="section === 'network'">
     <div class="dl-card">
       <div class="dl-card-title">
         <h3>{{ t('settings.proxy.title') }}</h3>
@@ -658,6 +721,46 @@ const pluginSourceColumns = computed(() => [
           <span class="switch-label">{{ t('settings.proxy.applyDsh') }}<HintIcon :content="t('settings.proxy.applyDshHint')" /></span>
         </a-form-item>
       </a-form>
+    </div>
+    </template>
+
+    <template v-else>
+    <div class="dl-card">
+      <div class="dl-card-title">
+        <h3>{{ t('settings.update.title') }}<HintIcon :content="t('settings.update.channelHint')" /></h3>
+      </div>
+      <div class="update-row">
+        <span class="update-current">v{{ launcherVersion }}</span>
+        <a-tag v-if="updateInfo?.channel === 'dev' || launcherVersion.includes('-dev.')" color="orange" size="small">
+          {{ t('settings.update.devChannel') }}
+        </a-tag>
+        <a-select
+          :model-value="updateChannel"
+          class="update-channel-select"
+          size="small"
+          @change="onUpdateChannelChange"
+        >
+          <a-option v-for="o in UPDATE_CHANNEL_OPTIONS" :key="o.value" :value="o.value">
+            {{ o.label }}
+          </a-option>
+        </a-select>
+        <a-button size="small" :loading="checkingUpdate" @click="onCheckUpdate">
+          {{ t('settings.update.check') }}
+        </a-button>
+      </div>
+            <div v-if="updateInfo && !updateInfo.up_to_date" class="update-result">
+        <a-alert type="info" :show-icon="true">
+          {{ t('settings.update.available', { version: updateInfo.latest }) }}
+          <template v-if="updateInfo.url">
+            <a-link class="update-link" @click="api.openExternal(updateInfo.url!)">
+              {{ t('settings.update.viewRelease') }}
+            </a-link>
+          </template>
+        </a-alert>
+      </div>
+      <div v-else-if="updateInfo?.up_to_date" class="update-result">
+        <span class="update-up-to-date">{{ t('settings.update.upToDate') }}</span>
+      </div>
     </div>
 
     <div class="dl-card">
@@ -773,99 +876,67 @@ const pluginSourceColumns = computed(() => [
 
     <div class="dl-card">
       <div class="dl-card-title">
-        <h3>{{ t('settings.update.title') }}<HintIcon :content="t('settings.update.channelHint')" /></h3>
+        <h3>{{ t('settings.log.title') }}<HintIcon :content="t('settings.logLevel.hint')" /></h3>
       </div>
-      <div class="update-row">
-        <span class="update-current">v{{ launcherVersion }}</span>
-        <a-tag v-if="updateInfo?.channel === 'dev' || launcherVersion.includes('-dev.')" color="orange" size="small">
-          {{ t('settings.update.devChannel') }}
-        </a-tag>
-        <a-select
-          :model-value="updateChannel"
-          class="update-channel-select"
-          size="small"
-          @change="onUpdateChannelChange"
-        >
-          <a-option v-for="o in UPDATE_CHANNEL_OPTIONS" :key="o.value" :value="o.value">
-            {{ o.label }}
-          </a-option>
-        </a-select>
-        <a-button size="small" :loading="checkingUpdate" @click="onCheckUpdate">
-          {{ t('settings.update.check') }}
-        </a-button>
-      </div>
-            <div v-if="updateInfo && !updateInfo.up_to_date" class="update-result">
-        <a-alert type="info" :show-icon="true">
-          {{ t('settings.update.available', { version: updateInfo.latest }) }}
-          <template v-if="updateInfo.url">
-            <a-link class="update-link" @click="api.openExternal(updateInfo.url!)">
-              {{ t('settings.update.viewRelease') }}
-            </a-link>
-          </template>
-        </a-alert>
-      </div>
-      <div v-else-if="updateInfo?.up_to_date" class="update-result">
-        <span class="update-up-to-date">{{ t('settings.update.upToDate') }}</span>
-      </div>
-    </div>
-
-    <div class="dl-card">
-      <div class="dl-card-title">
-        <h3>{{ t('settings.dataDir.title') }}<HintIcon :content="t('settings.dataDir.hint')" /></h3>
-      </div>
-      <div class="update-row">
-        <span class="data-dir-path" :title="dataDir">{{ dataDir || t('settings.dataDir.unknown') }}</span>
-        <a-button size="small" @click="onOpenDataDir">{{ t('settings.dataDir.open') }}</a-button>
-        <a-button size="small" @click="onOpenLauncherLog">{{ t('settings.dataDir.viewLog') }}</a-button>
-        <a-button size="small" type="primary" @click="onMoveDataDir">{{ t('settings.dataDir.moveTo') }}</a-button>
-      </div>
-      <div class="data-dir-source" :class="`source-${dataDirSource}`">
-        {{ dataDirSourceTip }}
-      </div>
-      <a-modal
-        v-model:visible="moveModalVisible"
-        :title="t('settings.dataDir.moveTo')"
-        :ok-text="t('common.confirm')"
-        :cancel-text="t('common.cancel')"
-        :confirm-loading="moveBusy"
-        @ok="onConfirmMove"
-      >
-        <p class="move-target">{{ moveTarget }}</p>
-        <p class="move-hint">{{ t('settings.dataDir.restartHint') }}</p>
-      </a-modal>
-    </div>
-
-    <div class="dl-card">
-      <div class="dl-card-title">
-        <h3>{{ t('settings.homes') }}</h3>
-      </div>
-
-      <div class="home-add-row">
-        <a-input v-model="newHomeName" :placeholder="t('settings.homeNamePlaceholder')" style="width: 200px" />
-        <a-input v-model="newHomePath" :placeholder="t('settings.homePathPlaceholder')" class="home-path-input" />
-        <a-button @click="onPickDir">{{ t('settings.pickDir') }}</a-button>
-        <a-button type="primary" :disabled="!newHomeName.trim() || !newHomePath.trim()" @click="onAddHome">
-          {{ t('settings.addHome') }}
-        </a-button>
-      </div>
-
-      <a-table :columns="homeColumns" :data="store.homes" :pagination="false" :scroll="{ x: 700 }" row-key="id">
-        <template #actions="{ record }">
-          <a-popconfirm
-            :content="t('settings.confirmDeleteHome', { name: record.name })"
-            @ok="onRemoveHome(record.id)"
+      <a-form :model="store.settings" layout="vertical" class="settings-form">
+        <a-form-item :label="t('settings.logLevel.label')">
+          <a-select
+            :model-value="store.settings.log_level"
+            style="width: 220px"
+            @change="onLogLevelChange"
           >
-            <a-button size="small" status="danger">{{ t('settings.deleteHome') }}</a-button>
-          </a-popconfirm>
-        </template>
-      </a-table>
+            <a-option v-for="o in LOG_LEVEL_OPTIONS" :key="o.value" :value="o.value">
+              {{ o.label }}
+            </a-option>
+          </a-select>
+        </a-form-item>
+        <a-form-item>
+          <a-button size="small" @click="onOpenLauncherLog">{{ t('settings.dataDir.viewLog') }}</a-button>
+        </a-form-item>
+      </a-form>
     </div>
+    </template>
+        </div>
+      </a-scrollbar>
+    </section>
 
     <ImportScanDialog v-model:visible="importScanVisible" />
   </div>
 </template>
 
 <style lang="scss" scoped>
+// Sidebar-sectioned settings page (issue #70), mirroring the instance editor.
+.settings-page {
+  display: flex;
+  height: calc(100vh - var(--dl-header-height));
+  max-width: none;
+  margin: 0;
+  padding: 0;
+}
+
+.settings-sidebar {
+  width: 200px;
+  flex-shrink: 0;
+  background: var(--color-bg-2);
+  border-right: 1px solid var(--color-border-2);
+
+  :deep(.arco-menu) {
+    height: 100%;
+  }
+}
+
+.settings-content {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.settings-inner {
+  padding: 20px 24px 80px;
+  max-width: var(--dl-content-max);
+  margin: 0 auto;
+}
+
 .skill-repo-add {
   display: flex;
   gap: 8px;

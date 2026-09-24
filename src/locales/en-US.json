@@ -271,6 +271,15 @@
       "clear": "Restore default",
       "saved": "Icon updated"
     },
+    "sections": {
+      "launch": "Startup",
+      "personal": "Personalization",
+      "network": "Network",
+      "misc": "Misc"
+    },
+    "log": {
+      "title": "Logs"
+    },
     "skillRepos": {
       "title": "SKILL repositories",
       "hint": "Format: https://[user:password{'@'}]github.com/user/repo[.git][#/path/to/skill]; install or update skills from a repo on the instance SKILL tab, versioned by commit / tag.",
