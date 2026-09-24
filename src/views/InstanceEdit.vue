@@ -568,7 +568,7 @@ async function onOpenSkillsDir() {
 const agentsContent = ref('')
 const agentsLoading = ref(false)
 const agentsSaving = ref(false)
-const agentsPreview = ref(false)
+const agentsPreview = ref(true)
 
 const agentsPreviewHtml = computed(() => renderMarkdown(agentsContent.value))
 
@@ -2111,38 +2111,48 @@ const terminalRunning = ref(false)
             </a-alert>
           </div>
 
-          <!-- AGENTS.md (issue #57) -->
+          <!-- AGENTS.md (issue #57): preview-first; save lives top-right. -->
           <div v-else-if="activeTab === 'agents'" class="dl-card edit-card">
-            <h4 class="env-title">
-              {{ t('instanceEdit.tabs.agents') }}
-              <HintIcon :content="t('instanceEdit.agentsDesc')" />
-            </h4>
+            <div class="agents-head">
+              <h4 class="env-title">
+                {{ t('instanceEdit.tabs.agents') }}
+                <HintIcon :content="t('instanceEdit.agentsDesc')" />
+              </h4>
+              <a-button
+                v-if="homeId && editingId"
+                size="small"
+                type="primary"
+                :loading="agentsSaving"
+                @click="saveAgentsMd"
+              >
+                {{ t('common.save') }}
+              </a-button>
+            </div>
 
             <template v-if="homeId && editingId">
               <div class="skill-toolbar">
-                <a-button size="small" type="primary" :loading="agentsSaving" @click="saveAgentsMd">
-                  {{ t('common.save') }}
+                <a-button size="small" @click="agentsPreview = !agentsPreview">
+                  {{ agentsPreview ? t('instanceEdit.agentsEdit') : t('instanceEdit.agentsPreview') }}
                 </a-button>
                 <a-button size="small" :loading="agentsLoading" @click="loadAgentsMd">
                   {{ t('common.refresh') }}
                 </a-button>
-                <a-button size="small" @click="agentsPreview = !agentsPreview">
-                  {{ agentsPreview ? t('instanceEdit.agentsEdit') : t('instanceEdit.agentsPreview') }}
-                </a-button>
               </div>
-              <a-textarea
-                v-if="!agentsPreview"
-                v-model="agentsContent"
-                class="agents-editor"
-                :auto-size="{ minRows: 18, maxRows: 40 }"
-                :placeholder="t('instanceEdit.agentsEmpty')"
-              />
-              <!-- eslint-disable-next-line vue/no-v-html -- sanitized by renderMarkdown -->
-              <div
-                v-else
-                class="agents-preview markdown-body"
-                v-html="agentsPreviewHtml || `<p class='agents-empty'>${t('instanceEdit.agentsEmpty')}</p>`"
-              />
+              <a-scrollbar outer-style="height: 480px" style="height: 480px; overflow-y: auto">
+                <a-textarea
+                  v-if="!agentsPreview"
+                  v-model="agentsContent"
+                  class="agents-editor"
+                  :auto-size="{ minRows: 20 }"
+                  :placeholder="t('instanceEdit.agentsEmpty')"
+                />
+                <!-- eslint-disable-next-line vue/no-v-html -- sanitized by renderMarkdown -->
+                <div
+                  v-else
+                  class="agents-preview markdown-body"
+                  v-html="agentsPreviewHtml || `<p class='agents-empty'>${t('instanceEdit.agentsEmpty')}</p>`"
+                />
+              </a-scrollbar>
             </template>
 
             <a-alert v-else type="info">
@@ -2826,7 +2836,19 @@ const terminalRunning = ref(false)
 }
 
 /* AGENTS.md editor / preview (issue #57) */
+.agents-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+
+  .env-title {
+    margin: 0;
+  }
+}
+
 .agents-editor {
+  width: 100%;
   font-family: Consolas, 'Courier New', monospace;
 }
 
