@@ -1477,6 +1477,12 @@ pub fn update_settings(
     if let Some(v) = settings.last_instance_id {
         cfg.settings.last_instance_id = Some(v);
     }
+    if let Some(v) = settings.auto_open_on_launch {
+        cfg.settings.auto_open_on_launch = v;
+    }
+    if let Some(v) = settings.hide_launcher_on_window_open {
+        cfg.settings.hide_launcher_on_window_open = v;
+    }
     if let Some(v) = settings.news_source {
         cfg.settings.news_source = v.trim().to_string();
     }

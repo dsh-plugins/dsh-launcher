@@ -353,8 +353,11 @@ pub struct NewInstanceInput {
     pub default_profile: Option<String>,
 }
 
-/// Partial settings update: only present fields are applied.
+/// Partial settings update: only present fields are applied. Unknown keys are
+/// rejected outright — a silently dropped key is exactly how issue #69 hid a
+/// broken switch (the toggle sent a field this struct did not declare).
 #[derive(Clone, Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SettingsPatch {
     #[serde(default)]
     pub locale: Option<String>,
@@ -362,6 +365,10 @@ pub struct SettingsPatch {
     pub minimize_to_tray: Option<bool>,
     #[serde(default)]
     pub autostart: Option<bool>,
+    #[serde(default)]
+    pub auto_open_on_launch: Option<bool>,
+    #[serde(default)]
+    pub hide_launcher_on_window_open: Option<bool>,
     #[serde(default)]
     pub last_instance_id: Option<String>,
     #[serde(default)]
@@ -553,6 +560,21 @@ pub fn new_id(prefix: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn settings_patch_covers_launch_behavior_and_rejects_unknown_keys() {
+        // Issue #69: the "hide launcher on window open" switch sent a field
+        // SettingsPatch did not declare, and serde silently dropped it.
+        let patch: SettingsPatch = serde_json::from_str(
+            r#"{"auto_open_on_launch": true, "hide_launcher_on_window_open": true}"#,
+        )
+        .unwrap();
+        assert_eq!(patch.auto_open_on_launch, Some(true));
+        assert_eq!(patch.hide_launcher_on_window_open, Some(true));
+        assert!(patch.locale.is_none());
+        // Unknown keys must fail loudly instead of vanishing.
+        assert!(serde_json::from_str::<SettingsPatch>(r#"{"nope": 1}"#).is_err());
+    }
 
     fn source(id: &str, kind: SourceKind, confidence: Confidence) -> PluginSourceConfig {
         PluginSourceConfig {
