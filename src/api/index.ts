@@ -12,6 +12,7 @@ import type {
   ExportModpackInput,
   ExportDshhomeInput,
   HomeLinkInfo,
+  HomeLinkSuggestion,
   ImportModpackInput,
   InstallPluginInput,
   InstalledPlugin,
@@ -134,6 +135,7 @@ function seedDb(): MockDb {
       proxy_apply_dsh: false,
       auto_open_on_launch: true,
       hide_launcher_on_window_open: false,
+      last_link_root: null,
     },
     running: {},
     mcp: {},
@@ -154,6 +156,7 @@ function loadDb(): MockDb {
       db.settings.proxy_apply_dsh = db.settings.proxy_apply_dsh ?? false
       db.settings.auto_open_on_launch = db.settings.auto_open_on_launch ?? true
       db.settings.hide_launcher_on_window_open = db.settings.hide_launcher_on_window_open ?? false
+      db.settings.last_link_root = db.settings.last_link_root ?? null
       db.settings.plugin_sources = db.settings.plugin_sources ?? seedDb().settings.plugin_sources
       db.mcp = db.mcp ?? {}
       db.homes.forEach((h) => {
@@ -338,7 +341,12 @@ async function mockCall<T>(cmd: string, args?: Record<string, unknown>): Promise
       if (!home) fail('DSH_HOME 不存在')
       const entry = String(args?.entry ?? '')
       if (!(entry in MOCK_LINK_KINDS)) fail(`不支持重定向的条目: ${entry}`)
-      home.links = { ...(home.links ?? {}), [entry]: String(args?.target ?? '') }
+      const target = String(args?.target ?? '')
+      home.links = { ...(home.links ?? {}), [entry]: target }
+      // Mirror links.rs::record_link: remember the parent directory so the
+      // "last used" preset appears on the next dialog (issue #65 D2).
+      const idx = Math.max(target.lastIndexOf('\\'), target.lastIndexOf('/'))
+      if (idx > 0) db.settings.last_link_root = target.slice(0, idx)
       saveDb(db)
       return undefined as T
     }
@@ -348,6 +356,50 @@ async function mockCall<T>(cmd: string, args?: Record<string, unknown>): Promise
       if (home.links) delete home.links[String(args?.entry ?? '')]
       saveDb(db)
       return undefined as T
+    }
+    // Issue #65 (mock): mirrors links.rs::suggest_home_link_targets — a
+    // read-only candidate list, fixed so the browser preview stays clickable.
+    case 'suggest_home_link_targets': {
+      const home = db.homes.find((h) => h.id === String(args?.homeId))
+      if (!home) fail('DSH_HOME 不存在')
+      const entry = String(args?.entry ?? '')
+      if (!(entry in MOCK_LINK_KINDS)) fail(`不支持重定向的条目: ${entry}`)
+      const appData = 'C:\\Users\\Administrator\\AppData\\Roaming\\in.dsh-plug.dsh-launcher'
+      const drive = /^([A-Za-z]):/.exec(home.path)?.[1] ?? 'C'
+      const candidates = [
+        { id: 'launcher-data', label_key: 'storagePresetLauncherData', path: `${appData}\\dsh-data` },
+        { id: 'same-drive', label_key: 'storagePresetSameDrive', path: `${drive}:\\dsh-data` },
+        {
+          id: 'last-used',
+          label_key: 'storagePresetLastUsed',
+          path: (db.settings.last_link_root ?? '').trim(),
+        },
+      ]
+      const seen = new Set<string>()
+      // The mock has no filesystem, so `exists` is a fixed preview value per
+      // candidate rather than a real probe. The values mirror the usual real
+      // state: `<data>/dsh-data` and `<drive>:\dsh-data` are not created yet on
+      // a first run (the backend's `create_dir_all` makes them on submit), while
+      // `last-used` was redirected into before, so it does exist. Every
+      // candidate is still rendered, so both UI branches stay reachable.
+      const mockExists: Record<string, boolean> = {
+        'launcher-data': false,
+        'same-drive': false,
+        'last-used': true,
+      }
+      const out = candidates
+        .filter((c) => c.path)
+        .filter((c) => {
+          const key = c.path.toLowerCase()
+          if (seen.has(key)) return false
+          seen.add(key)
+          return true
+        })
+        .map((c) => ({
+          ...c,
+          exists: mockExists[c.id] ?? false,
+        }))
+      return out as T
     }
     case 'default_dedicated_home_path': {
       const name = String(args?.name ?? 'instance')
@@ -1335,6 +1387,8 @@ export const api = {
     call<void>('set_home_link', { homeId, entry, target }),
   clearHomeLink: (homeId: string, entry: string) =>
     call<void>('clear_home_link', { homeId, entry }),
+  suggestHomeLinkTargets: (homeId: string, entry: string) =>
+    call<HomeLinkSuggestion[]>('suggest_home_link_targets', { homeId, entry }),
   defaultDedicatedHomePath: (name: string) => call<string>('default_dedicated_home_path', { name }),
 
   listVersions: () => call<DshVersion[]>('list_versions'),

@@ -20,6 +20,19 @@ export interface HomeLinkInfo {
   active: boolean
 }
 
+/** One candidate root directory offered as a preset target (issue #65).
+ * Mirrors `HomeLinkSuggestion` in src-tauri/src/links.rs. */
+export interface HomeLinkSuggestion {
+  /** Stable id: 'launcher-data' | 'same-drive' | 'last-used'. */
+  id: string
+  /** i18n key for the label; the backend never emits prose. */
+  label_key: string
+  /** Candidate root directory, absolute. The entry name is joined onto it. */
+  path: string
+  /** Whether the root exists right now (read-only probe, nothing is created). */
+  exists: boolean
+}
+
 export interface DshVersion {
   id: string
   version: string
@@ -68,6 +81,9 @@ export interface LauncherSettings {
   auto_open_on_launch: boolean
   /** Hide the launcher main window whenever an instance window opens. */
   hide_launcher_on_window_open: boolean
+  /** Root directory of the most recent storage redirection (issue #65),
+   * offered as the "last used" preset. Advisory UI memory only. */
+  last_link_root?: string | null
 }
 
 /** UI theme: explicit light/dark, or follow the OS color scheme. */
