@@ -20,6 +20,7 @@ mod terminal;
 mod tray;
 mod tui;
 mod update;
+mod update_window;
 mod windows;
 mod wsl;
 
@@ -264,6 +265,11 @@ pub fn run() {
                 });
             }
 
+            // Startup update check (issue: update notice window): runs in the
+            // background after the main window exists; a newer, unsuppressed
+            // release opens the frameless update-notice window.
+            update_window::spawn_startup_update_check(app.handle());
+
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -350,6 +356,7 @@ pub fn run() {
             commands::update_settings,
             commands::fetch_news,
             update::check_launcher_update,
+            update_window::dismiss_update_version,
             plugins::fetch_plugin_market,
             plugins::list_plugin_sources,
             plugins::fetch_plugin_versions,

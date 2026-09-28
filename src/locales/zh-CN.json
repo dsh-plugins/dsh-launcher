@@ -376,6 +376,15 @@
     },
     "logOpened": "已在文件管理器中定位日志：{path}"
   },
+  "updateNotice": {
+    "title": "启动器更新提醒",
+    "current": "当前版本",
+    "latest": "最新版本",
+    "publishedAt": "发布时间：{date}",
+    "download": "前往下载",
+    "skip": "忽略本次",
+    "never": "永不提醒"
+  },
   "instanceEdit": {
     "titleNew": "新建实例",
     "titleEdit": "实例设置",

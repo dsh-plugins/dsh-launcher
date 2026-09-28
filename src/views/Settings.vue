@@ -84,6 +84,8 @@ onMounted(async () => {
   } catch {
     launcherVersion.value = '?'
   }
+  // The chosen update channel persists across restarts (issue: update notice).
+  updateChannel.value = store.settings.update_channel ?? 'dev'
   try {
     dataDir.value = await api.getLauncherDirectory()
   } catch {
@@ -110,6 +112,8 @@ async function onUpdateChannelChange(value: string | number | boolean | Record<s
   // A different channel invalidates the previous result; only a fresh check
   // is meaningful for the new channel.
   updateInfo.value = null
+  // Remember the choice across restarts; the startup check uses it.
+  await patchSettings({ update_channel: channel })
 }
 
 // --- Data directory (issue #43) ---------------------------------------------

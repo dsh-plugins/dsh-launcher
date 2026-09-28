@@ -1546,6 +1546,12 @@ pub fn update_settings(
     if let Some(v) = settings.proxy_apply_dsh {
         cfg.settings.proxy_apply_dsh = v;
     }
+    if let Some(v) = settings.update_channel {
+        match v.trim().to_ascii_lowercase().as_str() {
+            channel @ ("dev" | "release") => cfg.settings.update_channel = channel.to_string(),
+            _ => return Err(format!("无效的更新渠道: {v}")),
+        }
+    }
     crate::proxy::sync_from_settings(&cfg.settings);
     let out = cfg.settings.clone();
     save_state(&state, &cfg)?;

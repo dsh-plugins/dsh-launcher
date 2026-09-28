@@ -34,6 +34,13 @@ const router = createRouter({
       // Pass the route param straight into the component's instanceId prop.
       props: true,
     },
+    // Update-notice window content: hosted in the dedicated frameless
+    // `update-notice` window, rendered without the app shell (see App.vue).
+    {
+      path: '/update-notice',
+      name: 'update-notice',
+      component: () => import('@/views/UpdateNotice.vue'),
+    },
     { path: '/:pathMatch(.*)*', redirect: '/' },
   ],
 })

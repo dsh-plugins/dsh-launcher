@@ -113,6 +113,8 @@ export const useLauncherStore = defineStore('launcher', {
       auto_open_on_launch: true,
       hide_launcher_on_window_open: false,
       per_instance_tray: true,
+      update_channel: 'dev',
+      update_suppressed: [],
     },
     statusById: {},
     tasks: {},

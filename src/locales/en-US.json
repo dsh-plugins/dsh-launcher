@@ -376,6 +376,15 @@
     },
     "logOpened": "Log revealed in file manager: {path}"
   },
+  "updateNotice": {
+    "title": "Launcher update available",
+    "current": "Current",
+    "latest": "Latest",
+    "publishedAt": "Published: {date}",
+    "download": "Download",
+    "skip": "Skip this time",
+    "never": "Never remind"
+  },
   "instanceEdit": {
     "titleNew": "New instance",
     "titleEdit": "Instance settings",

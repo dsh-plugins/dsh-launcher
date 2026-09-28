@@ -88,6 +88,10 @@ export interface LauncherSettings {
   /** Root directory of the most recent storage redirection (issue #65),
    * offered as the "last used" preset. Advisory UI memory only. */
   last_link_root?: string | null
+  /** Launcher self-update channel, remembered across restarts. */
+  update_channel: 'dev' | 'release'
+  /** Versions the user chose "never remind" for on the update notice window. */
+  update_suppressed: string[]
 }
 
 /** UI theme: explicit light/dark, or follow the OS color scheme. */

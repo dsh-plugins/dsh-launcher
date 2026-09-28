@@ -137,6 +137,8 @@ function seedDb(): MockDb {
       hide_launcher_on_window_open: false,
       per_instance_tray: true,
       last_link_root: null,
+      update_channel: 'dev',
+      update_suppressed: [],
     },
     running: {},
     mcp: {},
@@ -159,6 +161,8 @@ function loadDb(): MockDb {
       db.settings.hide_launcher_on_window_open = db.settings.hide_launcher_on_window_open ?? false
       db.settings.last_link_root = db.settings.last_link_root ?? null
       db.settings.plugin_sources = db.settings.plugin_sources ?? seedDb().settings.plugin_sources
+      db.settings.update_channel = db.settings.update_channel ?? 'dev'
+      db.settings.update_suppressed = db.settings.update_suppressed ?? []
       db.mcp = db.mcp ?? {}
       db.homes.forEach((h) => {
         h.links = h.links ?? {}
@@ -1039,6 +1043,14 @@ async function mockCall<T>(cmd: string, args?: Record<string, unknown>): Promise
       saveDb(db)
       return db.settings as T
     }
+    case 'dismiss_update_version': {
+      const version = String(args?.version ?? '').trim()
+      if (version && !db.settings.update_suppressed.includes(version)) {
+        db.settings.update_suppressed.push(version)
+        saveDb(db)
+      }
+      return undefined as T
+    }
     case 'check_launcher_update': {
       // Browser preview: honor the channel; the release channel reports the
       // same fake dev build as up-to-date so the filter is observable.
@@ -1561,6 +1573,9 @@ export const api = {
   /** Checks GitHub for a newer launcher release on the given channel. */
   checkLauncherUpdate: (channel: 'dev' | 'release' = 'dev') =>
     call<LauncherUpdateInfo>('check_launcher_update', { channel }),
+  /** "Never remind" on the update notice: suppresses exactly this version. */
+  dismissUpdateVersion: (version: string) =>
+    call<void>('dismiss_update_version', { version }),
   /** The launcher's own data directory (shown next to the open button). */
   getLauncherDirectory: () => call<string>('get_launcher_directory'),
   /** Opens a folder picker for relocating the data dir (issue #43). */

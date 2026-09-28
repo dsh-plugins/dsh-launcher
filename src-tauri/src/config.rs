@@ -263,6 +263,15 @@ pub struct LauncherSettings {
     /// affects validation. `#[serde(default)]` keeps older configs loadable.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_link_root: Option<String>,
+    /// Launcher self-update channel: "dev" (default, includes prereleases)
+    /// or "release" (stable only). Remembered across restarts.
+    #[serde(default = "default_update_channel")]
+    pub update_channel: String,
+    /// Release versions the user chose "never remind" for on the update
+    /// notice window (e.g. "0.2.8", "0.2.8-dev.3"). Only the exact version is
+    /// suppressed — a newer release still prompts.
+    #[serde(default)]
+    pub update_suppressed: Vec<String>,
 }
 
 fn default_locale() -> String {
@@ -298,6 +307,10 @@ fn default_no_proxy() -> String {
     "127.0.0.1,localhost,::1".to_string()
 }
 
+fn default_update_channel() -> String {
+    "dev".to_string()
+}
+
 impl Default for LauncherSettings {
     fn default() -> Self {
         Self {
@@ -319,6 +332,8 @@ impl Default for LauncherSettings {
             per_instance_tray: true,
             plugin_sources: default_plugin_sources(),
             last_link_root: None,
+            update_channel: default_update_channel(),
+            update_suppressed: Vec::new(),
         }
     }
 }
@@ -401,6 +416,8 @@ pub struct SettingsPatch {
     pub proxy_apply_dsh: Option<bool>,
     #[serde(default)]
     pub plugin_sources: Option<Vec<PluginSourceConfig>>,
+    #[serde(default)]
+    pub update_channel: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]

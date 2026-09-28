@@ -270,8 +270,8 @@ async function onHeaderMouseDown(e: MouseEvent) {
 </script>
 
 <template>
-  <!-- TUI terminal window: bare full-bleed terminal, no app shell. -->
-  <router-view v-if="route.name === 'tui-terminal'" />
+  <!-- Standalone frameless windows render bare, without the app shell. -->
+  <router-view v-if="route.name === 'tui-terminal' || route.name === 'update-notice'" />
   <a-layout v-else class="app-shell">
     <a-layout-header class="app-header" @mousedown="onHeaderMouseDown">
       <!-- Brand; dragging is handled manually via onHeaderMouseDown. -->
