@@ -434,7 +434,7 @@ pub async fn start_instance_process(
             wsl: wsl_proc.clone(),
         },
     );
-    crate::tray::rebuild_tray_menu(app).await;
+    crate::tray::sync_tray_icons(app).await;
 
     // Waiter: owns the child, awaits exit or a kill request, then cleans up
     // and notifies. It is the single place that removes the map entry and
@@ -475,7 +475,7 @@ pub async fn start_instance_process(
                     exit_code: code,
                 },
             );
-            crate::tray::rebuild_tray_menu(&waiter_app).await;
+            crate::tray::sync_tray_icons(&waiter_app).await;
             crate::windows::close_instance_window(&waiter_app, &waiter_id);
         });
     }

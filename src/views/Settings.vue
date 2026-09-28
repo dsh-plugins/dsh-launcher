@@ -195,6 +195,10 @@ async function onHideLauncherChange(value: string | number | boolean | Record<st
   await patchSettings({ hide_launcher_on_window_open: Boolean(value) })
 }
 
+async function onPerInstanceTrayChange(value: string | number | boolean | Record<string, unknown> | (string | number | boolean | Record<string, unknown>)[]) {
+  await patchSettings({ per_instance_tray: Boolean(value) })
+}
+
 // News source: saved on blur / Enter so typing is not interrupted.
 const newsSource = ref(store.settings.news_source ?? '')
 watch(
@@ -607,6 +611,16 @@ const pluginSourceColumns = computed(() => [
           <span class="switch-label">
             {{ t('settings.launchBehavior.hideLauncherOnWindowOpen') }}
             <HintIcon :content="t('settings.launchBehavior.hideLauncherOnWindowOpenHint')" />
+          </span>
+        </a-form-item>
+        <a-form-item>
+          <a-switch
+            :model-value="store.settings.per_instance_tray"
+            @change="onPerInstanceTrayChange"
+          />
+          <span class="switch-label">
+            {{ t('settings.perInstanceTray') }}
+            <HintIcon :content="t('settings.perInstanceTrayHint')" />
           </span>
         </a-form-item>
       </a-form>

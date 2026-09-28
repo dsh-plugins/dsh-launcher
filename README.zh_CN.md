@@ -32,9 +32,14 @@ Tauri 2 + Vue 3 + TypeScript + Sass + vue-router + vue-i18n + Arco Design Vue。
   - 自动允许依赖的 buildScripts（`onlyBuiltDependencies: ['*']`），并在 Profile 的 `package.json`（`dsh.profile.bundles` + `dependencies`）注册插件，非 bundle 插件额外写入 `cordis.patch.yml` insert 行。
 - **按 Profile 管理插件**（实例设置 → 插件页）：筛选 Profile 查看其下插件，单个启用/禁用，支持多选批量启用/禁用；核心 `@deepseek-ai/*` 包不显示。
 - **系统托盘**：
-  - 双击托盘：打开最后聚焦的实例 Profile 页面；仅一个运行实例时直接打开它，否则显示启动器；
+  - 左键单击启动器托盘：打开并聚焦启动器窗口；
   - 右键菜单：「运行中的 Profile」二级菜单为每个运行中实例提供「打开 / 停止」；另有「打开启动器 / 退出启动器」。
   - 退出启动器时自动终止所有实例进程，避免孤儿进程。
+- **每实例独立托盘图标**（issue #72，可在设置关闭）：
+  - 图标取该实例的自定义图标，未设置时回退启动器图标；
+  - 悬停显示「实例名 · Profile · 运行中（N 个活跃对话）」，活跃数读取实例 DSH 会话索引，约每 15s 刷新；
+  - 左键打开实例 Web GUI（TUI Profile 打开其终端窗口），窗口已打开时聚焦；
+  - 右键菜单提供「打开实例界面 / 终止实例」。
 - **关闭最小化到托盘**（可在设置关闭）。
 - **开机自启**（设置页开关，经 autostart 插件真正注册）。
 - **i18n**：简体中文 / English，JSON 语言文件由 `@intlify/unplugin-vue-i18n` 经 Vite 发现、热重载并预编译。

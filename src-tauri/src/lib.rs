@@ -13,6 +13,7 @@ mod process;
 mod proxy;
 mod runtime;
 mod scan;
+mod sessions;
 mod skills;
 mod tasks;
 mod terminal;
@@ -25,6 +26,11 @@ mod wsl;
 use std::collections::HashMap;
 use std::sync::Mutex as StdMutex;
 use tauri::{Emitter, Manager, WindowEvent};
+
+/// A cached instance tray icon: the icon source it was resolved from (so a
+/// changed icon invalidates the entry) and the PNG bytes, or `None` when
+/// resolving that source failed (so a broken URL is not retried every refresh).
+pub type CachedInstanceIcon = (String, Option<Vec<u8>>);
 
 pub struct AppState {
     pub config_path: std::path::PathBuf,
@@ -63,6 +69,21 @@ pub struct AppState {
     /// created with; keeping the last printed URL here lets an already-open
     /// window re-authenticate instead of rendering the 401 page forever.
     pub window_urls: StdMutex<HashMap<String, String>>,
+    /// Instances that currently own a tray icon (issue #72). Only ids are
+    /// stored: holding a `TrayIcon` handle would keep the native icon alive
+    /// after `remove_tray_by_id`.
+    pub instance_trays: StdMutex<std::collections::HashSet<String>>,
+    /// Per-instance tray icon cache: instance id → [`CachedInstanceIcon`].
+    /// Decoding a PNG and, for remote icons, downloading it must not happen on
+    /// every tray sync.
+    pub instance_icon_cache: StdMutex<HashMap<String, CachedInstanceIcon>>,
+    /// Serializes tray syncs (issue #72). Syncs run from instance
+    /// start/stop, settings changes, icon changes and the 15s refresh, so two
+    /// can overlap; both would then see "no tray for this instance", both
+    /// would build one, and `remove_tray_by_id` would only remove the first —
+    /// leaving a ghost icon that never disappears. An `Arc` so the guard can
+    /// be held across the sync's awaits.
+    pub tray_sync_lock: std::sync::Arc<tokio::sync::Mutex<()>>,
 }
 
 /// Extracts a `dsh-launcher://…` deep link from process arguments (Windows
@@ -206,10 +227,17 @@ pub fn run() {
                 tui_sessions: tokio::sync::Mutex::new(HashMap::new()),
                 distro_ready: tokio::sync::Mutex::new(HashMap::new()),
                 window_urls: StdMutex::new(HashMap::new()),
+                instance_trays: StdMutex::new(std::collections::HashSet::new()),
+                instance_icon_cache: StdMutex::new(HashMap::new()),
+                tray_sync_lock: std::sync::Arc::new(tokio::sync::Mutex::new(())),
             });
 
             // System tray with dynamic menu.
             tray::build_tray(app.handle())?;
+            // Per-instance tray icons (issue #72): refresh running instances
+            // periodically so the tooltip's active-conversation count tracks
+            // conversations opening/closing inside a running instance.
+            tray::spawn_activity_refresh(app.handle());
 
             // Custom launcher icons (issue #59) re-apply over the defaults
             // once the window and tray both exist.

@@ -112,6 +112,7 @@ export const useLauncherStore = defineStore('launcher', {
       proxy_apply_dsh: false,
       auto_open_on_launch: true,
       hide_launcher_on_window_open: false,
+      per_instance_tray: true,
     },
     statusById: {},
     tasks: {},

@@ -32,9 +32,14 @@ Tauri 2 + Vue 3 + TypeScript + Sass + vue-router + vue-i18n + Arco Design Vue.
   - Dependency build scripts are allowed automatically (`onlyBuiltDependencies: ['*']`), and the installed plugin is registered in the profile's `package.json` (`dsh.profile.bundles` + `dependencies`) plus a `cordis.patch.yml` insert row for non-bundle plugins.
 - **Per-profile plugin management** (instance settings → Plugins tab): filter by profile to view the plugins installed in it, enable/disable individual plugins, and multi-select for batch enable/disable. Core `@deepseek-ai/*` packages are hidden.
 - **System tray**:
-  - Double-click: opens the most recently focused instance's profile page; with a single running instance opens it directly, otherwise shows the launcher;
+  - Left-click the launcher tray: opens and focuses the launcher window;
   - Right-click menu: a "Running profiles" submenu offers Open / Stop for each running instance, plus "Open launcher / Quit launcher".
   - Quitting the launcher terminates all instance processes so none are orphaned.
+- **One tray icon per running instance** (issue #72, can be disabled in Settings):
+  - The icon is the instance's own custom icon, falling back to the launcher icon;
+  - Hovering shows `<instance> · <profile> · running (N active conversations)`; the count comes from the instance's DSH session index and refreshes every ~15s;
+  - Left-click opens the instance's web GUI (or its terminal window for a TUI profile), focusing the window when it is already open;
+  - Right-click offers "Open instance" / "Stop instance".
 - **Close to tray** (can be disabled in Settings).
 - **Launch at login** (Settings toggle, registered for real via the autostart plugin).
 - **i18n**: Simplified Chinese / English; JSON locale files are discovered, hot-reloaded, and precompiled by `@intlify/unplugin-vue-i18n` through Vite.

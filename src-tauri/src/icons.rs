@@ -111,6 +111,7 @@ fn instance_home(state: &AppState, instance_id: &str) -> Result<PathBuf, String>
 /// after a decode sanity check.
 #[tauri::command]
 pub async fn set_instance_icon(
+    app: tauri::AppHandle,
     state: State<'_, AppState>,
     instance_id: String,
     source: String,
@@ -155,12 +156,19 @@ pub async fn set_instance_icon(
         .ok_or_else(|| "实例不存在".to_string())?;
     inst.icon = Some(icon);
     crate::commands::save_state(&state, &cfg)?;
+    drop(cfg);
+    // The running instance's tray icon follows the new icon (issue #72).
+    refresh_instance_tray(&app, &instance_id);
     Ok(())
 }
 
 /// Restores the default launcher icon and removes any local icon file.
 #[tauri::command]
-pub fn clear_instance_icon(state: State<'_, AppState>, instance_id: String) -> Result<(), String> {
+pub fn clear_instance_icon(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    instance_id: String,
+) -> Result<(), String> {
     let home = instance_home(&state, &instance_id)?;
     let mut cfg = state.config.lock().unwrap();
     let inst = cfg
@@ -175,7 +183,29 @@ pub fn clear_instance_icon(state: State<'_, AppState>, instance_id: String) -> R
     if was_local {
         let _ = std::fs::remove_file(local_icon_path(&home, &instance_id));
     }
+    // The running instance's tray icon follows the cleared icon (issue #72).
+    refresh_instance_tray(&app, &instance_id);
     Ok(())
+}
+
+/// Drops the cached tray icon of one instance and re-syncs, so a changed
+/// instance icon shows up on the live tray immediately (issue #72). Called
+/// from the icon commands; a no-op when the instance has no tray.
+fn refresh_instance_tray(app: &tauri::AppHandle, instance_id: &str) {
+    let running = app
+        .state::<AppState>()
+        .instance_trays
+        .lock()
+        .unwrap()
+        .contains(instance_id);
+    if !running {
+        return;
+    }
+    crate::tray::invalidate_instance_icon(app, instance_id);
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        crate::tray::sync_tray_icons(&app).await;
+    });
 }
 
 /// Resolves an instance icon for display: remote URLs pass through, local

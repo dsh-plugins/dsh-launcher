@@ -1496,6 +1496,9 @@ pub fn update_settings(
     if let Some(v) = settings.hide_launcher_on_window_open {
         cfg.settings.hide_launcher_on_window_open = v;
     }
+    if let Some(v) = settings.per_instance_tray {
+        cfg.settings.per_instance_tray = v;
+    }
     if let Some(v) = settings.news_source {
         cfg.settings.news_source = v.trim().to_string();
     }
@@ -1546,6 +1549,17 @@ pub fn update_settings(
     crate::proxy::sync_from_settings(&cfg.settings);
     let out = cfg.settings.clone();
     save_state(&state, &cfg)?;
+    drop(cfg);
+    // Turning per-instance trays off must retract the live icons immediately
+    // (and turning them on must create them) rather than at the next restart.
+    // Spawning the serialized sync rather than removing trays inline also
+    // closes a race with an in-flight sync that already read the old value.
+    if settings.per_instance_tray.is_some() {
+        let app = app.clone();
+        tauri::async_runtime::spawn(async move {
+            crate::tray::sync_tray_icons(&app).await;
+        });
+    }
     crate::log_debug!("设置已更新并保存");
     Ok(out)
 }

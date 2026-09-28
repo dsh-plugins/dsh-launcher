@@ -247,6 +247,13 @@ pub struct LauncherSettings {
     /// TUI terminal) is opened/focused.
     #[serde(default)]
     pub hide_launcher_on_window_open: bool,
+    /// Give every running instance its own tray icon (issue #72): the
+    /// instance's custom icon, a tooltip with its name / profile / active
+    /// conversation count, a left click that opens or focuses its window, and
+    /// a right-click menu that can open or stop it. When off, instances stay
+    /// reachable through the launcher tray's "running profiles" submenu.
+    #[serde(default = "default_true")]
+    pub per_instance_tray: bool,
     /// Plugin marketplace catalog sources (issue #46). Defaults to the built-in
     /// three catalogs plus the (disabled) live GitHub topic channel.
     #[serde(default = "default_plugin_sources")]
@@ -309,6 +316,7 @@ impl Default for LauncherSettings {
             proxy_apply_dsh: false,
             auto_open_on_launch: true,
             hide_launcher_on_window_open: false,
+            per_instance_tray: true,
             plugin_sources: default_plugin_sources(),
             last_link_root: None,
         }
@@ -369,6 +377,8 @@ pub struct SettingsPatch {
     pub auto_open_on_launch: Option<bool>,
     #[serde(default)]
     pub hide_launcher_on_window_open: Option<bool>,
+    #[serde(default)]
+    pub per_instance_tray: Option<bool>,
     #[serde(default)]
     pub last_instance_id: Option<String>,
     #[serde(default)]
@@ -564,16 +574,27 @@ mod tests {
     #[test]
     fn settings_patch_covers_launch_behavior_and_rejects_unknown_keys() {
         // Issue #69: the "hide launcher on window open" switch sent a field
-        // SettingsPatch did not declare, and serde silently dropped it.
+        // SettingsPatch did not declare, and serde silently dropped it. Every
+        // switch the Settings page sends is asserted here.
         let patch: SettingsPatch = serde_json::from_str(
-            r#"{"auto_open_on_launch": true, "hide_launcher_on_window_open": true}"#,
+            r#"{"auto_open_on_launch": true, "hide_launcher_on_window_open": true, "per_instance_tray": false}"#,
         )
         .unwrap();
         assert_eq!(patch.auto_open_on_launch, Some(true));
         assert_eq!(patch.hide_launcher_on_window_open, Some(true));
+        assert_eq!(patch.per_instance_tray, Some(false));
         assert!(patch.locale.is_none());
         // Unknown keys must fail loudly instead of vanishing.
         assert!(serde_json::from_str::<SettingsPatch>(r#"{"nope": 1}"#).is_err());
+    }
+
+    #[test]
+    fn per_instance_tray_defaults_on_and_survives_an_old_config() {
+        // Issue #72: an existing config.json has no `per_instance_tray` key.
+        // The feature must default to on rather than reading as off.
+        assert!(LauncherSettings::default().per_instance_tray);
+        let cfg: Config = serde_json::from_str(r#"{"settings": {"locale": "zh-CN"}}"#).unwrap();
+        assert!(cfg.settings.per_instance_tray);
     }
 
     fn source(id: &str, kind: SourceKind, confidence: Confidence) -> PluginSourceConfig {

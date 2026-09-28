@@ -266,7 +266,7 @@
       "window": "Window icon",
       "windowHint": "Custom title bar and taskbar icon (both share the window icon); center-cropped to a square and kept across restarts",
       "tray": "Tray icon",
-      "trayHint": "Custom system tray icon; center-cropped to a square and kept across restarts",
+      "trayHint": "The launcher's own system tray icon (does not affect instance trays); center-cropped to a square and kept across restarts",
       "pick": "Choose image",
       "clear": "Restore default",
       "saved": "Icon updated"
@@ -321,6 +321,8 @@
       "applyDshHint": "When enabled, launching an instance injects HTTP_PROXY / HTTPS_PROXY / NO_PROXY, overriding the instance's environment variables; instances that are already running must be restarted for this to take effect."
     },
     "saved": "Settings saved",
+    "perInstanceTray": "Tray icon per instance",
+    "perInstanceTrayHint": "Give every running instance its own tray icon: the instance's custom icon, a tooltip with its name, profile and active-conversation count, a left click that opens or focuses its window, and a right-click menu to open or stop it. When off, only the launcher tray remains and instances stay reachable from the \"Running profiles\" submenu.",
     "homes": "DSH_HOME management",
     "homeName": "Name",
     "homePath": "Path",

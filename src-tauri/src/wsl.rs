@@ -103,7 +103,7 @@ pub fn version_fs_path(ver: &crate::config::DshVersion) -> std::path::PathBuf {
 /// How long a positive `ensure_distro_running` result is trusted. Probing
 /// wsl.exe on every invoke is wasteful for list-heavy flows (profiles,
 /// plugins, skills), so a verified distro is reused for a short window.
-const DISTRO_READY_TTL: std::time::Duration = std::time::Duration::from_secs(5);
+pub(crate) const DISTRO_READY_TTL: std::time::Duration = std::time::Duration::from_secs(5);
 
 /// Ensures a distro is reachable so `\\wsl$\` UNC access works: boots a
 /// stopped distro with `wsl.exe -d <distro> -- true` (a no-op that starts

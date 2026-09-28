@@ -488,7 +488,7 @@ async fn spawn_waiter(app: &AppHandle, instance_id: &str, profile: &str) {
             );
             crate::windows::close_tui_window(&app, &id);
         }
-        crate::tray::rebuild_tray_menu(&app).await;
+        crate::tray::sync_tray_icons(&app).await;
     });
 }
 

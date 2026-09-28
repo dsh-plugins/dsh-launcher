@@ -81,6 +81,10 @@ export interface LauncherSettings {
   auto_open_on_launch: boolean
   /** Hide the launcher main window whenever an instance window opens. */
   hide_launcher_on_window_open: boolean
+  /** Give every running instance its own tray icon (issue #72): the instance
+   * icon, a tooltip with name / profile / active conversations, a left click
+   * that opens or focuses its window, and a right-click menu. */
+  per_instance_tray: boolean
   /** Root directory of the most recent storage redirection (issue #65),
    * offered as the "last used" preset. Advisory UI memory only. */
   last_link_root?: string | null
