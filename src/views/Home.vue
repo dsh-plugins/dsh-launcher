@@ -99,8 +99,10 @@ watch([selectedInstanceId, selectedProfile], () => {
   compatDismissed.value = false
 })
 
-/** The DSH window of `id` just opened: hide the compatibility popup. */
+/** The DSH window of `id` just opened: hide the compatibility popup and
+ * close the early-loading window — the launch is fully up. */
 function onDshWindowOpened(id: string) {
+  void api.closeEarlyLoading(id)
   if (id !== selectedInstanceId.value) return
   dshWindowOpened.value = true
   compatibility.value = null
@@ -346,8 +348,13 @@ async function onStart() {
   compatibility.value = null
   dshWindowOpened.value = false
   compatDismissed.value = false
+  // Early-loading window: shows the launch stages (including the
+  // compatibility preflight) until the DSH window is up.
+  await api.openEarlyLoading(id).catch(() => {})
   try {
+    await api.reportLaunchStage(id, 'spawning')
     await api.startInstance(id, selectedProfile.value)
+    await api.reportLaunchStage(id, 'waiting-ready')
     // TUI profiles: start_instance opens the terminal window; the PTY session
     // is started by that window (issue #31).
     if (selectedProfileKind.value === 'tui') {
@@ -369,6 +376,8 @@ async function onStart() {
     // Sync failure (preflight / spawn): surface the full detail in the
     // launch-failure dialog instead of a transient toast (issue #30).
     // (onStart early-returns without a selection, so an id always exists here.)
+    void api.reportLaunchStage(id, 'failed', undefined, String(e))
+    void api.closeEarlyLoading(id)
     store.reportLaunchError({
       instanceId: id,
       message: String(e),
@@ -386,12 +395,22 @@ async function onCompatibleStart() {
   dshWindowOpened.value = false
   compatDismissed.value = false
   compatibilityBusy.value = true
+  await api.openEarlyLoading(id).catch(() => {})
+  void api.reportLaunchStage(id, 'preflight')
   try {
     const report = await api.startCompatibleInstance(id, profile)
     if (selectedInstanceId.value === id && selectedProfile.value === profile &&
         !(report.handoff_pending && handoffCompleted.value)) {
       compatibility.value = report
     }
+    void api.reportLaunchStage(
+      id,
+      report.started || report.handoff_pending ? 'waiting-ready' : 'failed',
+      undefined,
+      report.started || report.handoff_pending
+        ? undefined
+        : t('earlyLoading.compatBlocked', { count: report.unresolved.length }),
+    )
     if (report.started && selectedProfileKind.value !== 'tui' && store.settings.auto_open_on_launch) {
       store
         .openWindowWhenReady(id)
@@ -403,6 +422,8 @@ async function onCompatibleStart() {
       onDshWindowOpened(id)
     }
   } catch (e) {
+    void api.reportLaunchStage(id, 'failed', undefined, String(e))
+    void api.closeEarlyLoading(id)
     if (selectedInstanceId.value === id && selectedProfile.value === profile) Message.error(String(e))
   } finally {
     compatibilityBusy.value = false
@@ -444,6 +465,16 @@ async function onOpenWindow() {
     Message.error(String(e))
   }
 }
+
+// While the early-loading window is up, reflect the instance reaching
+// `running` as the final stages so the window shows real progress even when
+// auto_open_on_launch is off (the window closes from onDshWindowOpened or
+// from the process waiter when the launch ends).
+watch(selectedStatus, (st) => {
+  const id = selectedInstanceId.value
+  if (!id || !st || st.state !== 'running') return
+  void api.reportLaunchStage(id, 'opening-window')
+}, { flush: 'post' })
 
 function copyUrl(url: string) {
   navigator.clipboard?.writeText(url)

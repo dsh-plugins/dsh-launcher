@@ -385,6 +385,21 @@
     "skip": "忽略本次",
     "never": "永不提醒"
   },
+  "earlyLoading": {
+    "title": "正在启动 {name}",
+    "close": "关闭",
+    "cancel": "取消启动",
+    "compatBlocked": "兼容性检查未通过（{count} 项待解决），已中止启动",
+    "stages": {
+      "preflight": "兼容性检查",
+      "spawning": "拉起实例进程",
+      "waiting-ready": "等待 DSH 就绪",
+      "opening-window": "打开窗口",
+      "done": "启动完成",
+      "cancelled": "已取消启动",
+      "failed": "启动失败"
+    }
+  },
   "instanceEdit": {
     "titleNew": "新建实例",
     "titleEdit": "实例设置",

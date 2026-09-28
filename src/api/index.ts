@@ -52,6 +52,9 @@ import type {
   ImportReport,
   ExternalStatus,
   DataDirInfo,
+  EarlyLoadingContext,
+  EarlyLoadingProgress,
+  LaunchStage,
 } from './types'
 
 const isTauri = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window
@@ -863,6 +866,22 @@ async function mockCall<T>(cmd: string, args?: Record<string, unknown>): Promise
       // window.open here so the browser never navigates to a profile page.
       return undefined as T
     }
+    case 'open_early_loading_window':
+    case 'close_early_loading_window':
+    case 'report_launch_stage':
+    case 'cancel_instance_launch':
+      // Browser preview: no frameless windows; the launch flow continues
+      // without the progress UI.
+      return undefined as T
+    case 'get_early_loading_context': {
+      const id = String(args?.instance_id ?? '')
+      const inst = db.instances.find((i) => i.id === id)
+      return {
+        instance_id: id,
+        name: inst?.name ?? id,
+        profile: inst?.last_profile ?? inst?.default_profile ?? null,
+      } as T
+    }
     case 'open_external':
       // Browser preview: a real new tab is the expected behavior here.
       window.open(String(args?.url ?? ''), '_blank', 'noopener,noreferrer')
@@ -1552,6 +1571,26 @@ export const api = {
     call<string>('start_import_modpack_task', { input }),
 
   startInstance: (id: string, profile: string) => call<void>('start_instance', { id, profile }),
+  /** Opens the frameless early-loading window for an instance launch. */
+  openEarlyLoading: (instanceId: string) =>
+    call<void>('open_early_loading_window', { instance_id: instanceId }),
+  /** Closes the early-loading window (e.g. once the DSH window is up). */
+  closeEarlyLoading: (instanceId: string) =>
+    call<void>('close_early_loading_window', { instance_id: instanceId }),
+  /** Title/profile context rendered by the early-loading window. */
+  getEarlyLoadingContext: (instanceId: string) =>
+    call<EarlyLoadingContext>('get_early_loading_context', { instance_id: instanceId }),
+  /** Reports a launch-stage update to the early-loading window. */
+  reportLaunchStage: (instanceId: string, stage: LaunchStage, percent?: number, detail?: string) =>
+    call<void>('report_launch_stage', {
+      instance_id: instanceId,
+      stage,
+      percent: percent ?? null,
+      detail: detail ?? null,
+    }),
+  /** Cancels a launch in progress (stops the spawned process if any). */
+  cancelInstanceLaunch: (instanceId: string) =>
+    call<void>('cancel_instance_launch', { instance_id: instanceId }),
   checkInstanceHealth: (instanceId: string, profile: string) =>
     call<DoctorReport>('check_instance_health', { instance_id: instanceId, profile }),
   checkPluginCompatibility: (instanceId: string, profile: string) =>
@@ -1690,6 +1729,17 @@ export const api = {
     }
     taskProgressListeners.add(cb)
     return () => taskProgressListeners.delete(cb)
+  },
+
+  /** Early-loading window: stage updates forwarded via report_launch_stage. */
+  async onEarlyLoadingProgress(cb: Listener<EarlyLoadingProgress>): Promise<() => void> {
+    if (isTauri) {
+      const { listen } = await import('@tauri-apps/api/event')
+      const un = await listen<EarlyLoadingProgress>('early-loading://progress', (e) => cb(e.payload))
+      return un
+    }
+    // Browser preview: no launch pipeline; nothing to stream.
+    return () => {}
   },
 
   async onTaskLog(cb: Listener<TaskLog>): Promise<() => void> {

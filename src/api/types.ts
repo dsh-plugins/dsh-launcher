@@ -163,7 +163,30 @@ export interface LauncherUpdateInfo {
 
 export type InstanceState = 'stopped' | 'starting' | 'running' | 'exited'
 
-export interface InstanceStatus {
+/** Launch stages shown by the early-loading window, plus terminal states. */
+export type LaunchStage =
+  | 'preflight'
+  | 'spawning'
+  | 'waiting-ready'
+  | 'opening-window'
+  | 'done'
+  | 'cancelled'
+  | 'failed'
+
+/** Progress payload forwarded to the early-loading window. */
+export interface EarlyLoadingProgress {
+  instance_id: string
+  stage: LaunchStage
+  percent: number | null
+  detail: string | null
+}
+
+/** Title/profile context rendered by the early-loading window. */
+export interface EarlyLoadingContext {
+  instance_id: string
+  name: string
+  profile: string | null
+}export interface InstanceStatus {
   id: string
   state: InstanceState
   url: string | null

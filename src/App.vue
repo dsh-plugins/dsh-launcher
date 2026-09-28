@@ -128,17 +128,28 @@ async function launchFromDeepLink(u: URL) {
     Message.error(t('modpackLaunch.instanceNotFound', { name: ref }))
     return
   }
+  // Early-loading window: covers the whole shortcut launch until the DSH
+  // window is up (the launcher main window stays hidden for launch links).
+  await api.openEarlyLoading(inst.id).catch(() => {})
   try {
     const state = store.statusOf(inst.id).state
     if (state !== 'running' && state !== 'starting') {
       const profile = u.searchParams.get('profile') || inst.default_profile || 'web'
+      await api.reportLaunchStage(inst.id, 'spawning')
       await api.startInstance(inst.id, profile)
     }
+    await api.reportLaunchStage(inst.id, 'waiting-ready')
     // start_instance returns right after spawn; the web URL (and the window
     // command's readiness check) only exist once the instance is running.
     await store.openWindowWhenReady(inst.id)
+    await api.reportLaunchStage(inst.id, 'done')
   } catch (e) {
+    void api.reportLaunchStage(inst.id, 'failed', undefined, String(e))
     Message.error(String(e))
+  } finally {
+    // The window closes itself on done/cancelled; close defensively here so
+    // an error or an already-running instance never strands it.
+    void api.closeEarlyLoading(inst.id)
   }
 }
 
@@ -271,7 +282,7 @@ async function onHeaderMouseDown(e: MouseEvent) {
 
 <template>
   <!-- Standalone frameless windows render bare, without the app shell. -->
-  <router-view v-if="route.name === 'tui-terminal' || route.name === 'update-notice'" />
+  <router-view v-if="['tui-terminal', 'update-notice', 'early-loading'].includes(route.name as string)" />
   <a-layout v-else class="app-shell">
     <a-layout-header class="app-header" @mousedown="onHeaderMouseDown">
       <!-- Brand; dragging is handled manually via onHeaderMouseDown. -->

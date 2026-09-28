@@ -1,0 +1,264 @@
+<script setup lang="ts">
+// Content of the frameless `early-loading-<instance>` window: shows the
+// launch stages (compatibility preflight → spawn → wait for the DSH page →
+// open the window) while an instance starts. A real OS window, not a modal.
+import { computed, onMounted, onUnmounted, ref } from 'vue'
+import { useI18n } from 'vue-i18n'
+import { Message } from '@arco-design/web-vue'
+import { api } from '@/api'
+import type { EarlyLoadingContext, LaunchStage } from '@/api/types'
+import FramelessTitleBar from '@/components/FramelessTitleBar.vue'
+
+const props = defineProps<{ instanceId: string }>()
+
+const { t } = useI18n()
+
+const ctx = ref<EarlyLoadingContext | null>(null)
+const stage = ref<LaunchStage>('preflight')
+const percent = ref<number | null>(null)
+const detail = ref('')
+const cancelling = ref(false)
+
+/** The pipeline stages in display order (terminal states excluded). */
+const PIPELINE: LaunchStage[] = ['preflight', 'spawning', 'waiting-ready', 'opening-window']
+
+const terminal = computed(() => stage.value === 'done' || stage.value === 'cancelled' || stage.value === 'failed')
+const failed = computed(() => stage.value === 'failed')
+
+/** Index of the active stage; terminal states light up the whole pipeline. */
+const activeIndex = computed(() => {
+  if (stage.value === 'done') return PIPELINE.length
+  return PIPELINE.indexOf(stage.value)
+})
+
+function stageState(s: LaunchStage): 'done' | 'active' | 'todo' {
+  const idx = PIPELINE.indexOf(s)
+  if (idx < activeIndex.value) return 'done'
+  if (idx === activeIndex.value) return terminal.value ? 'done' : 'active'
+  return 'todo'
+}
+
+let unlisten: (() => void) | undefined
+
+onMounted(async () => {
+  try {
+    ctx.value = await api.getEarlyLoadingContext(props.instanceId)
+  } catch {
+    ctx.value = { instance_id: props.instanceId, name: props.instanceId, profile: null }
+  }
+  unlisten = await api.onEarlyLoadingProgress((p) => {
+    if (p.instance_id !== props.instanceId) return
+    stage.value = p.stage
+    percent.value = p.percent
+    if (p.detail) detail.value = p.detail
+    // Terminal states: show the outcome briefly (errors stay until closed,
+    // the launch-failure dialog in the main window carries the details).
+    if (p.stage === 'done') {
+      window.setTimeout(() => void closeWindow(), 400)
+    } else if (p.stage === 'cancelled') {
+      window.setTimeout(() => void closeWindow(), 800)
+    }
+  })
+})
+
+onUnmounted(() => unlisten?.())
+
+async function closeWindow() {
+  if (api.isTauri) {
+    const { getCurrentWindow } = await import('@tauri-apps/api/window')
+    await getCurrentWindow().close()
+  }
+}
+
+/** 关闭：只关掉窗口，启动继续。 */
+async function onClose() {
+  await closeWindow()
+}
+
+/** 取消启动：停止已拉起的进程并关闭窗口。 */
+async function onCancel() {
+  if (cancelling.value || terminal.value) return
+  cancelling.value = true
+  try {
+    stage.value = 'cancelled'
+    await api.cancelInstanceLaunch(props.instanceId)
+    await closeWindow()
+  } catch (e) {
+    Message.error(String(e))
+  } finally {
+    cancelling.value = false
+  }
+}
+</script>
+
+<template>
+  <div class="early-loading">
+    <FramelessTitleBar
+      :title="t('earlyLoading.title', { name: ctx?.name ?? props.instanceId })"
+      @close="onClose"
+    />
+
+    <div class="loading-body">
+      <div v-if="ctx?.profile" class="loading-profile">
+        <a-tag size="small">{{ ctx.profile }}</a-tag>
+      </div>
+
+      <ul class="stage-list">
+        <li
+          v-for="s in PIPELINE"
+          :key="s"
+          class="stage-item"
+          :class="stageState(s)"
+        >
+          <span class="stage-dot" />
+          <span class="stage-name">{{ t(`earlyLoading.stages.${s}`) }}</span>
+          <a-spin v-if="stageState(s) === 'active'" :size="14" class="stage-spin" />
+        </li>
+      </ul>
+
+      <a-progress
+        v-if="!terminal"
+        :percent="percent !== null ? percent / 100 : undefined"
+        :show-text="percent !== null"
+        class="loading-progress"
+        :class="{ indeterminate: percent === null }"
+      />
+      <div v-else class="terminal-state" :class="{ failed }">
+        {{ t(`earlyLoading.stages.${stage}`) }}
+      </div>
+
+      <div v-if="detail" class="loading-detail" :class="{ failed }">{{ detail }}</div>
+    </div>
+
+    <div class="loading-actions">
+      <a-button @click="onClose">{{ t('earlyLoading.close') }}</a-button>
+      <a-button
+        status="danger"
+        :disabled="terminal"
+        :loading="cancelling"
+        @click="onCancel"
+      >
+        {{ t('earlyLoading.cancel') }}
+      </a-button>
+    </div>
+  </div>
+</template>
+
+<style scoped>
+.early-loading {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  background: var(--color-bg-1);
+}
+
+.loading-body {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 14px;
+  min-height: 0;
+  padding: 16px 28px;
+}
+
+.loading-profile {
+  display: flex;
+  justify-content: center;
+}
+
+.stage-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.stage-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 13px;
+  color: var(--color-text-3);
+}
+
+.stage-item.active {
+  color: var(--color-text-1);
+  font-weight: 600;
+}
+
+.stage-item.done {
+  color: rgb(var(--green-6));
+}
+
+.stage-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--color-fill-3);
+  flex-shrink: 0;
+}
+
+.stage-item.active .stage-dot {
+  background: rgb(var(--primary-6));
+}
+
+.stage-item.done .stage-dot {
+  background: rgb(var(--green-6));
+}
+
+.stage-spin {
+  margin-left: auto;
+}
+
+.loading-progress {
+  width: 100%;
+}
+
+.loading-progress.indeterminate :deep(.arco-progress-line-bar) {
+  animation: early-loading-pulse 1.2s ease-in-out infinite;
+}
+
+@keyframes early-loading-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.35;
+  }
+}
+
+.terminal-state {
+  text-align: center;
+  font-size: 13px;
+  font-weight: 600;
+  color: rgb(var(--green-6));
+}
+
+.terminal-state.failed {
+  color: rgb(var(--red-6));
+}
+
+.loading-detail {
+  font-size: 12px;
+  color: var(--color-text-3);
+  text-align: center;
+  word-break: break-all;
+}
+
+.loading-detail.failed {
+  color: rgb(var(--red-6));
+}
+
+.loading-actions {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 12px 16px;
+  border-top: 1px solid var(--color-border-2);
+}
+</style>

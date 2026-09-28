@@ -385,6 +385,21 @@
     "skip": "Skip this time",
     "never": "Never remind"
   },
+  "earlyLoading": {
+    "title": "Starting {name}",
+    "close": "Close",
+    "cancel": "Cancel launch",
+    "compatBlocked": "Compatibility check failed ({count} unresolved); launch aborted",
+    "stages": {
+      "preflight": "Compatibility check",
+      "spawning": "Spawning the instance",
+      "waiting-ready": "Waiting for DSH to become ready",
+      "opening-window": "Opening the window",
+      "done": "Launch complete",
+      "cancelled": "Launch cancelled",
+      "failed": "Launch failed"
+    }
+  },
   "instanceEdit": {
     "titleNew": "New instance",
     "titleEdit": "Instance settings",

@@ -41,6 +41,14 @@ const router = createRouter({
       name: 'update-notice',
       component: () => import('@/views/UpdateNotice.vue'),
     },
+    // Early-loading window content: hosted in the dedicated frameless
+    // `early-loading-<instance>` window during an instance launch.
+    {
+      path: '/early-loading/:instanceId',
+      name: 'early-loading',
+      component: () => import('@/views/EarlyLoading.vue'),
+      props: true,
+    },
     { path: '/:pathMatch(.*)*', redirect: '/' },
   ],
 })

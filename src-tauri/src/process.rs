@@ -477,6 +477,9 @@ pub async fn start_instance_process(
             );
             crate::tray::sync_tray_icons(&waiter_app).await;
             crate::windows::close_instance_window(&waiter_app, &waiter_id);
+            // A crash during launch must not strand the early-loading window
+            // (a normal launch already closed it when the DSH window opened).
+            crate::early_loading::close_early_loading(&waiter_app, &waiter_id);
         });
     }
 

@@ -3,6 +3,7 @@ mod commands;
 mod compatibility;
 mod config;
 mod doctor;
+mod early_loading;
 mod icons;
 mod links;
 mod mcp;
@@ -316,6 +317,11 @@ pub fn run() {
             commands::start_compatible_instance,
             commands::list_instance_status,
             commands::open_instance_window,
+            early_loading::open_early_loading_window,
+            early_loading::close_early_loading_window,
+            early_loading::get_early_loading_context,
+            early_loading::report_launch_stage,
+            early_loading::cancel_instance_launch,
             commands::open_external,
             commands::open_launcher_directory,
             commands::open_launcher_log,
