@@ -275,7 +275,16 @@
       "launch": "Startup",
       "personal": "Personalization",
       "network": "Network",
-      "misc": "Misc"
+      "resources": "Resources",
+      "about": "About"
+    },
+    "about": {
+      "title": "Version and updates",
+      "project": "Project",
+      "repository": "Repository",
+      "issues": "Report an issue",
+      "releases": "Releases",
+      "license": "DSH Launcher is open source under the MIT license."
     },
     "log": {
       "title": "Logs"

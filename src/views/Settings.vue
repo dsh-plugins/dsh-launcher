@@ -19,9 +19,15 @@ import HintIcon from '@/components/HintIcon.vue'
 const { t } = useI18n()
 const store = useLauncherStore()
 
-// Sidebar sections (issue #70): launch / personalization / network / misc.
-type SettingsSection = 'launch' | 'personal' | 'network' | 'misc'
+// Sidebar sections (issue #70, extended by issue #72): launch / personalization
+// / network / resources / about.
+type SettingsSection = 'launch' | 'personal' | 'network' | 'resources' | 'about'
 const section = ref<SettingsSection>('launch')
+
+/** Project links shown on the About section (issue #72). */
+const REPO_URL = 'https://github.com/dsh-plugins/dsh-launcher'
+const ISSUES_URL = `${REPO_URL}/issues`
+const RELEASES_URL = `${REPO_URL}/releases`
 
 /** Local-environment import wizard (issue #31). */
 const importScanVisible = ref(false)
@@ -490,7 +496,8 @@ const pluginSourceColumns = computed(() => [
         <a-menu-item key="launch">{{ t('settings.sections.launch') }}</a-menu-item>
         <a-menu-item key="personal">{{ t('settings.sections.personal') }}</a-menu-item>
         <a-menu-item key="network">{{ t('settings.sections.network') }}</a-menu-item>
-        <a-menu-item key="misc">{{ t('settings.sections.misc') }}</a-menu-item>
+        <a-menu-item key="resources">{{ t('settings.sections.resources') }}</a-menu-item>
+        <a-menu-item key="about">{{ t('settings.sections.about') }}</a-menu-item>
       </a-menu>
     </aside>
     <section class="settings-content">
@@ -686,6 +693,28 @@ const pluginSourceColumns = computed(() => [
         {{ t('settings.importScan.open') }}
       </a-button>
     </div>
+
+    <div class="dl-card">
+      <div class="dl-card-title">
+        <h3>{{ t('settings.log.title') }}<HintIcon :content="t('settings.logLevel.hint')" /></h3>
+      </div>
+      <a-form :model="store.settings" layout="vertical" class="settings-form">
+        <a-form-item :label="t('settings.logLevel.label')">
+          <a-select
+            :model-value="store.settings.log_level"
+            style="width: 220px"
+            @change="onLogLevelChange"
+          >
+            <a-option v-for="o in LOG_LEVEL_OPTIONS" :key="o.value" :value="o.value">
+              {{ o.label }}
+            </a-option>
+          </a-select>
+        </a-form-item>
+        <a-form-item>
+          <a-button size="small" @click="onOpenLauncherLog">{{ t('settings.dataDir.viewLog') }}</a-button>
+        </a-form-item>
+      </a-form>
+    </div>
     </template>
 
     <template v-else-if="section === 'network'">
@@ -738,45 +767,7 @@ const pluginSourceColumns = computed(() => [
     </div>
     </template>
 
-    <template v-else>
-    <div class="dl-card">
-      <div class="dl-card-title">
-        <h3>{{ t('settings.update.title') }}<HintIcon :content="t('settings.update.channelHint')" /></h3>
-      </div>
-      <div class="update-row">
-        <span class="update-current">v{{ launcherVersion }}</span>
-        <a-tag v-if="updateInfo?.channel === 'dev' || launcherVersion.includes('-dev.')" color="orange" size="small">
-          {{ t('settings.update.devChannel') }}
-        </a-tag>
-        <a-select
-          :model-value="updateChannel"
-          class="update-channel-select"
-          size="small"
-          @change="onUpdateChannelChange"
-        >
-          <a-option v-for="o in UPDATE_CHANNEL_OPTIONS" :key="o.value" :value="o.value">
-            {{ o.label }}
-          </a-option>
-        </a-select>
-        <a-button size="small" :loading="checkingUpdate" @click="onCheckUpdate">
-          {{ t('settings.update.check') }}
-        </a-button>
-      </div>
-            <div v-if="updateInfo && !updateInfo.up_to_date" class="update-result">
-        <a-alert type="info" :show-icon="true">
-          {{ t('settings.update.available', { version: updateInfo.latest }) }}
-          <template v-if="updateInfo.url">
-            <a-link class="update-link" @click="api.openExternal(updateInfo.url!)">
-              {{ t('settings.update.viewRelease') }}
-            </a-link>
-          </template>
-        </a-alert>
-      </div>
-      <div v-else-if="updateInfo?.up_to_date" class="update-result">
-        <span class="update-up-to-date">{{ t('settings.update.upToDate') }}</span>
-      </div>
-    </div>
-
+    <template v-else-if="section === 'resources'">
     <div class="dl-card">
       <div class="dl-card-title">
         <h3>{{ t('settings.skillRepos.title') }}<HintIcon :content="t('settings.skillRepos.hint')" /></h3>
@@ -888,26 +879,66 @@ const pluginSourceColumns = computed(() => [
       </a-table>
     </div>
 
+    </template>
+
+    <template v-else>
     <div class="dl-card">
       <div class="dl-card-title">
-        <h3>{{ t('settings.log.title') }}<HintIcon :content="t('settings.logLevel.hint')" /></h3>
+        <h3>{{ t('settings.about.title') }}</h3>
       </div>
-      <a-form :model="store.settings" layout="vertical" class="settings-form">
-        <a-form-item :label="t('settings.logLevel.label')">
-          <a-select
-            :model-value="store.settings.log_level"
-            style="width: 220px"
-            @change="onLogLevelChange"
-          >
-            <a-option v-for="o in LOG_LEVEL_OPTIONS" :key="o.value" :value="o.value">
-              {{ o.label }}
-            </a-option>
-          </a-select>
-        </a-form-item>
-        <a-form-item>
-          <a-button size="small" @click="onOpenLauncherLog">{{ t('settings.dataDir.viewLog') }}</a-button>
-        </a-form-item>
-      </a-form>
+      <div class="update-row">
+        <span class="update-current">v{{ launcherVersion }}</span>
+        <a-tag v-if="updateInfo?.channel === 'dev' || launcherVersion.includes('-dev.')" color="orange" size="small">
+          {{ t('settings.update.devChannel') }}
+        </a-tag>
+        <a-select
+          :model-value="updateChannel"
+          class="update-channel-select"
+          size="small"
+          @change="onUpdateChannelChange"
+        >
+          <a-option v-for="o in UPDATE_CHANNEL_OPTIONS" :key="o.value" :value="o.value">
+            {{ o.label }}
+          </a-option>
+        </a-select>
+        <a-button size="small" :loading="checkingUpdate" @click="onCheckUpdate">
+          {{ t('settings.update.check') }}
+        </a-button>
+      </div>
+      <div class="update-result">
+        <span class="about-channel-hint">{{ t('settings.update.channelHint') }}</span>
+      </div>
+      <div v-if="updateInfo && !updateInfo.up_to_date" class="update-result">
+        <a-alert type="info" :show-icon="true">
+          {{ t('settings.update.available', { version: updateInfo.latest }) }}
+          <template v-if="updateInfo.url">
+            <a-link class="update-link" @click="api.openExternal(updateInfo.url!)">
+              {{ t('settings.update.viewRelease') }}
+            </a-link>
+          </template>
+        </a-alert>
+      </div>
+      <div v-else-if="updateInfo?.up_to_date" class="update-result">
+        <span class="update-up-to-date">{{ t('settings.update.upToDate') }}</span>
+      </div>
+    </div>
+
+    <div class="dl-card">
+      <div class="dl-card-title">
+        <h3>{{ t('settings.about.project') }}</h3>
+      </div>
+      <div class="about-links">
+        <a-button size="small" @click="api.openExternal(REPO_URL)">
+          {{ t('settings.about.repository') }}
+        </a-button>
+        <a-button size="small" @click="api.openExternal(ISSUES_URL)">
+          {{ t('settings.about.issues') }}
+        </a-button>
+        <a-button size="small" @click="api.openExternal(RELEASES_URL)">
+          {{ t('settings.about.releases') }}
+        </a-button>
+      </div>
+      <p class="about-meta">{{ t('settings.about.license') }}</p>
     </div>
     </template>
         </div>
@@ -1047,6 +1078,23 @@ const pluginSourceColumns = computed(() => [
   font-weight: 600;
   white-space: nowrap;
   flex-shrink: 0;
+}
+
+.about-links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 4px;
+}
+
+.about-channel-hint,
+.about-meta {
+  color: var(--color-text-3);
+  font-size: 13px;
+}
+
+.about-meta {
+  margin-top: 12px;
 }
 
 .update-result {

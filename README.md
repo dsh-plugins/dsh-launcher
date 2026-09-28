@@ -51,7 +51,7 @@ Tauri 2 + Vue 3 + TypeScript + Sass + vue-router + vue-i18n + Arco Design Vue.
 - **Download**: sidebar with "Create instance / Download plugins"; the create page groups installable versions by stable/prerelease; clicking a version opens the naming page (instance name, DSH_HOME choice, "Start download" at the bottom). The plugins page is the marketplace; a three-step wizard (plugin → version channel → instance/profile) creates an install task.
 - **Instances**: name, version, DSH_HOME, profile, runtime status and URL, edit/delete.
 - **Instance settings → Plugins**: filter by profile, enable/disable plugins, multi-select batch enable/disable (`@deepseek-ai/*` core plugins hidden).
-- **Settings**: language, close to tray, launch at login, DSH_HOME management.
+- **Settings**: five sections — Startup (launch behavior, data directory, DSH_HOME management, environment import, logs), Personalization (language, theme, news source, launcher icons), Network (proxy), Resources (SKILL repositories, plugin catalog sources) and About (version, update channel and check, repository / issues / releases links).
 
 > For WSL instances, plugin and modpack dependency installs run pnpm inside the distro (pulling Linux platform binaries), and SKILL repository installs clone with the distro's own `git`; reading/writing files from the Windows side through UNC requires the distro to be running, which the launcher starts automatically.
 >

@@ -275,7 +275,16 @@
       "launch": "启动",
       "personal": "个性化",
       "network": "网络",
-      "misc": "其它"
+      "resources": "资源",
+      "about": "关于"
+    },
+    "about": {
+      "title": "版本与更新",
+      "project": "项目",
+      "repository": "项目仓库",
+      "issues": "问题反馈",
+      "releases": "历史版本",
+      "license": "DSH Launcher 以 MIT 许可证开源。"
     },
     "log": {
       "title": "日志"
