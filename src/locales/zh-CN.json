@@ -383,7 +383,8 @@
     "publishedAt": "发布时间：{date}",
     "download": "前往下载",
     "skip": "忽略本次",
-    "never": "永不提醒"
+    "never": "永不提醒",
+    "retry": "重试"
   },
   "earlyLoading": {
     "title": "正在启动 {name}",

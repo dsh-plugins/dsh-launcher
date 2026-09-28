@@ -1119,6 +1119,9 @@ pub async fn start_compatible_instance(
     if profile.is_empty() || profile == "." || profile == ".." || profile.contains(['/', '\\']) {
         return Err("Invalid profile name".into());
     }
+    // A fresh launch supersedes an earlier cancel from the early-loading
+    // window (otherwise the flag would refuse every future window open).
+    state.launch_cancels.lock().unwrap().remove(&id);
     let (home, _, _) = resolve_instance_paths(&state, &id)?;
     let dir = home.join("profiles").join(&profile);
     let lock = crate::plugins::profile_lock(&state, &dir).await;
@@ -1335,6 +1338,9 @@ pub async fn start_instance(
     if state.tui_compat.lock().await.contains_key(&id) {
         return Err("A compatibility TUI launch is pending for this instance".into());
     }
+    // A fresh launch supersedes an earlier cancel from the early-loading
+    // window (otherwise the flag would refuse every future window open).
+    state.launch_cancels.lock().unwrap().remove(&id);
     // WSL (issue #49 S4): the preflight and the TUI kind check below read the
     // profile through \\wsl$\, so the distro must be running *before* them.
     // Otherwise a cold start classifies the profile as `Other` and pipes a TUI
@@ -1416,6 +1422,13 @@ pub async fn open_instance_window(
     state: State<'_, AppState>,
     id: String,
 ) -> Result<(), String> {
+    // The user cancelled this launch from the early-loading window: refuse to
+    // open the DSH window even if the process survived long enough to print
+    // its URL. The flag is consumed here so the next explicit open works.
+    if state.launch_cancels.lock().unwrap().remove(&id) {
+        crate::log_info!("实例 {id} 的窗口打开被跳过：启动已被用户取消");
+        return Err("启动已取消".to_string());
+    }
     // TUI instance: reopen its terminal window (issue #31).
     if state.tui_sessions.lock().await.contains_key(&id) {
         return crate::windows::open_tui_window(&app, &id);

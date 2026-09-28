@@ -15,8 +15,10 @@ use crate::AppState;
 /// Label of the update-notice webview window.
 const UPDATE_WINDOW_LABEL: &str = "update-notice";
 
-/// Opens (or focuses) the frameless update-notice window.
-pub fn open_update_window(app: &AppHandle) -> Result<(), String> {
+/// Opens (or focuses) the frameless update-notice window. The found release
+/// travels in the URL query so the window renders immediately instead of
+/// re-hitting the GitHub API (and possibly seeing a different version).
+pub fn open_update_window(app: &AppHandle, info: &crate::update::LauncherUpdateInfo) -> Result<(), String> {
     if let Some(win) = app.get_webview_window(UPDATE_WINDOW_LABEL) {
         let _ = win.show();
         let _ = win.unminimize();
@@ -25,7 +27,18 @@ pub fn open_update_window(app: &AppHandle) -> Result<(), String> {
     }
     // Hash router: the route must arrive in the fragment, or the window would
     // land on `/` and render the full launcher shell inside the small window.
-    let url = WebviewUrl::App("/index.html#/update-notice".into());
+    let mut url = String::from("/index.html#/update-notice");
+    if let (Some(latest), Some(link)) = (info.latest.as_deref(), info.url.as_deref()) {
+        url.push_str(&format!(
+            "?version={}&url={}",
+            urlencoding(latest),
+            urlencoding(link)
+        ));
+        if let Some(published) = info.published_at.as_deref() {
+            url.push_str(&format!("&published={}", urlencoding(published)));
+        }
+    }
+    let url = WebviewUrl::App(url.into());
     WebviewWindowBuilder::new(app, UPDATE_WINDOW_LABEL, url)
         .title("DSH Launcher 更新提醒")
         .inner_size(460.0, 330.0)
@@ -37,13 +50,18 @@ pub fn open_update_window(app: &AppHandle) -> Result<(), String> {
     Ok(())
 }
 
-/// Closes the update-notice window if it is open. Reserved for future
-/// settings-side use (the window currently closes itself from its frontend).
-#[allow(dead_code)]
-pub fn close_update_window(app: &AppHandle) {
-    if let Some(win) = app.get_webview_window(UPDATE_WINDOW_LABEL) {
-        let _ = win.close();
+/// Percent-encodes one URL query value.
+fn urlencoding(value: &str) -> String {
+    let mut out = String::with_capacity(value.len());
+    for byte in value.bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(byte as char)
+            }
+            _ => out.push_str(&format!("%{byte:02X}")),
+        }
     }
+    out
 }
 
 /// "Never remind" on the notice window: remembers the exact version so the
@@ -61,7 +79,12 @@ pub fn dismiss_update_version(
     if !cfg.settings.update_suppressed.iter().any(|v| v == &version) {
         cfg.settings.update_suppressed.push(version.clone());
     }
-    crate::commands::save_state(&state, &cfg)?;
+    if let Err(e) = crate::commands::save_state(&state, &cfg) {
+        // Roll back the in-memory change: a persisted failure must not leave
+        // the session believing the version is permanently suppressed.
+        cfg.settings.update_suppressed.retain(|v| v != &version);
+        return Err(e);
+    }
     crate::log_info!("已永久忽略更新版本 {version}");
     Ok(())
 }
@@ -98,7 +121,7 @@ pub fn spawn_startup_update_check(app: &AppHandle) {
                 return;
             }
         }
-        if let Err(e) = open_update_window(&handle) {
+        if let Err(e) = open_update_window(&handle, &info) {
             crate::log_warn!("打开更新提醒窗口失败: {e}");
         }
     });

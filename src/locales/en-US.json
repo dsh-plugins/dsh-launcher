@@ -383,7 +383,8 @@
     "publishedAt": "Published: {date}",
     "download": "Download",
     "skip": "Skip this time",
-    "never": "Never remind"
+    "never": "Never remind",
+    "retry": "Retry"
   },
   "earlyLoading": {
     "title": "Starting {name}",

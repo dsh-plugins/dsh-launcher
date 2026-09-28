@@ -130,6 +130,7 @@ async function launchFromDeepLink(u: URL) {
   }
   // Early-loading window: covers the whole shortcut launch until the DSH
   // window is up (the launcher main window stays hidden for launch links).
+  earlyLoadingLaunches.add(inst.id)
   await api.openEarlyLoading(inst.id).catch(() => {})
   try {
     const state = store.statusOf(inst.id).state
@@ -144,14 +145,34 @@ async function launchFromDeepLink(u: URL) {
     await store.openWindowWhenReady(inst.id)
     await api.reportLaunchStage(inst.id, 'done')
   } catch (e) {
+    // A cancelled launch is refused by the backend; the early-loading window
+    // already shows the cancelled state, so stay quiet here.
+    if (String(e).includes('启动已取消')) return
     void api.reportLaunchStage(inst.id, 'failed', undefined, String(e))
     Message.error(String(e))
   } finally {
+    earlyLoadingLaunches.delete(inst.id)
     // The window closes itself on done/cancelled; close defensively here so
     // an error or an already-running instance never strands it.
     void api.closeEarlyLoading(inst.id)
   }
 }
+
+/** Ids with an in-flight deep-link launch (drives the running watcher). */
+const earlyLoadingLaunches = new Set<string>()
+
+watch(
+  () => store.statusById,
+  (statuses) => {
+    for (const id of earlyLoadingLaunches) {
+      const st = statuses[id]
+      if (st?.state === 'running' && st.url) {
+        void api.reportLaunchStage(id, 'opening-window')
+      }
+    }
+  },
+  { deep: true },
+)
 
 onUnmounted(() => {
   themeMedia.removeEventListener('change', onSystemThemeChange)

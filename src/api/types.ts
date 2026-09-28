@@ -186,7 +186,9 @@ export interface EarlyLoadingContext {
   instance_id: string
   name: string
   profile: string | null
-}export interface InstanceStatus {
+}
+
+export interface InstanceStatus {
   id: string
   state: InstanceState
   url: string | null

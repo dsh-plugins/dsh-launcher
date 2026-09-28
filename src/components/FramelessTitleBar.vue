@@ -3,7 +3,7 @@
 // early-loading): a drag region on the left and a close button on the right.
 import { computed } from 'vue'
 
-const props = withDefaults(
+withDefaults(
   defineProps<{
     title: string
     /** Show the close button (default true). */
@@ -33,8 +33,6 @@ async function onClose() {
   const { getCurrentWindow } = await import('@tauri-apps/api/window')
   await getCurrentWindow().close()
 }
-
-void props
 </script>
 
 <template>

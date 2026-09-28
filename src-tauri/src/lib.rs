@@ -63,6 +63,11 @@ pub struct AppState {
     /// from `terminals` (the settings-page shell): different lifecycle,
     /// different status wiring.
     pub tui_sessions: tokio::sync::Mutex<HashMap<String, tui::TuiSession>>,
+    /// Instances whose launch the user cancelled from the early-loading
+    /// window. `open_instance_window` refuses while an id is listed here;
+    /// `start_instance` / `start_compatible_instance` clear a stale flag at
+    /// the start of a new launch.
+    pub launch_cancels: StdMutex<std::collections::HashSet<String>>,
     /// WSL distros recently verified running (`wsl.rs::ensure_distro_running`
     /// TTL cache): distro → last successful boot/probe timestamp.
     pub distro_ready: tokio::sync::Mutex<HashMap<String, std::time::Instant>>,
@@ -227,6 +232,7 @@ pub fn run() {
                 last_focused_instance: StdMutex::new(None),
                 terminals: tokio::sync::Mutex::new(HashMap::new()),
                 tui_sessions: tokio::sync::Mutex::new(HashMap::new()),
+                launch_cancels: StdMutex::new(std::collections::HashSet::new()),
                 distro_ready: tokio::sync::Mutex::new(HashMap::new()),
                 window_urls: StdMutex::new(HashMap::new()),
                 instance_trays: StdMutex::new(std::collections::HashSet::new()),

@@ -2,7 +2,14 @@
 // Content of the frameless `update-notice` window: shown when the startup
 // update check found a newer, unsuppressed launcher release. Not an in-app
 // modal — a real OS window with a custom draggable title bar.
-import { onMounted, ref } from 'vue'
+//
+// The startup check hands its result over via the window URL query
+// (`#/update-notice?version=…&url=…&published=…`) so the window renders
+// immediately instead of re-hitting the GitHub API — a second fetch could
+// race a freshly published release and disagree with the version the
+// suppression logic just evaluated. A manual refresh re-checks on demand.
+import { computed, onMounted, ref } from 'vue'
+import { useRoute } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { Message } from '@arco-design/web-vue'
 import { api } from '@/api'
@@ -10,32 +17,75 @@ import type { LauncherUpdateInfo } from '@/api/types'
 import FramelessTitleBar from '@/components/FramelessTitleBar.vue'
 
 const { t } = useI18n()
+const route = useRoute()
 
-const loading = ref(true)
-const error = ref('')
+const checking = ref(false)
+const checkError = ref('')
 const info = ref<LauncherUpdateInfo | null>(null)
 const busy = ref<'download' | 'never' | null>(null)
-const publishedAt = ref('')
 
-onMounted(async () => {
-  try {
-    const settings = await api.getSettings()
-    info.value = await api.checkLauncherUpdate(settings.update_channel ?? 'dev')
-    if (info.value.up_to_date) {
-      error.value = t('settings.update.upToDate')
-    } else {
-      const raw = info.value.published_at
-      if (raw) {
-        const date = new Date(raw)
-        publishedAt.value = Number.isNaN(date.getTime()) ? raw : date.toLocaleString()
-      }
+const upToDate = computed(() => !!info.value && info.value.up_to_date)
+
+const publishedAt = computed(() => {
+  const raw = info.value?.published_at
+  if (!raw) return ''
+  const date = new Date(raw)
+  return Number.isNaN(date.getTime()) ? raw : date.toLocaleString()
+})
+
+function queryString(key: string): string {
+  const v = route.query[key]
+  return typeof v === 'string' ? v : ''
+}
+
+onMounted(() => {
+  const version = queryString('version')
+  if (version) {
+    // The startup check already found this update; render it verbatim.
+    info.value = {
+      current: '',
+      channel: 'dev',
+      up_to_date: false,
+      latest: version,
+      url: queryString('url') || null,
+      published_at: queryString('published') || null,
     }
-  } catch (e) {
-    error.value = String(e)
-  } finally {
-    loading.value = false
+    void fillCurrentVersion()
+  } else {
+    // Opened without a result (e.g. a leftover shortcut): check directly.
+    void refresh()
   }
 })
+
+/** Fills the current version label without a network call. */
+async function fillCurrentVersion() {
+  try {
+    const current = await api.getLauncherVersion()
+    if (info.value) info.value.current = current
+  } catch {
+    /* keep the placeholder */
+  }
+}
+
+/** Manual refresh: a real re-check on the remembered channel. */
+async function refresh() {
+  checking.value = true
+  checkError.value = ''
+  try {
+    const settings = await api.getSettings()
+    const result = await api.checkLauncherUpdate(settings.update_channel ?? 'dev')
+    if (result.up_to_date) {
+      // Nothing to notify about anymore: the notice is pointless.
+      await closeWindow()
+      return
+    }
+    info.value = result
+  } catch (e) {
+    checkError.value = String(e)
+  } finally {
+    checking.value = false
+  }
+}
 
 async function closeWindow() {
   if (api.isTauri) {
@@ -84,22 +134,23 @@ async function onNever() {
     <FramelessTitleBar :title="t('updateNotice.title')" @close="onSkip" />
 
     <div class="notice-body">
-      <div v-if="loading" class="notice-center">
+      <div v-if="checking" class="notice-center">
         <a-spin :size="22" />
       </div>
-      <div v-else-if="error" class="notice-center notice-error">
-        <span>{{ error }}</span>
+      <div v-else-if="checkError" class="notice-center notice-error">
+        <span>{{ checkError }}</span>
+        <a-button size="small" @click="refresh">{{ t('updateNotice.retry') }}</a-button>
       </div>
-      <template v-else-if="info">
+      <template v-else-if="info && !upToDate">
         <div class="notice-version">
           <span class="version-label">{{ t('updateNotice.current') }}</span>
-          <span class="version-value">v{{ info.current }}</span>
+          <span class="version-value">{{ info.current ? `v${info.current}` : '—' }}</span>
         </div>
         <div class="version-arrow">↓</div>
         <div class="notice-version">
           <span class="version-label">{{ t('updateNotice.latest') }}</span>
           <span class="version-value version-new">v{{ info.latest }}</span>
-          <a-tag v-if="info.channel === 'dev'" color="orange" size="small">
+          <a-tag v-if="info.latest?.includes('-')" color="orange" size="small">
             {{ t('settings.update.channel.dev') }}
           </a-tag>
           <a-tag v-else color="green" size="small">
@@ -115,19 +166,19 @@ async function onNever() {
     <div class="notice-actions">
       <a-button
         type="primary"
-        :disabled="!info?.url || loading || !!error"
+        :disabled="!info?.url || checking || !!checkError"
         :loading="busy === 'download'"
         @click="onDownload"
       >
         {{ t('updateNotice.download') }}
       </a-button>
-      <a-button :disabled="loading" @click="onSkip">
+      <a-button :disabled="checking" @click="onSkip">
         {{ t('updateNotice.skip') }}
       </a-button>
       <a-button
         status="danger"
         type="text"
-        :disabled="!info?.latest || loading || !!error"
+        :disabled="!info?.latest || checking || !!checkError"
         :loading="busy === 'never'"
         @click="onNever"
       >
@@ -158,8 +209,10 @@ async function onNever() {
 
 .notice-center {
   display: flex;
+  flex-direction: column;
   align-items: center;
   justify-content: center;
+  gap: 10px;
 }
 
 .notice-error {

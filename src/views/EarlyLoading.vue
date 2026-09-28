@@ -15,7 +15,6 @@ const { t } = useI18n()
 
 const ctx = ref<EarlyLoadingContext | null>(null)
 const stage = ref<LaunchStage>('preflight')
-const percent = ref<number | null>(null)
 const detail = ref('')
 const cancelling = ref(false)
 
@@ -48,8 +47,11 @@ onMounted(async () => {
   }
   unlisten = await api.onEarlyLoadingProgress((p) => {
     if (p.instance_id !== props.instanceId) return
+    // Terminal states are sticky: a late or out-of-order report must never
+    // revive a finished window (the launch driver's status watcher can race
+    // with the window close).
+    if (terminal.value) return
     stage.value = p.stage
-    percent.value = p.percent
     if (p.detail) detail.value = p.detail
     // Terminal states: show the outcome briefly (errors stay until closed,
     // the launch-failure dialog in the main window carries the details).
@@ -75,14 +77,14 @@ async function onClose() {
   await closeWindow()
 }
 
-/** 取消启动：停止已拉起的进程并关闭窗口。 */
+/** 取消启动：停止已拉起的进程；窗口由进程收敛后的 waiter 兜底关闭，
+ * 这里只切换到已取消态并等待（关闭按钮仍可作为逃生口）。 */
 async function onCancel() {
   if (cancelling.value || terminal.value) return
   cancelling.value = true
+  stage.value = 'cancelled'
   try {
-    stage.value = 'cancelled'
     await api.cancelInstanceLaunch(props.instanceId)
-    await closeWindow()
   } catch (e) {
     Message.error(String(e))
   } finally {
@@ -116,13 +118,9 @@ async function onCancel() {
         </li>
       </ul>
 
-      <a-progress
-        v-if="!terminal"
-        :percent="percent !== null ? percent / 100 : undefined"
-        :show-text="percent !== null"
-        class="loading-progress"
-        :class="{ indeterminate: percent === null }"
-      />
+      <div v-if="!terminal" class="indeterminate-bar">
+        <div class="indeterminate-fill" />
+      </div>
       <div v-else class="terminal-state" :class="{ failed }">
         {{ t(`earlyLoading.stages.${stage}`) }}
       </div>
@@ -213,21 +211,27 @@ async function onCancel() {
   margin-left: auto;
 }
 
-.loading-progress {
-  width: 100%;
+.indeterminate-bar {
+  height: 4px;
+  border-radius: 2px;
+  background: var(--color-fill-2);
+  overflow: hidden;
 }
 
-.loading-progress.indeterminate :deep(.arco-progress-line-bar) {
-  animation: early-loading-pulse 1.2s ease-in-out infinite;
+.indeterminate-fill {
+  height: 100%;
+  width: 40%;
+  border-radius: 2px;
+  background: rgb(var(--primary-6));
+  animation: early-loading-slide 1.2s ease-in-out infinite;
 }
 
-@keyframes early-loading-pulse {
-  0%,
-  100% {
-    opacity: 1;
+@keyframes early-loading-slide {
+  0% {
+    transform: translateX(-100%);
   }
-  50% {
-    opacity: 0.35;
+  100% {
+    transform: translateX(350%);
   }
 }
 

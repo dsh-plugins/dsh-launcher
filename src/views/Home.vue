@@ -87,6 +87,10 @@ const selectedProfile = ref<string | undefined>(undefined)
 const compatibility = ref<CompatibilityReportType | null>(null)
 const compatibilityBusy = ref(false)
 const handoffCompleted = ref(false)
+/** Ids whose launch is currently driven by the early-loading window; status
+ * watch reports `opening-window` only for these (a merely-running instance
+ * must not revive a closed or never-opened window). */
+const earlyLoadingActive = ref(new Set<string>())
 // The compatibility result shows in a popup, not inline (issue: launch-UX).
 // Once the DSH window opens the popup hides at once — the details stay in
 // the instance log file only (<data>/logs/<id>.log).
@@ -102,6 +106,7 @@ watch([selectedInstanceId, selectedProfile], () => {
 /** The DSH window of `id` just opened: hide the compatibility popup and
  * close the early-loading window — the launch is fully up. */
 function onDshWindowOpened(id: string) {
+  earlyLoadingActive.value.delete(id)
   void api.closeEarlyLoading(id)
   if (id !== selectedInstanceId.value) return
   dshWindowOpened.value = true
@@ -350,6 +355,7 @@ async function onStart() {
   compatDismissed.value = false
   // Early-loading window: shows the launch stages (including the
   // compatibility preflight) until the DSH window is up.
+  earlyLoadingActive.value.add(id)
   await api.openEarlyLoading(id).catch(() => {})
   try {
     await api.reportLaunchStage(id, 'spawning')
@@ -368,7 +374,12 @@ async function onStart() {
         store
           .openWindowWhenReady(id)
           .then(() => onDshWindowOpened(id))
-          .catch((e) => Message.error(String(e)))
+          .catch((e) => {
+            // A cancelled launch is refused by the backend; the early-loading
+            // window already shows the cancelled state, so stay quiet here.
+            if (String(e).includes('启动已取消')) return
+            Message.error(String(e))
+          })
       }
     }
     void reportHealth(id, selectedProfile.value)
@@ -376,6 +387,7 @@ async function onStart() {
     // Sync failure (preflight / spawn): surface the full detail in the
     // launch-failure dialog instead of a transient toast (issue #30).
     // (onStart early-returns without a selection, so an id always exists here.)
+    earlyLoadingActive.value.delete(id)
     void api.reportLaunchStage(id, 'failed', undefined, String(e))
     void api.closeEarlyLoading(id)
     store.reportLaunchError({
@@ -395,6 +407,7 @@ async function onCompatibleStart() {
   dshWindowOpened.value = false
   compatDismissed.value = false
   compatibilityBusy.value = true
+  earlyLoadingActive.value.add(id)
   await api.openEarlyLoading(id).catch(() => {})
   void api.reportLaunchStage(id, 'preflight')
   try {
@@ -415,13 +428,19 @@ async function onCompatibleStart() {
       store
         .openWindowWhenReady(id)
         .then(() => onDshWindowOpened(id))
-        .catch((e) => Message.error(String(e)))
+        .catch((e) => {
+          // A cancelled launch is refused by the backend; the early-loading
+          // window already shows the cancelled state, so stay quiet here.
+          if (String(e).includes('启动已取消')) return
+          Message.error(String(e))
+        })
     }
     // TUI handoff: the backend already opened the terminal window.
     if (report.handoff_pending && selectedProfileKind.value === 'tui') {
       onDshWindowOpened(id)
     }
   } catch (e) {
+    earlyLoadingActive.value.delete(id)
     void api.reportLaunchStage(id, 'failed', undefined, String(e))
     void api.closeEarlyLoading(id)
     if (selectedInstanceId.value === id && selectedProfile.value === profile) Message.error(String(e))
@@ -467,12 +486,14 @@ async function onOpenWindow() {
 }
 
 // While the early-loading window is up, reflect the instance reaching
-// `running` as the final stages so the window shows real progress even when
+// `running` as the final stage so the window shows real progress even when
 // auto_open_on_launch is off (the window closes from onDshWindowOpened or
-// from the process waiter when the launch ends).
+// from the process waiter when the launch ends). Guarded by
+// earlyLoadingActive so a merely-running selected instance never reports.
 watch(selectedStatus, (st) => {
   const id = selectedInstanceId.value
   if (!id || !st || st.state !== 'running') return
+  if (!earlyLoadingActive.value.has(id)) return
   void api.reportLaunchStage(id, 'opening-window')
 }, { flush: 'post' })
 

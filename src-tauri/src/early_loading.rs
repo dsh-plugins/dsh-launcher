@@ -23,10 +23,10 @@ const EARLY_LOADING_LABEL_PREFIX: &str = "early-loading-";
 pub const EARLY_LOADING_EVENT: &str = "early-loading://progress";
 
 /// Launch stages in display order, mirrored by the frontend's pipeline.
-/// Documentation anchor only — the stage strings are owned by the launch
-/// drivers; this window only relays them.
-#[allow(dead_code)]
 pub const STAGES: [&str; 4] = ["preflight", "spawning", "waiting-ready", "opening-window"];
+
+/// Terminal stages: the window shows the outcome briefly, then closes.
+const TERMINAL_STAGES: [&str; 3] = ["done", "cancelled", "failed"];
 
 #[derive(Clone, Debug, Serialize)]
 pub struct EarlyLoadingProgress {
@@ -128,6 +128,11 @@ pub fn report_launch_stage(
     percent: Option<u8>,
     detail: Option<String>,
 ) -> Result<(), String> {
+    // Invoke is not constrained by the frontend's TS union type; reject
+    // anything outside the known pipeline/terminal stages.
+    if !STAGES.contains(&stage.as_str()) && !TERMINAL_STAGES.contains(&stage.as_str()) {
+        return Err(format!("无效的启动阶段: {stage}"));
+    }
     let label = window_label(&instance_id);
     if app.get_webview_window(&label).is_none() {
         // Window already closed (user clicked 关闭): the launch continues
@@ -147,9 +152,11 @@ pub fn report_launch_stage(
     .map_err(|e| e.to_string())
 }
 
-/// Cancels a launch in progress: remembers the intent and stops the instance
-/// when it is already spawned. The launch driver also reports the cancelled
-/// stage so the window can close itself.
+/// Cancels a launch in progress: records the cancel intent (so a late
+/// `open_instance_window` from the launch driver is refused), then stops the
+/// instance if it is already spawned. The early-loading window stays open —
+/// the process waiter closes it once the stop has actually converged, and
+/// its own close button remains available as an escape hatch.
 #[tauri::command(rename_all = "snake_case")]
 pub async fn cancel_instance_launch(
     app: AppHandle,
@@ -157,10 +164,14 @@ pub async fn cancel_instance_launch(
     instance_id: String,
 ) -> Result<(), String> {
     crate::log_info!("用户取消启动实例 {instance_id}");
+    state
+        .launch_cancels
+        .lock()
+        .unwrap()
+        .insert(instance_id.clone());
     // Forget any pending compatibility-TUI handoff, then stop the process
-    // (idempotent: a not-yet-spawned instance just logs a debug line).
+    // (idempotent: a not-yet-spawned instance just logs a debug line and
+    // re-emits `stopped`, which the waiter-style cleanup handles).
     state.tui_compat.lock().await.remove(&instance_id);
-    crate::process::stop_instance_process(&app, &state, &instance_id).await?;
-    close_early_loading(&app, &instance_id);
-    Ok(())
+    crate::process::stop_instance_process(&app, &state, &instance_id).await
 }
