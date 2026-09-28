@@ -18,7 +18,10 @@ const UPDATE_WINDOW_LABEL: &str = "update-notice";
 /// Opens (or focuses) the frameless update-notice window. The found release
 /// travels in the URL query so the window renders immediately instead of
 /// re-hitting the GitHub API (and possibly seeing a different version).
-pub fn open_update_window(app: &AppHandle, info: &crate::update::LauncherUpdateInfo) -> Result<(), String> {
+pub fn open_update_window(
+    app: &AppHandle,
+    info: &crate::update::LauncherUpdateInfo,
+) -> Result<(), String> {
     if let Some(win) = app.get_webview_window(UPDATE_WINDOW_LABEL) {
         let _ = win.show();
         let _ = win.unminimize();
