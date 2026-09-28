@@ -272,17 +272,33 @@ async fn apply_instance_tray(
     Ok(())
 }
 
-/// Removes an instance's tray icon and forgets it. The handle returned by
-/// `remove_tray_by_id` is discarded immediately — keeping it alive would keep
-/// the native icon on screen.
+/// Removes an instance's tray icon and forgets it.
+///
+/// Unlike every other tray API, `remove_tray_by_id` is **not** marshalled to
+/// the main thread by Tauri: it returns the handle, and the OS teardown
+/// (`Shell_NotifyIcon` delete + `DestroyWindow` on Windows, `removeStatusItem`
+/// on macOS) runs in `TrayIcon`'s `Drop`. Windows only destroys a window from
+/// the thread that created it, and an `NSStatusItem` is main-thread-only, so
+/// the drop has to happen on the main thread — otherwise the hidden tray
+/// window and its `TrayUserData` leak. The handle is therefore dropped *inside*
+/// the closure rather than on this (worker) thread.
 fn remove_instance_tray(app: &AppHandle, instance_id: &str) {
     {
         let state = app.state::<AppState>();
         state.instance_trays.lock().unwrap().remove(instance_id);
     }
     let tray_id = instance_tray_id(instance_id);
-    if app.remove_tray_by_id(&tray_id).is_some() {
-        crate::log_info!("已移除实例 {instance_id} 的托盘图标");
+    let app_for_main = app.clone();
+    let id_for_log = instance_id.to_string();
+    if app
+        .run_on_main_thread(move || {
+            if app_for_main.remove_tray_by_id(&tray_id).is_some() {
+                crate::log_info!("已移除实例 {id_for_log} 的托盘图标");
+            }
+        })
+        .is_err()
+    {
+        crate::log_warn!("实例 {instance_id} 的托盘图标移除未能派发到主线程");
     }
 }
 
