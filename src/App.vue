@@ -35,10 +35,13 @@ function onSystemThemeChange() {
 }
 
 onMounted(async () => {
+  // Bare frameless windows (early-loading / update-notice) only need the
+  // theme — applying it before the heavy store.init() keeps them from
+  // flashing light while the full catalog loads. The watch below re-applies
+  // once settings resolve.
+  applyTheme(store.settings.theme || 'system')
   await store.init()
   locale.value = store.settings.locale || 'zh-CN'
-  // Apply the persisted theme early (before init resolves the settings may
-  // still be defaults; the watch below re-applies on any change).
   applyTheme(store.settings.theme || 'system')
   themeMedia.addEventListener('change', onSystemThemeChange)
   // If Node.js is missing, guide the user to install it before anything else.

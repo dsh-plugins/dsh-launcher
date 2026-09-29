@@ -128,8 +128,13 @@ pub fn spawn_startup_update_check(app: &AppHandle) {
                 return;
             }
         }
-        if let Err(e) = open_update_window(&handle, &info) {
-            crate::log_warn!("打开更新提醒窗口失败: {e}");
-        }
+        // Window creation must run on the main thread (WebView2 requirement
+        // on Windows); this async task is on a runtime worker thread.
+        let handle2 = handle.clone();
+        let _ = handle.run_on_main_thread(move || {
+            if let Err(e) = open_update_window(&handle2, &info) {
+                crate::log_warn!("打开更新提醒窗口失败: {e}");
+            }
+        });
     });
 }

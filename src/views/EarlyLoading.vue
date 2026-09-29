@@ -6,8 +6,9 @@ import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { Message } from '@arco-design/web-vue'
 import { api } from '@/api'
-import type { EarlyLoadingContext, LaunchStage } from '@/api/types'
+import type { CompatibilityReport, EarlyLoadingContext, LaunchStage } from '@/api/types'
 import FramelessTitleBar from '@/components/FramelessTitleBar.vue'
+import CompatReport from '@/components/CompatibilityReport.vue'
 
 const props = defineProps<{ instanceId: string }>()
 
@@ -17,6 +18,8 @@ const ctx = ref<EarlyLoadingContext | null>(null)
 const stage = ref<LaunchStage>('preflight')
 const detail = ref('')
 const cancelling = ref(false)
+/** Compatibility report forwarded from the launch driver, rendered inline. */
+const compat = ref<CompatibilityReport | null>(null)
 
 /** The pipeline stages in display order (terminal states excluded). */
 const PIPELINE: LaunchStage[] = ['preflight', 'spawning', 'waiting-ready', 'opening-window']
@@ -38,6 +41,7 @@ function stageState(s: LaunchStage): 'done' | 'active' | 'todo' {
 }
 
 let unlisten: (() => void) | undefined
+let unlistenCompat: (() => void) | undefined
 
 onMounted(async () => {
   try {
@@ -61,9 +65,26 @@ onMounted(async () => {
       window.setTimeout(() => void closeWindow(), 800)
     }
   })
+  unlistenCompat = await api.onEarlyLoadingCompat((report) => {
+    if (report.instance_id !== props.instanceId) return
+    compat.value = report
+    // Grow the window to fit the inline report (it starts compact).
+    void resizeFor(520)
+  })
 })
 
-onUnmounted(() => unlisten?.())
+/** Resizes this window's height (width stays fixed). */
+async function resizeFor(height: number) {
+  if (!api.isTauri) return
+  const { getCurrentWindow } = await import('@tauri-apps/api/window')
+  const { LogicalSize } = await import('@tauri-apps/api/dpi')
+  await getCurrentWindow().setSize(new LogicalSize(520, height))
+}
+
+onUnmounted(() => {
+  unlisten?.()
+  unlistenCompat?.()
+})
 
 async function closeWindow() {
   if (api.isTauri) {
@@ -126,6 +147,18 @@ async function onCancel() {
       </div>
 
       <div v-if="detail" class="loading-detail" :class="{ failed }">{{ detail }}</div>
+
+      <!-- Compatibility report: rendered inline (the launcher main window no
+           longer shows it as a separate modal during launch). -->
+      <a-scrollbar
+        v-if="compat"
+        type="track"
+        outer-style="max-height: 220px"
+        style="max-height: 220px; overflow-y: auto"
+        class="compat-area"
+      >
+        <CompatReport :report="compat" />
+      </a-scrollbar>
     </div>
 
     <div class="loading-actions">
@@ -255,6 +288,11 @@ async function onCancel() {
 
 .loading-detail.failed {
   color: rgb(var(--red-6));
+}
+
+.compat-area {
+  border-top: 1px solid var(--color-border-2);
+  padding-top: 8px;
 }
 
 .loading-actions {

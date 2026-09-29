@@ -16,22 +16,33 @@ const emit = defineEmits<{ (e: 'close'): void }>()
 
 const isTauri = computed(() => typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window)
 
-// Manual drag (same pattern as the main window header in App.vue): buttons
-// and other interactive elements opt out via data-no-drag.
+// Preload the window handle once (like the main window's appWindow): awaiting
+// a dynamic import inside mousedown delays startDragging() past the drag
+// gesture, so the OS never sees a drag.
+const win = (() => {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  if (typeof window === 'undefined' || !(window as any).__TAURI_INTERNALS__) return null
+  return import('@tauri-apps/api/window').then((m) => m.getCurrentWindow())
+})()
+
+// Drag: manual startDragging(), the same mechanism the main window header
+// uses successfully (no data-tauri-drag-region — mixing the two breaks it).
+// The window must be listed in capabilities/default.json with
+// allow-start-dragging, or this fails with a permission error.
 async function onBarMouseDown(e: MouseEvent) {
-  if (!isTauri.value || e.button !== 0) return
+  if (!win || e.button !== 0) return
   const el = e.target as HTMLElement | null
   if (el?.closest('button, a, input, [data-no-drag]')) return
-  const { getCurrentWindow } = await import('@tauri-apps/api/window')
-  await getCurrentWindow().startDragging()
+  const w = await win
+  w?.startDragging()
 }
 
 /** Closes this frameless window and lets the parent run its own hook first. */
 async function onClose() {
   emit('close')
-  if (!isTauri.value) return
-  const { getCurrentWindow } = await import('@tauri-apps/api/window')
-  await getCurrentWindow().close()
+  if (!win) return
+  const w = await win
+  await w?.close()
 }
 </script>
 
@@ -67,6 +78,7 @@ async function onClose() {
   align-items: center;
   gap: 8px;
   min-width: 0;
+  flex: 1;
 }
 
 .bar-title {
@@ -89,6 +101,7 @@ async function onClose() {
   color: var(--color-text-2);
   border-radius: 6px;
   cursor: pointer;
+  flex-shrink: 0;
 }
 
 .bar-btn:hover {

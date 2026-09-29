@@ -114,7 +114,13 @@ function onDshWindowOpened(id: string) {
 }
 
 const compatModalVisible = computed(
-  () => !dshWindowOpened.value && !compatDismissed.value && (compatibilityBusy.value || !!compatibility.value),
+  () =>
+    !dshWindowOpened.value &&
+    !compatDismissed.value &&
+    // A launch driven by the early-loading window renders the report there,
+    // so the launcher modal stays hidden for that instance.
+    !(selectedInstanceId.value && earlyLoadingActive.value.has(selectedInstanceId.value)) &&
+    (compatibilityBusy.value || !!compatibility.value),
 )
 
 function closeCompatModal() {
@@ -128,6 +134,12 @@ onMounted(async () => {
   unlistenCompatibility = await listen<CompatibilityReportType>('instance://compatibility', (event) => {
     const report = event.payload
     if (dshWindowOpened.value) return
+    // A launch driven by the early-loading window renders the report there,
+    // not as a launcher modal.
+    if (earlyLoadingActive.value.has(report.instance_id)) {
+      void api.reportLaunchCompat(report.instance_id, report)
+      return
+    }
     if (selectedInstanceId.value === report.instance_id && selectedProfile.value === report.profile) {
       compatibility.value = report
       if (!report.handoff_pending) handoffCompleted.value = true
@@ -412,7 +424,11 @@ async function onCompatibleStart() {
   void api.reportLaunchStage(id, 'preflight')
   try {
     const report = await api.startCompatibleInstance(id, profile)
-    if (selectedInstanceId.value === id && selectedProfile.value === profile &&
+    // A launch driven by the early-loading window renders the report there,
+    // not as a launcher modal.
+    if (earlyLoadingActive.value.has(id)) {
+      void api.reportLaunchCompat(id, report)
+    } else if (selectedInstanceId.value === id && selectedProfile.value === profile &&
         !(report.handoff_pending && handoffCompleted.value)) {
       compatibility.value = report
     }
@@ -454,6 +470,12 @@ async function reportHealth(instanceId: string, profile: string) {
     const report = await api.checkPluginCompatibility(instanceId, profile)
     // The DSH window already opened: keep the details in the log file only.
     if (dshWindowOpened.value) return
+    // A launch driven by the early-loading window renders the report there,
+    // not as a launcher modal.
+    if (earlyLoadingActive.value.has(instanceId)) {
+      void api.reportLaunchCompat(instanceId, report)
+      return
+    }
     if (selectedInstanceId.value === instanceId && selectedProfile.value === profile) {
       report.started = selectedProfileKind.value !== 'tui'
       report.handoff_pending = selectedProfileKind.value === 'tui'

@@ -22,6 +22,9 @@ const EARLY_LOADING_LABEL_PREFIX: &str = "early-loading-";
 /// Window-scoped progress event name.
 pub const EARLY_LOADING_EVENT: &str = "early-loading://progress";
 
+/// Window-scoped compatibility report event name.
+pub const EARLY_LOADING_COMPAT_EVENT: &str = "early-loading://compatibility";
+
 /// Launch stages in display order, mirrored by the frontend's pipeline.
 pub const STAGES: [&str; 4] = ["preflight", "spawning", "waiting-ready", "opening-window"];
 
@@ -51,8 +54,13 @@ fn window_label(instance_id: &str) -> String {
 }
 
 /// Opens (or focuses) the frameless early-loading window for one instance.
+///
+/// Must be an async command: Tauri runs async commands on the runtime where
+/// window creation is marshalled to the main thread. A sync command runs on a
+/// bare worker thread, and building a WebView2 window there crashes the
+/// process on Windows (the exact white-window-and-crash symptom).
 #[tauri::command(rename_all = "snake_case")]
-pub fn open_early_loading_window(
+pub async fn open_early_loading_window(
     app: AppHandle,
     state: tauri::State<'_, AppState>,
     instance_id: String,
@@ -77,7 +85,9 @@ pub fn open_early_loading_window(
     let url = WebviewUrl::App(format!("/index.html#/early-loading/{instance_id}").into());
     let mut builder = WebviewWindowBuilder::new(&app, label.clone(), url)
         .title(format!("正在启动 {name} — DSH Launcher"))
-        .inner_size(480.0, 340.0)
+        // Compact by default; the frontend grows the height when an inline
+        // compatibility report arrives (see EarlyLoading.vue resizeFor).
+        .inner_size(520.0, 320.0)
         .resizable(false)
         .decorations(false)
         .center();
@@ -154,6 +164,31 @@ pub fn report_launch_stage(
         },
     )
     .map_err(|e| e.to_string())
+}
+
+/// Forwards the compatibility report to the early-loading window, which
+/// renders it inline (instead of the launcher main window's modal). The
+/// compatibility check is part of the launch, so its result belongs in the
+/// launch window. No-op when the window is closed (launch continues).
+///
+/// The report travels as a JSON string: `compatibility::Report` is
+/// Serialize-only (it is never deserialized anywhere), and command args
+/// require Deserialize.
+#[tauri::command(rename_all = "snake_case")]
+pub fn report_launch_compat(
+    app: AppHandle,
+    instance_id: String,
+    report_json: String,
+) -> Result<(), String> {
+    let label = window_label(&instance_id);
+    if app.get_webview_window(&label).is_none() {
+        return Ok(());
+    }
+    // Validate before relaying so a malformed payload fails loudly here.
+    let report: serde_json::Value =
+        serde_json::from_str(&report_json).map_err(|e| format!("无效的兼容性报告 JSON: {e}"))?;
+    app.emit_to(&label, EARLY_LOADING_COMPAT_EVENT, report)
+        .map_err(|e| e.to_string())
 }
 
 /// Cancels a launch in progress: records the cancel intent (so a late

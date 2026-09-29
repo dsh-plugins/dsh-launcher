@@ -327,6 +327,7 @@ pub fn run() {
             early_loading::close_early_loading_window,
             early_loading::get_early_loading_context,
             early_loading::report_launch_stage,
+            early_loading::report_launch_compat,
             early_loading::cancel_instance_launch,
             commands::open_external,
             commands::open_launcher_directory,
