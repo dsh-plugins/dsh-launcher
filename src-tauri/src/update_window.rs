@@ -42,14 +42,18 @@ pub fn open_update_window(
         }
     }
     let url = WebviewUrl::App(url.into());
-    WebviewWindowBuilder::new(app, UPDATE_WINDOW_LABEL, url)
+    let mut builder = WebviewWindowBuilder::new(app, UPDATE_WINDOW_LABEL, url)
         .title("DSH Launcher 更新提醒")
         .inner_size(460.0, 330.0)
         .resizable(false)
         .decorations(false)
-        .center()
-        .build()
-        .map_err(|e| e.to_string())?;
+        .center();
+    // Own WebView2 user-data folder: sharing the default (exe-adjacent)
+    // folder with the main window wedges the second webview on a white page.
+    if let Some(dir) = crate::windows::app_webview_data_dir(app, UPDATE_WINDOW_LABEL) {
+        builder = builder.data_directory(dir);
+    }
+    builder.build().map_err(|e| e.to_string())?;
     Ok(())
 }
 

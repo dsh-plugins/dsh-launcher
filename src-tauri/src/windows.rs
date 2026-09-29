@@ -6,6 +6,22 @@ use tauri::{AppHandle, Manager, WebviewUrl, WebviewWindowBuilder, WindowEvent};
 
 use crate::AppState;
 
+/// A frameless standalone window that renders one of the launcher's own
+/// routes must never share the main window's WebView2 user-data folder: the
+/// default folder lives next to the exe and is shared by every window that
+/// does not set its own, so two live webviews on one folder make WebView2
+/// fail (or wedge, showing a blank white page) for the second window. All
+/// launcher-owned auxiliary windows go under `<data_dir>/webview/app/<label>`.
+pub(crate) fn app_webview_data_dir(app: &AppHandle, label: &str) -> Option<PathBuf> {
+    let state = app.try_state::<AppState>()?;
+    let dir = state.data_dir.join("webview").join("app").join(label);
+    if let Err(e) = std::fs::create_dir_all(&dir) {
+        crate::log_warn!("创建窗口 {label} 的 webview 数据目录失败: {e}");
+        return None;
+    }
+    Some(dir)
+}
+
 /// Remembers the instance whose window was interacted with most recently so
 /// the tray double-click can reopen exactly that profile page.
 fn record_focus(app: &AppHandle, instance_id: &str) {
@@ -357,13 +373,17 @@ pub fn open_tui_window(app: &AppHandle, instance_id: &str) -> Result<(), String>
     // Hash router: the route must arrive in the fragment, or the window
     // would land on `/` and show the launcher home instead of the terminal.
     let url = WebviewUrl::App(format!("/index.html#/terminal/{instance_id}").into());
-    let win = WebviewWindowBuilder::new(app, label, url)
+    let mut builder = WebviewWindowBuilder::new(app, label.clone(), url)
         .title(format!("{name} — DSH TUI"))
         .inner_size(900.0, 560.0)
         .min_inner_size(560.0, 320.0)
-        .center()
-        .build()
-        .map_err(|e| e.to_string())?;
+        .center();
+    // Own WebView2 user-data folder: sharing the default (exe-adjacent)
+    // folder with the main window wedges the second webview on a white page.
+    if let Some(dir) = app_webview_data_dir(app, &label) {
+        builder = builder.data_directory(dir);
+    }
+    let win = builder.build().map_err(|e| e.to_string())?;
     record_focus(app, instance_id);
     maybe_hide_main(app);
 

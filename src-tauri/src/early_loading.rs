@@ -75,14 +75,18 @@ pub fn open_early_loading_window(
         .unwrap_or_else(|| instance_id.clone());
     // Hash router: the route must arrive in the fragment (see windows.rs).
     let url = WebviewUrl::App(format!("/index.html#/early-loading/{instance_id}").into());
-    WebviewWindowBuilder::new(&app, label, url)
+    let mut builder = WebviewWindowBuilder::new(&app, label.clone(), url)
         .title(format!("正在启动 {name} — DSH Launcher"))
         .inner_size(480.0, 340.0)
         .resizable(false)
         .decorations(false)
-        .center()
-        .build()
-        .map_err(|e| e.to_string())?;
+        .center();
+    // Own WebView2 user-data folder: sharing the default (exe-adjacent)
+    // folder with the main window wedges the second webview on a white page.
+    if let Some(dir) = crate::windows::app_webview_data_dir(&app, &label) {
+        builder = builder.data_directory(dir);
+    }
+    builder.build().map_err(|e| e.to_string())?;
     Ok(())
 }
 
