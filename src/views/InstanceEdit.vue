@@ -18,8 +18,14 @@ import type {
   McpServer,
   McpTransport,
   PluginUpdateInfo,
+  ProviderApi,
+  ProviderModel,
+  ProviderPreset,
+  ProviderRoute,
   SkillInfo,
   SkillUpdateInfo,
+  ValidationReport,
+  ValidationStatus,
 } from '@/api/types'
 import TerminalEmbed from './TerminalEmbed.vue'
 import SkillRepoDialog from '@/components/SkillRepoDialog.vue'
@@ -50,7 +56,7 @@ const homeOptions = computed(() =>
 
 // --- Sidebar tabs ---------------------------------------------------------------
 
-type TabKey = 'basic' | 'env' | 'profiles' | 'plugins' | 'skills' | 'agents' | 'mcp' | 'storage' | 'terminal'
+type TabKey = 'basic' | 'env' | 'profiles' | 'plugins' | 'skills' | 'agents' | 'mcp' | 'providers' | 'storage' | 'terminal'
 const activeTab = ref<TabKey>('basic')
 
 // --- Form state ---------------------------------------------------------------
@@ -206,6 +212,9 @@ watch(homeId, async (v) => {
   // A different HOME means a different patch layer: reset the MCP scope.
   mcpScope.value = MCP_GLOBAL
   mcpServers.value = []
+  // Provider routes are also patch-scoped, so reset that scope too.
+  providerScope.value = MCP_GLOBAL
+  providerRoutes.value = []
   if (v === DEDICATED) {
     dedicatedPath.value = await api.defaultDedicatedHomePath(name.value.trim() || 'instance')
     return
@@ -739,6 +748,9 @@ async function onCreateSkill() {
 /** Scope selector value for the DSH_HOME itself. */
 const MCP_GLOBAL = '__global__'
 
+/** Provider tab scope: the same global-vs-profile choice as MCP. */
+const providerScope = ref<string>(MCP_GLOBAL)
+
 const mcpScope = ref<string>(MCP_GLOBAL)
 const mcpServers = ref<McpServer[]>([])
 const mcpLoading = ref(false)
@@ -817,6 +829,10 @@ async function loadMcpServers() {
 
 watch(mcpScope, async () => {
   if (activeTab.value === 'mcp') await loadMcpServers()
+})
+
+watch(providerScope, async () => {
+  if (activeTab.value === 'providers') await loadProviders()
 })
 
 // --- MCP validation (mirrors src-tauri/src/mcp.rs; a failure never saves) -------
@@ -1011,6 +1027,399 @@ async function onDeleteMcpServer(server: McpServer) {
   } finally {
     mcpBusy.value = ''
   }
+}
+
+// --- Provider Config (issue #76) -----------------------------------------------
+
+const providerRoutes = ref<ProviderRoute[]>([])
+const providerLoading = ref(false)
+const providerSaving = ref(false)
+const providerBusy = ref('')
+const providerEditVisible = ref(false)
+const providerOriginalName = ref('')
+const providerValidateVisible = ref(false)
+const providerValidating = ref(false)
+const validationReport = ref<ValidationReport | null>(null)
+const presetImporting = ref(false)
+const credentialStatuses = ref<Record<string, boolean>>({})
+
+/** null = global scope (the HOME's cordis.patch.yml), otherwise a profile. */
+const providerScopeProfile = computed(() =>
+  providerScope.value === MCP_GLOBAL ? null : providerScope.value
+)
+
+/** The patch file a save writes to, shown under the scope selector. */
+const providerScopePath = computed(() => {
+  const home = store.homes.find((h) => h.id === homeId.value)
+  if (!home) return ''
+  const sep = home.path.includes('\\') ? '\\' : '/'
+  const parts = providerScopeProfile.value
+    ? [home.path, 'profiles', providerScopeProfile.value, 'cordis.patch.yml']
+    : [home.path, 'cordis.patch.yml']
+  return parts.join(sep)
+})
+
+const PROVIDER_APIS: ProviderApi[] = [
+  'anthropic-messages',
+  'openai-completions',
+  'openai-responses',
+]
+
+/** One editable model row in the route editor. */
+interface ModelRowState {
+  id: string
+  name: string
+  contextWindow: string
+  reasoningEfforts: string
+  /** Model keys the editor does not surface, kept so an edit does not drop them. */
+  extra: Record<string, unknown>
+}
+
+/** Route editor form state. */
+interface RouteFormState {
+  name: string
+  apiKeyEnv: string
+  displayName: string
+  baseUrl: string
+  /** Empty = inherit the installed catalog's protocol. */
+  api: ProviderApi | ''
+  models: ModelRowState[]
+  /** API key value entered in the embedded credential editor. */
+  apiKeyValue: string
+  /** Whether the resolved credential comes from a locked higher layer. */
+  credentialLocked: boolean
+  credentialHint: string
+}
+
+function emptyRouteForm(): RouteFormState {
+  return {
+    name: '',
+    apiKeyEnv: '',
+    displayName: '',
+    baseUrl: '',
+    api: '',
+    models: [],
+    apiKeyValue: '',
+    credentialLocked: false,
+    credentialHint: '',
+  }
+}
+
+const routeForm = ref<RouteFormState>(emptyRouteForm())
+
+const providerPresetOptions: { value: ProviderPreset; label: string }[] = [
+  { value: 'deepseek-official', label: 'DeepSeek 官方' },
+  { value: 'openai-compatible', label: 'OpenAI 兼容' },
+  { value: 'anthropic-official', label: 'Anthropic 官方' },
+  { value: 'custom-endpoint', label: '自定义端点' },
+]
+
+const providerColumns = computed(() => [
+  { title: t('instanceEdit.providerColName'), slotName: 'providerName', width: 180 },
+  { title: t('instanceEdit.providerColBaseUrl'), slotName: 'providerBaseUrl', ellipsis: true, tooltip: true },
+  { title: t('instanceEdit.providerColApi'), slotName: 'providerApi', width: 150 },
+  { title: t('instanceEdit.providerColModels'), slotName: 'providerModels', width: 160 },
+  { title: t('instanceEdit.providerColStatus'), slotName: 'providerStatus', width: 110 },
+  { title: t('instances.table.actions'), slotName: 'providerActions', width: 190, align: 'center' as const, fixed: 'right' as const },
+])
+
+/** True when the current session targets a concrete home (not the shared one). */
+const providerEditable = computed(() => !!homeId.value && homeId.value !== DEDICATED)
+
+const providerRequests = latestRequest()
+
+async function loadProviders() {
+  const id = editingId.value
+  providerRoutes.value = []
+  credentialStatuses.value = {}
+  if (!providerEditable.value || !id) return
+  const request = providerRequests.begin()
+  providerLoading.value = true
+  try {
+    const routes = await api.getProviderRoutes(id, providerScopeProfile.value)
+    if (!providerRequests.isCurrent(request)) return
+    providerRoutes.value = routes
+    await refreshCredentialStatus()
+  } catch (e) {
+    if (providerRequests.isCurrent(request)) Message.error(String(e))
+  } finally {
+    if (providerRequests.isCurrent(request)) providerLoading.value = false
+  }
+}
+
+async function refreshCredentialStatus() {
+  if (!providerEditable.value) return
+  try {
+    const statuses = await api.listCredentialStatus(editingId.value!, providerScopeProfile.value)
+    credentialStatuses.value = Object.fromEntries(
+      statuses.map((s) => [s.routeName, s.isSet])
+    )
+  } catch {
+    // Status is advisory: a failure here must not blank the route table.
+    credentialStatuses.value = {}
+  }
+}
+
+function modelsToRows(models: ProviderModel[]): ModelRowState[] {
+  return models.map((m) => {
+    const { id, name, contextWindow, reasoningEfforts, ...extra } = m
+    return {
+      id,
+      name: name ?? '',
+      contextWindow: contextWindow != null ? String(contextWindow) : '',
+      reasoningEfforts:
+        reasoningEfforts != null && reasoningEfforts !== false
+          ? JSON.stringify(reasoningEfforts)
+          : '',
+      extra,
+    }
+  })
+}
+
+function openProviderAdd() {
+  providerOriginalName.value = ''
+  routeExtra.value = {}
+  routeForm.value = emptyRouteForm()
+  providerEditVisible.value = true
+}
+
+/** Route-level keys the editor does not surface (compat/retryPolicy/...). */
+const routeExtra = ref<Record<string, unknown>>({})
+
+async function openProviderEdit(route: ProviderRoute) {
+  providerOriginalName.value = route.name
+  // Keys the form does not own must survive an edit: stash them and merge back
+  // on save, or editing one field would silently drop the user's `compat` etc.
+  const { name: _n, apiKeyEnv: _k, displayName: _d, api: _a, baseURL: _u, models: _m, ...rest } = route
+  routeExtra.value = rest
+  routeForm.value = {
+    name: route.name,
+    apiKeyEnv: route.apiKeyEnv ?? '',
+    displayName: route.displayName ?? '',
+    baseUrl: route.baseURL ?? '',
+    api: (route.api as ProviderApi) ?? '',
+    models: modelsToRows(route.models || []),
+    apiKeyValue: '',
+    credentialLocked: false,
+    credentialHint: '',
+  }
+  providerEditVisible.value = true
+  await loadRouteCredential(route.apiKeyEnv ?? '')
+}
+
+/** Fetch the masked credential so the editor can explain where the key comes from. */
+async function loadRouteCredential(envVar: string) {
+  if (!providerEditable.value || !envVar.trim()) return
+  try {
+    const cred = await api.readCredential(editingId.value!, envVar.trim())
+    routeForm.value.credentialLocked = cred?.source === 'env-override'
+    routeForm.value.credentialHint = cred
+      ? t('instanceEdit.providerCredentialFrom', {
+          source: t(`instanceEdit.providerCredentialLayer_${cred.source.replace(/-/g, '')}`),
+          value: cred.value,
+        })
+      : t('instanceEdit.providerCredentialUnset')
+  } catch {
+    routeForm.value.credentialHint = ''
+  }
+}
+
+/** Applies a preset template into the editor form (client-side defaults). */
+function applyPresetToForm(preset: ProviderPreset) {
+  const templates: Record<ProviderPreset, Partial<RouteFormState>> = {
+    'deepseek-official': {
+      name: 'deepseek-official',
+      apiKeyEnv: 'DEEPSEEK_API_KEY',
+      baseUrl: 'https://api.deepseek.com/anthropic',
+      api: 'anthropic-messages',
+      models: [
+        { id: 'deepseek-chat', name: '', contextWindow: '', reasoningEfforts: '', extra: {} },
+        { id: 'deepseek-reasoner', name: '', contextWindow: '', reasoningEfforts: '', extra: {} },
+      ],
+    },
+    'openai-compatible': {
+      name: 'openai-compat',
+      apiKeyEnv: 'OPENAI_API_KEY',
+      baseUrl: 'https://api.openai.com/v1',
+      api: 'openai-completions',
+      models: [
+        { id: 'gpt-4o', name: '', contextWindow: '', reasoningEfforts: '', extra: {} },
+        { id: 'gpt-4o-mini', name: '', contextWindow: '', reasoningEfforts: '', extra: {} },
+      ],
+    },
+    'anthropic-official': {
+      name: 'anthropic-official',
+      apiKeyEnv: 'ANTHROPIC_API_KEY',
+      baseUrl: 'https://api.anthropic.com',
+      api: 'anthropic-messages',
+      models: [
+        { id: 'claude-sonnet-5-5', name: '', contextWindow: '', reasoningEfforts: '', extra: {} },
+        { id: 'claude-opus-5-5', name: '', contextWindow: '', reasoningEfforts: '', extra: {} },
+      ],
+    },
+    'custom-endpoint': {
+      name: '',
+      apiKeyEnv: 'CUSTOM_API_KEY',
+      baseUrl: '',
+      api: 'openai-completions',
+      models: [],
+    },
+  }
+  const tpl = templates[preset] || {}
+  if (tpl.name !== undefined && !providerOriginalName.value) routeForm.value.name = tpl.name
+  routeForm.value.apiKeyEnv = tpl.apiKeyEnv ?? routeForm.value.apiKeyEnv
+  routeForm.value.baseUrl = tpl.baseUrl ?? routeForm.value.baseUrl
+  routeForm.value.api = (tpl.api as ProviderApi) ?? routeForm.value.api
+  routeForm.value.models = (tpl.models as ModelRowState[]) ?? routeForm.value.models
+}
+
+function addRouteModelRow() {
+  routeForm.value.models.push({ id: '', name: '', contextWindow: '', reasoningEfforts: '', extra: {} })
+}
+
+const routeFormError = computed(() => {
+  const f = routeForm.value
+  if (!f.name.trim()) return t('instanceEdit.providerErrNameRequired')
+  if (!/^[A-Za-z0-9_-]{1,64}$/.test(f.name.trim())) return t('instanceEdit.providerErrNamePattern')
+  const dup = providerRoutes.value.some(
+    (r) => r.name === f.name.trim() && r.name !== providerOriginalName.value
+  )
+  if (dup) return t('instanceEdit.providerErrNameDuplicated')
+  if (f.apiKeyEnv.trim() && !/^[A-Za-z_][A-Za-z0-9_]*$/.test(f.apiKeyEnv.trim())) {
+    return t('instanceEdit.providerErrApiKeyEnvInvalid')
+  }
+  if (f.baseUrl.trim() && !/^https?:\/\//.test(f.baseUrl.trim())) {
+    return t('instanceEdit.providerErrBaseUrlInvalid')
+  }
+  // A hand-declared route needs an endpoint and models to be serviceable.
+  const handDeclared = !f.api
+  if (handDeclared && !f.baseUrl.trim()) return t('instanceEdit.providerErrBaseUrlRequired')
+  if (f.models.some((m) => !m.id.trim())) return t('instanceEdit.providerErrModelIdRequired')
+  for (const m of f.models) {
+    if (m.reasoningEfforts.trim()) {
+      try {
+        JSON.parse(m.reasoningEfforts)
+      } catch {
+        return t('instanceEdit.providerErrReasoningJson')
+      }
+    }
+  }
+  return ''
+})
+
+function buildRouteFromForm(): ProviderRoute {
+  const f = routeForm.value
+  const models: ProviderModel[] = f.models.map((m) => {
+    const model: ProviderModel = { id: m.id.trim(), ...m.extra }
+    if (m.name.trim()) model.name = m.name.trim()
+    if (m.contextWindow.trim()) {
+      const n = Number(m.contextWindow)
+      if (Number.isFinite(n)) model.contextWindow = n
+    }
+    if (m.reasoningEfforts.trim()) {
+      try {
+        model.reasoningEfforts = JSON.parse(m.reasoningEfforts)
+      } catch {
+        // Validated earlier; ignore unparseable input here.
+      }
+    }
+    return model
+  })
+
+  const route: ProviderRoute = { name: f.name.trim(), models, ...routeExtra.value }
+  if (f.apiKeyEnv.trim()) route.apiKeyEnv = f.apiKeyEnv.trim()
+  if (f.displayName.trim()) route.displayName = f.displayName.trim()
+  if (f.baseUrl.trim()) route.baseURL = f.baseUrl.trim()
+  if (f.api) route.api = f.api
+  return route
+}
+
+async function onSaveProvider() {
+  if (!providerEditable.value) return
+  const err = routeFormError.value
+  if (err) {
+    Message.error(err)
+    return
+  }
+  const route = buildRouteFromForm()
+  providerSaving.value = true
+  try {
+    if (providerOriginalName.value) {
+      await api.updateProviderRoute(
+        editingId.value!,
+        providerScopeProfile.value,
+        providerOriginalName.value,
+        route
+      )
+    } else {
+      await api.addProviderRoute(editingId.value!, providerScopeProfile.value, route)
+    }
+    // Persist the credential only when the user actually typed one; an empty
+    // field means "leave the existing credential untouched".
+    const keyValue = routeForm.value.apiKeyValue.trim()
+    if (keyValue && route.apiKeyEnv) {
+      await api.saveCredential(editingId.value!, route.apiKeyEnv, keyValue)
+    }
+    await loadProviders()
+    providerEditVisible.value = false
+    Message.success(t('instanceEdit.providerSaved', { name: route.name }))
+  } catch (e) {
+    Message.error(String(e))
+  } finally {
+    providerSaving.value = false
+  }
+}
+
+async function onDeleteProvider(route: ProviderRoute) {
+  if (!providerEditable.value) return
+  providerBusy.value = route.name
+  try {
+    await api.deleteProviderRoute(editingId.value!, providerScopeProfile.value, route.name)
+    await loadProviders()
+    Message.success(t('instanceEdit.providerDeleted', { name: route.name }))
+  } catch (e) {
+    Message.error(String(e))
+  } finally {
+    providerBusy.value = ''
+  }
+}
+
+async function onImportPreset(value: unknown) {
+  if (!providerEditable.value) return
+  const preset = value as ProviderPreset
+  presetImporting.value = true
+  try {
+    await api.importProviderPreset(editingId.value!, providerScopeProfile.value, preset)
+    await loadProviders()
+    Message.success(t('instanceEdit.providerPresetImported', { preset }))
+  } catch (e) {
+    Message.error(String(e))
+  } finally {
+    presetImporting.value = false
+  }
+}
+
+async function openProviderValidate() {
+  if (!providerEditable.value) return
+  providerValidating.value = true
+  try {
+    validationReport.value = await api.validateProviders(
+      editingId.value!,
+      providerScopeProfile.value
+    )
+    providerValidateVisible.value = true
+  } catch (e) {
+    Message.error(String(e))
+  } finally {
+    providerValidating.value = false
+  }
+}
+
+function validationTagColor(status: ValidationStatus): string {
+  if (status === 'ok') return 'green'
+  if (status === 'warning') return 'orange'
+  if (status === 'error') return 'red'
+  return 'gray'
 }
 
 // --- Launch shortcut (issue #9) -----------------------------------------------
@@ -1382,6 +1791,10 @@ watch(activeTab, async (tab) => {
     await loadMcpServers()
     return
   }
+  if (tab === 'providers') {
+    await loadProviders()
+    return
+  }
   if (tab === 'storage') {
     await loadHomeLinks()
     return
@@ -1585,6 +1998,7 @@ const terminalRunning = ref(false)
         <a-menu-item key="skills">{{ t('instanceEdit.tabs.skills') }}</a-menu-item>
         <a-menu-item key="agents">{{ t('instanceEdit.tabs.agents') }}</a-menu-item>
         <a-menu-item key="mcp">{{ t('instanceEdit.tabs.mcp') }}</a-menu-item>
+        <a-menu-item key="providers">{{ t('instanceEdit.tabs.providers') }}</a-menu-item>
         <a-menu-item key="storage">{{ t('instanceEdit.tabs.storage') }}</a-menu-item>
         <a-menu-item key="terminal">{{ t('instanceEdit.tabs.terminal') }}</a-menu-item>
       </a-menu>
@@ -2243,6 +2657,108 @@ const terminalRunning = ref(false)
             </a-alert>
           </div>
 
+          <!-- Provider Config (issue #76) -->
+          <div v-else-if="activeTab === 'providers'" class="dl-card edit-card">
+            <h4 class="env-title">
+              {{ t('instanceEdit.tabs.providers') }}
+              <HintIcon :content="t('instanceEdit.providersDesc')" />
+            </h4>
+
+            <template v-if="providerEditable">
+              <div class="provider-actions">
+                <a-space wrap>
+                  <a-select v-model="providerScope" style="width: 260px">
+                    <a-option :value="MCP_GLOBAL">{{ t('instanceEdit.providerScopeGlobal') }}</a-option>
+                    <a-option v-for="p in profiles" :key="p" :value="p">
+                      {{ t('instanceEdit.providerScopeProfile') }} · {{ p }}
+                    </a-option>
+                  </a-select>
+                  <a-button type="primary" @click="openProviderAdd">
+                    <template #icon><icon-plus /></template>
+                    {{ t('instanceEdit.providerAdd') }}
+                  </a-button>
+                  <a-button @click="loadProviders" :loading="providerLoading">
+                    <template #icon><icon-refresh /></template>
+                    {{ t('instanceEdit.providerRefresh') }}
+                  </a-button>
+                  <a-button @click="openProviderValidate" :loading="providerValidating">
+                    <template #icon><icon-check-circle /></template>
+                    {{ t('instanceEdit.providerValidate') }}
+                  </a-button>
+                  <a-dropdown :disabled="presetImporting" @select="onImportPreset">
+                    <a-button :loading="presetImporting">
+                      <template #icon><icon-download /></template>
+                      {{ t('instanceEdit.providerPresetImport') }}
+                    </a-button>
+                    <template #content>
+                      <a-doption v-for="p in providerPresetOptions" :key="p.value" :value="p.value">
+                        {{ p.label }}
+                      </a-doption>
+                    </template>
+                  </a-dropdown>
+                </a-space>
+              </div>
+              <p class="mcp-path">{{ t('instanceEdit.providerScopePath', { path: providerScopePath }) }}</p>
+
+              <a-table
+                :columns="providerColumns"
+                :data="providerRoutes"
+                :loading="providerLoading"
+                :pagination="false"
+                :scroll="{ x: 1040 }"
+                row-key="name"
+                size="small"
+                class="provider-table"
+              >
+                <template #providerName="{ record }">
+                  <strong>{{ record.name }}</strong>
+                </template>
+                <template #providerBaseUrl="{ record }">
+                  <span class="provider-url">{{ record.baseURL || '-' }}</span>
+                </template>
+                <template #providerApi="{ record }">
+                  <a-tag v-if="record.api" size="small">{{ record.api }}</a-tag>
+                  <span v-else class="provider-muted">{{ t('instanceEdit.providerApiInherit') }}</span>
+                </template>
+                <template #providerModels="{ record }">
+                  <span class="provider-models">{{
+                    (record.models || []).map((m: ProviderModel) => m.id).join(', ') || '-'
+                  }}</span>
+                </template>
+                <template #providerStatus="{ record }">
+                  <a-tag v-if="credentialStatuses[record.name]" color="green" size="small">
+                    {{ t('instanceEdit.providerCredentialSet') }}
+                  </a-tag>
+                  <a-tag v-else color="orange" size="small">
+                    {{ t('instanceEdit.providerCredentialMissing') }}
+                  </a-tag>
+                </template>
+                <template #providerActions="{ record }">
+                  <a-space>
+                    <a-button size="small" @click="openProviderEdit(record)">
+                      {{ t('instanceEdit.providerEdit') }}
+                    </a-button>
+                    <a-popconfirm
+                      :content="t('instanceEdit.providerDeleteConfirm', { name: record.name })"
+                      @ok="onDeleteProvider(record)"
+                    >
+                      <a-button size="small" status="danger" :loading="providerBusy === record.name">
+                        {{ t('instances.table.delete') }}
+                      </a-button>
+                    </a-popconfirm>
+                  </a-space>
+                </template>
+                <template #empty>
+                  <a-empty :description="t('instanceEdit.providerEmpty')" />
+                </template>
+              </a-table>
+            </template>
+
+            <a-alert v-else type="info">
+              {{ t('instanceEdit.profilesNeedHome') }}
+            </a-alert>
+          </div>
+
           <!-- Storage redirection (issue #51) -->
           <div v-else-if="activeTab === 'storage'" class="dl-card edit-card">
             <h4 class="env-title">
@@ -2488,6 +3004,128 @@ const terminalRunning = ref(false)
       </a-form>
     </a-modal>
 
+    <!-- Provider route create / edit (issue #76) -->
+    <a-modal
+      v-model:visible="providerEditVisible"
+      :title="
+        providerOriginalName
+          ? t('instanceEdit.providerEditTitle', { name: providerOriginalName })
+          : t('instanceEdit.providerCreateTitle')
+      "
+      :width="640"
+      :ok-loading="providerSaving"
+      :ok-button-props="{ disabled: !!routeFormError }"
+      @ok="onSaveProvider"
+    >
+      <a-form :model="routeForm" layout="vertical">
+        <a-form-item :label="t('instanceEdit.providerPreset')">
+          <a-select
+            :placeholder="t('instanceEdit.providerPresetPick')"
+            allow-clear
+            style="width: 100%"
+            @change="(v: any) => applyPresetToForm(v as ProviderPreset)"
+          >
+            <a-option v-for="p in providerPresetOptions" :key="p.value" :value="p.value">
+              {{ p.label }}
+            </a-option>
+          </a-select>
+        </a-form-item>
+
+        <a-form-item :label="t('instanceEdit.providerColName')" required>
+          <a-input v-model="routeForm.name" placeholder="deepseek-official" />
+        </a-form-item>
+
+        <a-form-item :label="t('instanceEdit.providerDisplayName')">
+          <a-input v-model="routeForm.displayName" placeholder="DeepSeek Official" />
+        </a-form-item>
+
+        <a-form-item :label="t('instanceEdit.providerApi')">
+          <a-select
+            v-model="routeForm.api"
+            :placeholder="t('instanceEdit.providerApiInherit')"
+            allow-clear
+            style="width: 100%"
+          >
+            <a-option v-for="a in PROVIDER_APIS" :key="a" :value="a">{{ a }}</a-option>
+          </a-select>
+        </a-form-item>
+
+        <a-form-item :label="t('instanceEdit.providerColBaseUrl')">
+          <a-input v-model="routeForm.baseUrl" placeholder="https://api.deepseek.com/anthropic" />
+        </a-form-item>
+
+        <a-form-item :label="t('instanceEdit.providerModels')">
+          <div class="mcp-rows">
+            <div v-for="(row, idx) in routeForm.models" :key="idx" class="provider-model-row">
+              <a-input v-model="row.id" :placeholder="t('instanceEdit.providerModelId')" />
+              <a-input v-model="row.name" :placeholder="t('instanceEdit.providerModelName')" />
+              <a-input v-model="row.contextWindow" :placeholder="t('instanceEdit.providerModelContext')" />
+              <a-input
+                v-model="row.reasoningEfforts"
+                :placeholder="t('instanceEdit.providerModelReasoning')"
+              />
+              <a-button status="danger" type="text" @click="routeForm.models.splice(idx, 1)">
+                {{ t('instances.table.delete') }}
+              </a-button>
+            </div>
+            <a-button size="small" class="env-add-btn" @click="addRouteModelRow">
+              {{ t('instanceEdit.providerModelAdd') }}
+            </a-button>
+          </div>
+        </a-form-item>
+
+        <a-form-item :label="t('instanceEdit.providerApiKeyEnv')">
+          <a-input
+            v-model="routeForm.apiKeyEnv"
+            placeholder="DEEPSEEK_API_KEY"
+            @blur="loadRouteCredential(routeForm.apiKeyEnv)"
+          />
+        </a-form-item>
+
+        <a-form-item :label="t('instanceEdit.providerApiKeyValue')">
+          <a-input-password
+            v-model="routeForm.apiKeyValue"
+            :disabled="routeForm.credentialLocked || !routeForm.apiKeyEnv.trim()"
+            :placeholder="t('instanceEdit.providerApiKeyPlaceholder')"
+          />
+          <div v-if="routeForm.credentialHint" class="provider-cred-hint">
+            {{ routeForm.credentialHint }}
+          </div>
+        </a-form-item>
+      </a-form>
+    </a-modal>
+
+    <!-- Provider validation report (issue #76) -->
+    <a-modal
+      v-model:visible="providerValidateVisible"
+      :title="t('instanceEdit.providerValidateTitle')"
+      :width="640"
+      :footer="false"
+    >
+      <a-alert
+        v-if="validationReport?.hasBlockingErrors"
+        type="error"
+        class="provider-validate-alert"
+      >
+        {{ t('instanceEdit.providerValidateBlocking') }}
+      </a-alert>
+      <a-alert v-else type="success" class="provider-validate-alert">
+        {{ t('instanceEdit.providerValidateOk') }}
+      </a-alert>
+
+      <div v-for="r in validationReport?.routes || []" :key="r.name" class="provider-validate-row">
+        <div class="provider-validate-head">
+          <strong>{{ r.name }}</strong>
+          <a-tag :color="validationTagColor(r.status)" size="small">
+            {{ t(`instanceEdit.providerStatus_${r.status}`) }}
+          </a-tag>
+        </div>
+        <ul v-if="r.messages.length" class="provider-validate-msgs">
+          <li v-for="(m, i) in r.messages" :key="i">{{ m }}</li>
+        </ul>
+      </div>
+    </a-modal>
+
     <!-- Storage redirection target picker (issue #51) -->
     <a-modal
       :visible="linkDialogVisible"
@@ -2691,8 +3329,7 @@ const terminalRunning = ref(false)
 }
 
 .storage-caveat {
-  margin-bottom: 12px;
-}
+  margin-bottom: 12px;}
 
 .storage-target {
   word-break: break-all;
@@ -2912,5 +3549,58 @@ const terminalRunning = ref(false)
   .agents-empty {
     color: var(--color-text-3);
   }
+}
+
+.provider-actions {
+  margin-bottom: 12px;
+}
+
+.provider-url,
+.provider-models {
+  font-family: monospace;
+  font-size: 12px;
+  word-break: break-all;
+}
+
+.provider-muted {
+  font-size: 12px;
+  color: var(--color-text-3);
+}
+
+/* Model catalog editor: id / name / context window / reasoning efforts. */
+.provider-model-row {
+  display: grid;
+  grid-template-columns: 1.2fr 1.2fr 0.8fr 1.2fr auto;
+  gap: 8px;
+  align-items: center;
+  margin-bottom: 6px;
+}
+
+.provider-cred-hint {
+  margin-top: 4px;
+  font-size: 12px;
+  color: var(--color-text-3);
+}
+
+.provider-validate-alert {
+  margin-bottom: 12px;
+}
+
+.provider-validate-row {
+  padding: 8px 0;
+  border-bottom: 1px solid var(--color-border-1);
+}
+
+.provider-validate-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.provider-validate-msgs {
+  margin: 6px 0 0;
+  padding-left: 18px;
+  font-size: 12px;
+  color: var(--color-text-2);
 }
 </style>

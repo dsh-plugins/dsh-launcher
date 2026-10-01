@@ -2,6 +2,7 @@ mod applog;
 mod commands;
 mod compatibility;
 mod config;
+mod credential_manager;
 mod doctor;
 mod early_loading;
 mod icons;
@@ -11,6 +12,11 @@ mod migrate;
 mod modpack;
 mod plugins;
 mod process;
+mod provider_commands;
+mod provider_config;
+mod provider_patch;
+mod provider_presets;
+mod provider_validator;
 mod proxy;
 mod runtime;
 mod scan;
@@ -391,6 +397,17 @@ pub fn run() {
             tui::start_tui_session,
             tui::write_tui_input,
             tui::resize_tui_session,
+            provider_commands::get_provider_routes,
+            provider_commands::add_provider_route,
+            provider_commands::update_provider_route,
+            provider_commands::delete_provider_route,
+            provider_commands::list_provider_presets,
+            provider_commands::import_provider_preset,
+            provider_commands::validate_providers,
+            provider_commands::read_credential,
+            provider_commands::save_credential,
+            provider_commands::delete_credential,
+            provider_commands::list_credential_status,
         ])
         .build(context)
         .expect("error while building tauri application")

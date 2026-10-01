@@ -739,3 +739,87 @@ export interface DataDirInfo {
   /** Non-empty when the launcher fell back to the default directory. */
   notice: string | null
 }
+
+// ---------------------------------------------------------------------------
+// Provider configuration (issue #76)
+// ---------------------------------------------------------------------------
+
+/** Provider wire protocol. Mirrors Rust `provider_config::SUPPORTED_APIS`. */
+export type ProviderApi =
+  | 'anthropic-messages'
+  | 'openai-completions'
+  | 'openai-responses'
+
+/** One model entry in a route's catalog (Rust `ProviderModel`). */
+export interface ProviderModel {
+  id: string
+  name?: string | null
+  contextWindow?: number | null
+  /** Level -> wire spelling; `false` marks a non-reasoning model. */
+  reasoningEfforts?: unknown
+  /** Unrecognised keys, round-tripped untouched. */
+  [key: string]: unknown
+}
+
+/**
+ * A provider route, as written into the profile's (or home's) `cordis.patch.yml`
+ * under a `@deepseek-ai/dsh-llm-pi-ai` entry's `config.providers` dict. The dict
+ * key is the route name.
+ */
+export interface ProviderRoute {
+  name: string
+  /** Credential reference (env var name). Omitted = configured but keyless. */
+  apiKeyEnv?: string | null
+  displayName?: string | null
+  api?: ProviderApi | null
+  baseURL?: string | null
+  models: ProviderModel[]
+  /** Unrecognised keys (`compat`, `retryPolicy`, ...), round-tripped untouched. */
+  [key: string]: unknown
+}
+
+/** Built-in provider preset id (see Rust `provider_presets`). */
+export type ProviderPreset =
+  | 'deepseek-official'
+  | 'openai-compatible'
+  | 'anthropic-official'
+  | 'custom-endpoint'
+
+/** Priority layer a credential was resolved from. */
+export type CredentialLayer =
+  | 'env-override'
+  | 'credentials-yaml'
+  | 'project-dot-env'
+  | 'home-dot-env'
+
+/** A resolved credential source with the value already masked. */
+export interface CredentialSource {
+  key: string
+  /** Masked value, e.g. `sk-***f456`. */
+  value: string
+  source: CredentialLayer
+  isOverridden: boolean
+}
+
+/** Per-route credential status for the instance. */
+export interface CredentialStatus {
+  routeName: string
+  envVar: string
+  isSet: boolean
+}
+
+/** Validation status for a route. */
+export type ValidationStatus = 'ok' | 'warning' | 'error' | 'unknown'
+
+/** Validation result for a single route. */
+export interface RouteValidation {
+  name: string
+  status: ValidationStatus
+  messages: string[]
+}
+
+/** Aggregate validation report for all routes. */
+export interface ValidationReport {
+  routes: RouteValidation[]
+  hasBlockingErrors: boolean
+}

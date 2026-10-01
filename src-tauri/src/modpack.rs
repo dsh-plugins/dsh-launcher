@@ -154,6 +154,11 @@ pub struct ExportContents {
     /// pack carries no skills.
     #[serde(default)]
     pub skills: Vec<String>,
+    /// Provider configuration templates shipped under `home/provider-templates/`
+    /// (issue #76). When true, exports the profile's `cordis.patch.yml` provider
+    /// routes (credentials masked) as a reusable template.
+    #[serde(default)]
+    pub provider_templates: bool,
 }
 
 fn default_include() -> bool {
@@ -170,6 +175,7 @@ impl Default for ExportContents {
             extra_files: false,
             agents_md: false,
             skills: Vec::new(),
+            provider_templates: false,
         }
     }
 }
@@ -605,6 +611,33 @@ fn read_manifest_from_dspack(dspack: &Path) -> Result<ModpackManifest, String> {
 /// of files copied.
 fn apply_overrides(unpacked: &Path, profile: &Path) -> Result<usize, String> {
     copy_tree(&unpacked.join("overrides"), profile, None)
+}
+
+/// Merges a pack's exported provider route template (issue #76 §4.2) into the
+/// target profile's `cordis.patch.yml`. Existing routes with the same name are
+/// left untouched. Returns routes added.
+fn merge_provider_templates(template_path: &Path, patch_path: &Path) -> Result<usize, String> {
+    let template = std::fs::read_to_string(template_path)
+        .map_err(|e| format!("读取 provider 模板失败: {e}"))?;
+    let incoming = crate::provider_config::parse_templates(&template)?;
+    if incoming.is_empty() {
+        return Ok(0);
+    }
+
+    let raw = crate::provider_patch::read_patch(patch_path)?;
+    let mut routes = crate::provider_patch::parse_providers(&raw)?;
+
+    let added = crate::provider_config::merge_templates(&mut routes, incoming);
+    if added == 0 {
+        return Ok(0);
+    }
+    routes.sort_by(|a, b| a.name.cmp(&b.name));
+
+    crate::provider_patch::write_patch(
+        patch_path,
+        &crate::provider_patch::render_providers(&raw, &routes)?,
+    )?;
+    Ok(added)
 }
 
 /// Copies a directory tree over `dst` (file-level replacement). Entries
@@ -1201,6 +1234,31 @@ pub async fn export_modpack(
                 files.push((format!("home/skills/{entry}"), bytes));
             } else {
                 return Err(format!("SKILL 不存在: {entry}"));
+            }
+        }
+        // issue #76: provider templates — read the profile's provider routes out
+        // of its cordis.patch.yml, mask credentials, export as a reusable
+        // template under `home/provider-templates/routes.yaml` (pack-structure v3).
+        if contents.provider_templates {
+            match crate::provider_patch::read_patch(
+                &profile_dir.join(crate::provider_patch::PATCH_FILENAME),
+            ) {
+                Ok(raw) => match crate::provider_patch::parse_providers(&raw) {
+                    Ok(routes) if !routes.is_empty() => {
+                        match crate::provider_config::export_provider_templates(&routes) {
+                            Ok(template_yaml) => {
+                                files.push((
+                                    "home/provider-templates/routes.yaml".to_string(),
+                                    template_yaml.into_bytes(),
+                                ));
+                            }
+                            Err(e) => crate::log_warn!("导出 provider 模板失败: {e}"),
+                        }
+                    }
+                    Ok(_) => {} // No routes: nothing to export.
+                    Err(e) => crate::log_warn!("导出 provider 模板失败: {e}"),
+                },
+                Err(e) => crate::log_warn!("导出 provider 模板失败: {e}"),
             }
         }
 
@@ -2123,6 +2181,38 @@ async fn do_import_modpack(
                     &format!("已应用 home/ 的 {count} 个文件到 DSH_HOME 根目录"),
                 )
                 .await;
+            }
+
+            // issue #76 §4.2: a pack may carry provider route templates under
+            // `home/provider-templates/routes.yaml`. copy_tree drops that file
+            // onto the DSH_HOME root verbatim, but routes only take effect once
+            // merged into the target profile's cordis.patch.yml, so merge them
+            // here (append-only; the exported file carries the apiKeyEnv
+            // placeholder, not a real secret).
+            let template_path = home_dir.join("provider-templates").join("routes.yaml");
+            if template_path.is_file() {
+                let patch_path = dest.join(crate::provider_patch::PATCH_FILENAME);
+                let merged = {
+                    let (tp, pp) = (template_path.clone(), patch_path.clone());
+                    crate::wsl::run_blocking(move || merge_provider_templates(&tp, &pp)).await?
+                };
+                match merged {
+                    Ok(0) => {}
+                    Ok(n) => {
+                        crate::tasks::push_task_log_pub(
+                            app,
+                            state,
+                            task_id,
+                            &format!("已合并 {n} 条 provider 路由模板（请在实例设置中填入密钥）"),
+                        )
+                        .await;
+                    }
+                    Err(e) => {
+                        // A malformed template must not abort an otherwise good
+                        // import: log and continue with the routes unmerged.
+                        crate::log_warn!("合并 provider 模板失败: {e}");
+                    }
+                }
             }
         }
     }

@@ -55,6 +55,11 @@ import type {
   EarlyLoadingContext,
   EarlyLoadingProgress,
   LaunchStage,
+  ProviderRoute,
+  ProviderPreset,
+  CredentialSource,
+  CredentialStatus,
+  ValidationReport,
 } from './types'
 
 const isTauri = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window
@@ -1763,5 +1768,127 @@ export const api = {
     }
     taskLogListeners.add(cb)
     return () => taskLogListeners.delete(cb)
+  },
+
+  // ---------------------------------------------------------------------------
+  // Provider configuration (issue #76)
+  // ---------------------------------------------------------------------------
+
+  /** Provider routes in one scope of the instance (`profile` null = global). */
+  async getProviderRoutes(
+    instanceId: string,
+    profile: string | null
+  ): Promise<ProviderRoute[]> {
+    if (isTauri) {
+      const { invoke } = await import('@tauri-apps/api/core')
+      return invoke('get_provider_routes', { instanceId, profile })
+    }
+    return []
+  },
+
+  async addProviderRoute(
+    instanceId: string,
+    profile: string | null,
+    route: ProviderRoute
+  ): Promise<ProviderRoute[]> {
+    if (isTauri) {
+      const { invoke } = await import('@tauri-apps/api/core')
+      return invoke('add_provider_route', { instanceId, profile, route })
+    }
+    return []
+  },
+
+  async updateProviderRoute(
+    instanceId: string,
+    profile: string | null,
+    oldName: string,
+    route: ProviderRoute
+  ): Promise<ProviderRoute[]> {
+    if (isTauri) {
+      const { invoke } = await import('@tauri-apps/api/core')
+      return invoke('update_provider_route', { instanceId, profile, oldName, route })
+    }
+    return []
+  },
+
+  async deleteProviderRoute(
+    instanceId: string,
+    profile: string | null,
+    name: string
+  ): Promise<ProviderRoute[]> {
+    if (isTauri) {
+      const { invoke } = await import('@tauri-apps/api/core')
+      return invoke('delete_provider_route', { instanceId, profile, name })
+    }
+    return []
+  },
+
+  /** Built-in preset ids available for import. */
+  async listProviderPresets(): Promise<ProviderPreset[]> {
+    if (isTauri) {
+      const { invoke } = await import('@tauri-apps/api/core')
+      return invoke('list_provider_presets')
+    }
+    return []
+  },
+
+  /** Appends a preset's routes to the scope (skipping names already present). */
+  async importProviderPreset(
+    instanceId: string,
+    profile: string | null,
+    presetName: string
+  ): Promise<ProviderRoute[]> {
+    if (isTauri) {
+      const { invoke } = await import('@tauri-apps/api/core')
+      return invoke('import_provider_preset', { instanceId, profile, presetName })
+    }
+    return []
+  },
+
+  async validateProviders(
+    instanceId: string,
+    profile: string | null
+  ): Promise<ValidationReport> {
+    if (isTauri) {
+      const { invoke } = await import('@tauri-apps/api/core')
+      return invoke('validate_providers', { instanceId, profile })
+    }
+    return { routes: [], hasBlockingErrors: false }
+  },
+
+  /** Resolves a credential env var across all layers (value masked). */
+  async readCredential(instanceId: string, envVar: string): Promise<CredentialSource | null> {
+    if (isTauri) {
+      const { invoke } = await import('@tauri-apps/api/core')
+      return invoke('read_credential', { instanceId, envVar })
+    }
+    return null
+  },
+
+  /** Writes a key into `<DSH_HOME>/.credentials.yaml`. */
+  async saveCredential(instanceId: string, envVar: string, value: string): Promise<void> {
+    if (isTauri) {
+      const { invoke } = await import('@tauri-apps/api/core')
+      return invoke('save_credential', { instanceId, envVar, value })
+    }
+  },
+
+  async deleteCredential(instanceId: string, envVar: string): Promise<void> {
+    if (isTauri) {
+      const { invoke } = await import('@tauri-apps/api/core')
+      return invoke('delete_credential', { instanceId, envVar })
+    }
+  },
+
+  /** Whether each route's API key env var currently resolves. */
+  async listCredentialStatus(
+    instanceId: string,
+    profile: string | null
+  ): Promise<CredentialStatus[]> {
+    if (isTauri) {
+      const { invoke } = await import('@tauri-apps/api/core')
+      return invoke('list_credential_status', { instanceId, profile })
+    }
+    return []
   },
 }
