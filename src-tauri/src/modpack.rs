@@ -1821,17 +1821,25 @@ pub async fn start_import_modpack_task(
                 return;
             }
             match result {
-                Ok(imported) => {
+                Ok(outcome) => {
                     task.state = crate::tasks::TaskState::Done;
                     task.percent = 100;
-                    task.message = Some(format!("已导入实例 {imported}"));
+                    task.message = Some(format!(
+                        "已导入实例 {}（{}）",
+                        outcome.instance_name, outcome.instance_id
+                    ));
+                    // Carry the instance id on the task AND the Done event:
+                    // the frontend only refreshes the instance/home lists when
+                    // a finished task names its instance, so a missing id left
+                    // imported instances invisible until the next app start.
+                    task.instance_id = Some(outcome.instance_id.clone());
                     crate::tasks::emit_progress_pub(
                         &worker_app,
                         &worker_task_id,
                         crate::tasks::TaskState::Done,
                         100,
-                        Some(format!("已导入实例 {imported}")),
-                        None,
+                        task.message.clone(),
+                        Some(outcome.instance_id),
                     );
                 }
                 Err(msg) => {
@@ -1856,12 +1864,20 @@ pub async fn start_import_modpack_task(
     Ok(task_id)
 }
 
+/// Outcome of a successful import: the instance the pack landed on — fresh
+/// or, for the single-profile form, an existing one the user picked — plus
+/// its display name for the task message.
+struct ImportOutcome {
+    instance_id: String,
+    instance_name: String,
+}
+
 async fn do_import_modpack(
     app: &AppHandle,
     state: &State<'_, AppState>,
     task_id: &str,
     input: &ImportModpackInput,
-) -> Result<String, String> {
+) -> Result<ImportOutcome, String> {
     // 1. Obtain the pack locally, detect the container, and extract it.
     let (pack, guard) = fetch_modpack_source(&input.source).await?;
     let tmp = guard.0.clone();
@@ -2201,7 +2217,10 @@ async fn do_import_modpack(
         profile_name
     );
     drop(guard);
-    Ok(format!("{final_instance_name}（{instance_id}）"))
+    Ok(ImportOutcome {
+        instance_id,
+        instance_name: final_instance_name,
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -2285,7 +2304,7 @@ async fn do_import_dshhome(
     input: &ImportModpackInput,
     unpacked: &Path,
     manifest: &ModpackManifest,
-) -> Result<String, String> {
+) -> Result<ImportOutcome, String> {
     if input.existing_instance_id.is_some() {
         return Err("dshhome 形态是整个 DSH_HOME 的快照，只能导入为新实例".to_string());
     }
@@ -2460,7 +2479,10 @@ async fn do_import_dshhome(
         instance_name,
         default_profile
     );
-    Ok(format!("{instance_name}（{instance_id}）"))
+    Ok(ImportOutcome {
+        instance_id,
+        instance_name,
+    })
 }
 
 /// The body of a dshhome import, separated so the caller can roll the fresh
