@@ -25,6 +25,9 @@ pub const EARLY_LOADING_EVENT: &str = "early-loading://progress";
 /// Window-scoped compatibility report event name.
 pub const EARLY_LOADING_COMPAT_EVENT: &str = "early-loading://compatibility";
 
+/// Window-scoped provider self-check report event name.
+pub const EARLY_LOADING_PROVIDER_EVENT: &str = "early-loading://provider";
+
 /// Launch stages in display order, mirrored by the frontend's pipeline.
 pub const STAGES: [&str; 4] = ["preflight", "spawning", "waiting-ready", "opening-window"];
 
@@ -188,6 +191,30 @@ pub fn report_launch_compat(
     let report: serde_json::Value =
         serde_json::from_str(&report_json).map_err(|e| format!("无效的兼容性报告 JSON: {e}"))?;
     app.emit_to(&label, EARLY_LOADING_COMPAT_EVENT, report)
+        .map_err(|e| e.to_string())
+}
+
+/// Forwards the provider pre-launch self-check report to the early-loading
+/// window, which renders it inline (alongside the compatibility report). The
+/// check is advisory and never blocks the launch, so this is a no-op when the
+/// window is closed (launch continues).
+///
+/// The report travels as a JSON string: `provider_validator::ValidationReport`
+/// is Serialize-only and command args require Deserialize.
+#[tauri::command(rename_all = "snake_case")]
+pub fn report_launch_provider(
+    app: AppHandle,
+    instance_id: String,
+    report_json: String,
+) -> Result<(), String> {
+    let label = window_label(&instance_id);
+    if app.get_webview_window(&label).is_none() {
+        return Ok(());
+    }
+    // Validate before relaying so a malformed payload fails loudly here.
+    let report: serde_json::Value =
+        serde_json::from_str(&report_json).map_err(|e| format!("无效的供应商自检报告 JSON: {e}"))?;
+    app.emit_to(&label, EARLY_LOADING_PROVIDER_EVENT, report)
         .map_err(|e| e.to_string())
 }
 
