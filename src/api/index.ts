@@ -24,6 +24,10 @@ import type {
   McpServer,
   ModpackManifest,
   NewInstanceInput,
+  ProviderRoute,
+  ProviderRouteList,
+  CredentialRefList,
+  ProviderRouteReport,
   RepoSkillInfo,
   SkillInfo,
   SkillUpdateInfo,
@@ -84,6 +88,10 @@ interface MockDb {
   running: Record<string, InstanceStatus>
   /** MCP servers per scope key `<homeId>::<profile|__global__>`. */
   mcp: Record<string, McpServer[]>
+  /** Provider routes per key `<homeId>::<profile>` (issue #76). */
+  providers: Record<string, ProviderRoute[]>
+  /** Credential refs per homeId (full values; the mock is local-only). */
+  credentials: Record<string, Record<string, string>>
 }
 
 function seedDb(): MockDb {
@@ -145,6 +153,23 @@ function seedDb(): MockDb {
     },
     running: {},
     mcp: {},
+    providers: {
+      'h-default::web': [
+        {
+          route: 'deepseek',
+          displayName: 'DeepSeek 官方',
+          apiKeyEnv: 'DEEPSEEK_API_KEY',
+          api: '',
+          baseUrl: '',
+          models: [],
+          extra: {},
+          catalog: true,
+        },
+      ],
+    },
+    credentials: {
+      'h-default': { DEEPSEEK_API_KEY: 'sk-mock1234567890abcdef' },
+    },
   }
 }
 
@@ -167,6 +192,8 @@ function loadDb(): MockDb {
       db.settings.update_channel = db.settings.update_channel ?? 'dev'
       db.settings.update_suppressed = db.settings.update_suppressed ?? []
       db.mcp = db.mcp ?? {}
+      db.providers = db.providers ?? {}
+      db.credentials = db.credentials ?? {}
       db.homes.forEach((h) => {
         h.links = h.links ?? {}
       })
@@ -192,6 +219,17 @@ function uuid(): string {
 function mcpScopeKey(args?: Record<string, unknown>): string {
   const profile = (args?.profile as string | null | undefined) ?? '__global__'
   return `${String(args?.homeId ?? '')}::${profile}`
+}
+
+/** Mock credential list: masked values plus the env-shadow flag (issue #76). */
+function mockCredentialList(db: MockDb, homeId: string, instanceId: string): CredentialRefList {
+  const inst = db.instances.find((i) => i.id === instanceId)
+  const refs = Object.entries(db.credentials[homeId] ?? {}).map(([name, value]) => ({
+    name,
+    masked: value.length > 8 ? `${value.slice(0, 4)}…${value.slice(-4)}` : '********',
+    shadowedByEnv: !!inst && name in inst.env_overrides,
+  }))
+  return { refs, hash: '1' }
 }
 
 // Simple event emitter used by the mock to mimic Tauri events.
@@ -1007,6 +1045,87 @@ async function mockCall<T>(cmd: string, args?: Record<string, unknown>): Promise
       saveDb(db)
       return db.mcp[key] as T
     }
+    // ---- Model providers (issue #76; browser preview keeps them in the mock db) ----
+    case 'list_provider_routes': {
+      const key = `${String(args?.homeId)}::${String(args?.profile)}`
+      return { routes: db.providers[key] ?? [], hash: '1' } as T
+    }
+    case 'save_provider_route': {
+      const key = `${String(args?.homeId)}::${String(args?.profile)}`
+      const list = [...(db.providers[key] ?? [])]
+      const route = { ...(args?.route as ProviderRoute) }
+      const original = String(args?.originalRoute ?? '')
+      const index = original ? list.findIndex((r) => r.route === original) : -1
+      if (original && index < 0) return fail(`找不到要编辑的路由「${original}」`)
+      if (index >= 0) list[index] = route
+      else list.push(route)
+      db.providers[key] = list
+      saveDb(db)
+      return { routes: list, hash: String(Date.now()) } as T
+    }
+    case 'delete_provider_route': {
+      const key = `${String(args?.homeId)}::${String(args?.profile)}`
+      db.providers[key] = (db.providers[key] ?? []).filter((r) => r.route !== String(args?.route))
+      saveDb(db)
+      return { routes: db.providers[key], hash: String(Date.now()) } as T
+    }
+    case 'list_credential_refs':
+      return mockCredentialList(db, String(args?.homeId), String(args?.instanceId)) as T
+    case 'set_credential_ref': {
+      const homeId = String(args?.homeId)
+      const name = String(args?.name ?? '')
+      const inst = db.instances.find((i) => i.id === String(args?.instanceId))
+      if (inst && name in inst.env_overrides) {
+        return fail(`「${name}」已由实例环境变量提供（启动环境变量优先于凭据库），此处为只读`)
+      }
+      db.credentials[homeId] = { ...(db.credentials[homeId] ?? {}), [name]: String(args?.value ?? '') }
+      saveDb(db)
+      return mockCredentialList(db, homeId, String(args?.instanceId)) as T
+    }
+    case 'delete_credential_ref': {
+      const homeId = String(args?.homeId)
+      const name = String(args?.name ?? '')
+      const inst = db.instances.find((i) => i.id === String(args?.instanceId))
+      if (inst && name in inst.env_overrides) {
+        return fail(`「${name}」已由实例环境变量提供（启动环境变量优先于凭据库），此处为只读`)
+      }
+      if (db.credentials[homeId]) {
+        delete db.credentials[homeId][name]
+        saveDb(db)
+      }
+      return mockCredentialList(db, homeId, String(args?.instanceId)) as T
+    }
+    case 'check_provider_routes': {
+      const key = `${String(args?.homeId)}::${String(args?.profile)}`
+      const routes = db.providers[key] ?? []
+      const creds = db.credentials[String(args?.homeId)] ?? {}
+      const inst = db.instances.find((i) => i.id === String(args?.instanceId))
+      const reports: ProviderRouteReport[] = routes.map((r) => {
+        const checks: ProviderRouteReport['checks'] = []
+        if (!r.apiKeyEnv) checks.push({ code: 'noApiKeyEnv', status: 'warn', params: {} })
+        else if (inst && r.apiKeyEnv in inst.env_overrides) {
+          checks.push({ code: 'credentialFromEnv', status: 'ok', params: { name: r.apiKeyEnv } })
+        } else if (r.apiKeyEnv in creds) {
+          checks.push({ code: 'credentialFromStore', status: 'ok', params: { name: r.apiKeyEnv } })
+        } else {
+          checks.push({ code: 'credentialMissing', status: 'warn', params: { name: r.apiKeyEnv } })
+        }
+        if (r.catalog) checks.push({ code: 'catalogInherit', status: 'ok', params: {} })
+        else {
+          checks.push(r.baseUrl ? { code: 'baseUrlOk', status: 'ok', params: {} } : { code: 'missingBaseUrl', status: 'warn', params: {} })
+          checks.push(r.api ? { code: 'apiDeclared', status: 'ok', params: { api: r.api } } : { code: 'missingApi', status: 'warn', params: {} })
+          checks.push(
+            r.models.length
+              ? { code: 'modelsDeclared', status: 'ok', params: { count: String(r.models.length) } }
+              : { code: 'modelsMissing', status: 'unknown', params: {} },
+          )
+        }
+        const rank = (s: string) => (s === 'warn' ? 2 : s === 'unknown' ? 1 : 0)
+        const status = checks.reduce((acc, c) => (rank(c.status) > rank(acc) ? c.status : acc), 'ok')
+        return { route: r.route, status, checks }
+      })
+      return reports as T
+    }
     case 'read_modpack_manifest':
       return {
         manifestVersion: 4,
@@ -1553,6 +1672,45 @@ export const api = {
   /** Deletes one MCP server row; resolves to the scope's remaining servers. */
   deleteMcpServer: (homeId: string, profile: string | null, id: string) =>
     call<McpServer[]>('delete_mcp_server', { homeId, profile, id }),
+
+  /**
+   * Model provider routes of one profile (issue #76): the `providers` dict of
+   * the `@deepseek-ai/dsh-llm-pi-ai` entry in the profile's cordis.patch.yml.
+   * The returned hash must be passed back to every write (stale = refused).
+   */
+  listProviderRoutes: (homeId: string, profile: string) =>
+    call<ProviderRouteList>('list_provider_routes', { homeId, profile }),
+  /**
+   * Creates or updates one provider route; `originalRoute` names the route
+   * being edited (null when adding). Validation failures reject before any
+   * write; resolves to the routes as re-read from the written file.
+   */
+  saveProviderRoute: (
+    homeId: string,
+    profile: string,
+    route: ProviderRoute,
+    originalRoute: string | null,
+    expectedHash: string,
+  ) =>
+    call<ProviderRouteList>('save_provider_route', { homeId, profile, route, originalRoute, expectedHash }),
+  /** Deletes one provider route; other patch entries are untouched. */
+  deleteProviderRoute: (homeId: string, profile: string, route: string, expectedHash: string) =>
+    call<ProviderRouteList>('delete_provider_route', { homeId, profile, route, expectedHash }),
+  /** Credential-store refs of one DSH_HOME, masked; env-shadowed refs are flagged. */
+  listCredentialRefs: (homeId: string, instanceId: string) =>
+    call<CredentialRefList>('list_credential_refs', { homeId, instanceId }),
+  /**
+   * Writes one credential ref (`.credentials.yaml` refs). Refused when the
+   * instance's launch environment already provides the name (read-only).
+   */
+  setCredentialRef: (homeId: string, instanceId: string, name: string, value: string, expectedHash: string) =>
+    call<CredentialRefList>('set_credential_ref', { homeId, instanceId, name, value, expectedHash }),
+  /** Deletes one credential ref; the same shadowing rule applies. */
+  deleteCredentialRef: (homeId: string, instanceId: string, name: string, expectedHash: string) =>
+    call<CredentialRefList>('delete_credential_ref', { homeId, instanceId, name, expectedHash }),
+  /** Pre-launch readiness of every provider route (advisory, never blocks). */
+  checkProviderRoutes: (homeId: string, instanceId: string, profile: string) =>
+    call<ProviderRouteReport[]>('check_provider_routes', { homeId, instanceId, profile }),
   exportModpack: (input: ExportModpackInput) => call<string>('export_modpack', { input }),
   /** Multi-profile (manifest v5 dshhome) export. */
   exportDshhomeModpack: (input: ExportDshhomeInput) =>

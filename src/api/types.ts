@@ -456,6 +456,72 @@ export interface McpServer {
   extra: Record<string, unknown>
 }
 
+// ---------------------------------------------------------------------------
+// Model providers (issue #76: `@deepseek-ai/dsh-llm-pi-ai` config.providers)
+// ---------------------------------------------------------------------------
+
+/** One model entry of a route's `models` list. */
+export interface ProviderModel {
+  id: string
+  name: string
+  contextWindow?: number | null
+  maxTokens?: number | null
+  /** Request modalities, e.g. ['text', 'image']. */
+  input: string[]
+}
+
+/** One editable provider route: the dict key plus the managed profile fields. */
+export interface ProviderRoute {
+  /** Dict key in `providers` — the route name. */
+  route: string
+  displayName: string
+  apiKeyEnv: string
+  api: string
+  baseUrl: string
+  models: ProviderModel[]
+  /** Profile keys the form does not surface (reasoning, headers), preserved. */
+  extra: Record<string, unknown>
+  /** Whether the route names a pi-ai built-in catalog provider. */
+  catalog: boolean
+}
+
+/** The routes of one profile plus the hash guard writes must pass back. */
+export interface ProviderRouteList {
+  routes: ProviderRoute[]
+  /** sha256 of the patch file at read time. */
+  hash: string
+}
+
+/** One credential-store ref, masked for display. */
+export interface CredentialRefInfo {
+  name: string
+  /** Masked value (`sk-a…wxyz`); the full value never leaves the backend. */
+  masked: string
+  /** The instance's env_overrides already provides this name (read-only). */
+  shadowedByEnv: boolean
+}
+
+/** Credential refs of one DSH_HOME plus the hash guard. */
+export interface CredentialRefList {
+  refs: CredentialRefInfo[]
+  hash: string
+}
+
+/** One readiness check of a route, translated by the frontend via `code`. */
+export interface ProviderCheckItem {
+  code: string
+  /** 'ok' | 'warn' | 'unknown'. */
+  status: string
+  params: Record<string, string>
+}
+
+/** The readiness report of one route: the worst status of its checks. */
+export interface ProviderRouteReport {
+  route: string
+  status: string
+  checks: ProviderCheckItem[]
+}
+
 export interface NewInstanceInput {
   name: string
   version_id: string

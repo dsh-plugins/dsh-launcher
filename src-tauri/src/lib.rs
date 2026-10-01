@@ -11,6 +11,7 @@ mod migrate;
 mod modpack;
 mod plugins;
 mod process;
+mod providers;
 mod proxy;
 mod runtime;
 mod scan;
@@ -365,6 +366,13 @@ pub fn run() {
             mcp::list_mcp_servers,
             mcp::save_mcp_server,
             mcp::delete_mcp_server,
+            providers::list_provider_routes,
+            providers::save_provider_route,
+            providers::delete_provider_route,
+            providers::list_credential_refs,
+            providers::set_credential_ref,
+            providers::delete_credential_ref,
+            providers::check_provider_routes,
             commands::get_settings,
             commands::update_settings,
             commands::fetch_news,

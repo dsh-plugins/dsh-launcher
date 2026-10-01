@@ -10,6 +10,7 @@ import { latestRequest } from '@/utils/latest-request'
 import { renderMarkdown } from '@/utils/markdown'
 import { useLauncherStore } from '@/stores/launcher'
 import type {
+  CredentialRefInfo,
   DshInstance,
   HomeLinkInfo,
   HomeLinkSuggestion,
@@ -18,6 +19,8 @@ import type {
   McpServer,
   McpTransport,
   PluginUpdateInfo,
+  ProviderRoute,
+  ProviderRouteReport,
   SkillInfo,
   SkillUpdateInfo,
 } from '@/api/types'
@@ -50,7 +53,7 @@ const homeOptions = computed(() =>
 
 // --- Sidebar tabs ---------------------------------------------------------------
 
-type TabKey = 'basic' | 'env' | 'profiles' | 'plugins' | 'skills' | 'agents' | 'mcp' | 'storage' | 'terminal'
+type TabKey = 'basic' | 'env' | 'profiles' | 'plugins' | 'skills' | 'agents' | 'mcp' | 'providers' | 'storage' | 'terminal'
 const activeTab = ref<TabKey>('basic')
 
 // --- Form state ---------------------------------------------------------------
@@ -1013,6 +1016,440 @@ async function onDeleteMcpServer(server: McpServer) {
   }
 }
 
+// --- Model providers (issue #76) -----------------------------------------------
+
+/** pi-ai built-in catalog routes (mirrors CATALOG_ROUTES in providers.rs):
+ *  naming one inherits its endpoint, protocol and model catalog. */
+const PROVIDER_CATALOG_ROUTES = [
+  'amazon-bedrock', 'ant-ling', 'anthropic', 'azure-openai-responses', 'baseten',
+  'cerebras', 'cloudflare-ai-gateway', 'cloudflare-workers-ai', 'deepseek',
+  'fireworks', 'github-copilot', 'google', 'google-vertex', 'groq', 'huggingface',
+  'kimi-coding', 'minimax', 'minimax-cn', 'mistral', 'moonshotai', 'moonshotai-cn',
+  'nvidia', 'openai', 'openai-codex', 'opencode', 'opencode-go', 'openrouter',
+  'qwen-token-plan', 'qwen-token-plan-cn', 'qwen-token-plan-individual', 'radius',
+  'together', 'vercel-ai-gateway', 'xai', 'xiaomi', 'xiaomi-token-plan-ams',
+  'xiaomi-token-plan-cn', 'xiaomi-token-plan-sgp', 'zai', 'zai-coding-cn',
+]
+
+/** Protocols pi-ai ships adapters for (free input is allowed beyond these). */
+const PROVIDER_API_OPTIONS = [
+  'openai-responses',
+  'openai-completions',
+  'anthropic-messages',
+  'azure-openai-responses',
+  'google-generative-ai',
+]
+
+interface ProviderPreset {
+  key: string
+  /** Catalog presets name the built-in route; customs only prefill fields. */
+  catalog: boolean
+  api: string
+  baseUrl: string
+  apiKeyEnv: string
+}
+
+const PROVIDER_PRESETS: ProviderPreset[] = [
+  { key: 'deepseek', catalog: true, api: '', baseUrl: '', apiKeyEnv: 'DEEPSEEK_API_KEY' },
+  { key: 'openai', catalog: true, api: '', baseUrl: '', apiKeyEnv: 'OPENAI_API_KEY' },
+  { key: 'anthropic', catalog: true, api: '', baseUrl: '', apiKeyEnv: 'ANTHROPIC_API_KEY' },
+  { key: 'kimi-coding', catalog: true, api: '', baseUrl: '', apiKeyEnv: 'KIMI_API_KEY' },
+  { key: 'moonshotai', catalog: true, api: '', baseUrl: '', apiKeyEnv: 'MOONSHOT_API_KEY' },
+  { key: 'zai', catalog: true, api: '', baseUrl: '', apiKeyEnv: 'ZAI_API_KEY' },
+  { key: 'openrouter', catalog: true, api: '', baseUrl: '', apiKeyEnv: 'OPENROUTER_API_KEY' },
+  { key: 'custom-openai', catalog: false, api: 'openai-responses', baseUrl: '', apiKeyEnv: '' },
+  { key: 'custom-anthropic', catalog: false, api: 'anthropic-messages', baseUrl: '', apiKeyEnv: '' },
+]
+
+const providerProfile = ref<string | undefined>(undefined)
+const providerRoutes = ref<ProviderRoute[]>([])
+const providerHash = ref('')
+const providerLoading = ref(false)
+const providerBusy = ref('')
+const providerEditVisible = ref(false)
+const providerSaving = ref(false)
+/** Route key being edited; '' while adding a new route. */
+const providerOriginalRoute = ref('')
+
+/** Editable projection of one model row (numbers as text inputs). */
+interface ProviderModelRow {
+  id: string
+  name: string
+  contextWindow: string
+  maxTokens: string
+  vision: boolean
+}
+
+interface ProviderFormState {
+  preset: string
+  route: string
+  displayName: string
+  apiKeyEnv: string
+  api: string
+  baseUrl: string
+  models: ProviderModelRow[]
+  /** Profile keys the form does not surface; sent back untouched. */
+  extra: Record<string, unknown>
+}
+
+function emptyProviderForm(): ProviderFormState {
+  return {
+    preset: 'deepseek',
+    route: '',
+    displayName: '',
+    apiKeyEnv: '',
+    api: '',
+    baseUrl: '',
+    models: [],
+    extra: {},
+  }
+}
+
+const providerForm = ref<ProviderFormState>(emptyProviderForm())
+
+const credentialRefs = ref<CredentialRefInfo[]>([])
+const credentialHash = ref('')
+const credentialLoading = ref(false)
+const credentialBusy = ref('')
+const credentialEditVisible = ref(false)
+const credentialSaving = ref(false)
+const credentialEditing = ref('')
+const credentialForm = ref({ name: '', value: '' })
+
+const providerReports = ref<ProviderRouteReport[] | null>(null)
+const providerChecking = ref(false)
+
+/** The patch file a route save writes to, shown under the profile selector. */
+const providerScopePath = computed(() => {
+  const home = store.homes.find((h) => h.id === homeId.value)
+  if (!home || !providerProfile.value) return ''
+  const sep = home.path.includes('\\') ? '\\' : '/'
+  return [home.path, 'profiles', providerProfile.value, 'cordis.patch.yml'].join(sep)
+})
+
+const providerColumns = computed(() => [
+  { title: t('instanceEdit.providerColRoute'), slotName: 'providerRoute', width: 220 },
+  { title: t('instanceEdit.providerColCredential'), slotName: 'providerCredential', width: 200 },
+  { title: t('instanceEdit.providerColEndpoint'), slotName: 'providerEndpoint', ellipsis: true, tooltip: true },
+  { title: t('instanceEdit.providerColModels'), slotName: 'providerModels', width: 90 },
+  { title: t('instances.table.actions'), slotName: 'providerActions', width: 150, align: 'center' as const, fixed: 'right' as const },
+])
+
+const credentialColumns = computed(() => [
+  { title: t('instanceEdit.credentialColName'), dataIndex: 'name', width: 240 },
+  { title: t('instanceEdit.credentialColValue'), dataIndex: 'masked', width: 200 },
+  { title: t('instanceEdit.credentialColStatus'), slotName: 'credentialStatus', width: 190 },
+  { title: t('instances.table.actions'), slotName: 'credentialActions', width: 170, align: 'center' as const, fixed: 'right' as const },
+])
+
+async function loadProviderRoutes() {
+  providerRoutes.value = []
+  providerReports.value = null
+  if (!homeId.value || homeId.value === DEDICATED || !providerProfile.value) return
+  providerLoading.value = true
+  try {
+    const list = await api.listProviderRoutes(homeId.value, providerProfile.value)
+    providerRoutes.value = list.routes
+    providerHash.value = list.hash
+  } catch (e) {
+    Message.error(String(e))
+  } finally {
+    providerLoading.value = false
+  }
+}
+
+async function loadCredentialRefs() {
+  credentialRefs.value = []
+  if (!homeId.value || homeId.value === DEDICATED || !editingId.value) return
+  credentialLoading.value = true
+  try {
+    const list = await api.listCredentialRefs(homeId.value, editingId.value)
+    credentialRefs.value = list.refs
+    credentialHash.value = list.hash
+  } catch (e) {
+    Message.error(String(e))
+  } finally {
+    credentialLoading.value = false
+  }
+}
+
+watch(providerProfile, async () => {
+  if (activeTab.value === 'providers') await loadProviderRoutes()
+})
+
+/** Whether the form's route names a built-in catalog provider. */
+const providerFormCatalog = computed(() => PROVIDER_CATALOG_ROUTES.includes(providerForm.value.route.trim()))
+
+function onProviderPresetChange(value: unknown) {
+  const preset = PROVIDER_PRESETS.find((p) => p.key === String(value))
+  if (!preset) return
+  providerForm.value.api = preset.api
+  providerForm.value.baseUrl = preset.baseUrl
+  providerForm.value.apiKeyEnv = preset.apiKeyEnv
+  if (preset.catalog) {
+    providerForm.value.route = preset.key
+    if (!providerForm.value.displayName) providerForm.value.displayName = preset.key
+  }
+}
+
+// --- Provider validation (mirrors src-tauri/src/providers.rs; a failure never saves) ---
+
+const PROVIDER_ROUTE_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/
+
+const providerRouteError = computed(() => {
+  const route = providerForm.value.route.trim()
+  if (!route) return t('instanceEdit.providerErrRouteRequired')
+  if (!PROVIDER_ROUTE_RE.test(route)) return t('instanceEdit.providerErrRoutePattern')
+  const clash = providerRoutes.value.some(
+    (r) => r.route === route && r.route !== providerOriginalRoute.value,
+  )
+  return clash ? t('instanceEdit.providerErrRouteDuplicated') : ''
+})
+
+const providerEnvError = computed(() => {
+  const key = providerForm.value.apiKeyEnv.trim()
+  if (!key) return ''
+  return ENV_KEY_RE.test(key) ? '' : t('instanceEdit.providerErrEnvKey')
+})
+
+const providerBaseUrlError = computed(() => {
+  const url = providerForm.value.baseUrl.trim()
+  if (!url) {
+    return providerFormCatalog.value ? '' : t('instanceEdit.providerErrBaseUrlRequired')
+  }
+  return isHttpUrl(url) ? '' : t('instanceEdit.providerErrBaseUrlInvalid')
+})
+
+const providerApiError = computed(() => {
+  if (providerFormCatalog.value) return ''
+  return providerForm.value.api.trim() ? '' : t('instanceEdit.providerErrApiRequired')
+})
+
+function providerModelIdError(idx: number): string {
+  const rows = providerForm.value.models
+  const id = rows[idx].id.trim()
+  if (!id) return t('instanceEdit.providerErrModelIdRequired')
+  return rows.findIndex((r) => r.id.trim() === id) < idx
+    ? t('instanceEdit.providerErrModelIdDuplicated')
+    : ''
+}
+
+const providerFormValid = computed(
+  () =>
+    !providerRouteError.value &&
+    !providerEnvError.value &&
+    !providerBaseUrlError.value &&
+    !providerApiError.value &&
+    providerForm.value.models.every((_, idx) => !providerModelIdError(idx)),
+)
+
+/** Names listed in the dialog's preserved-config notice. */
+const providerExtraKeys = computed(() => Object.keys(providerForm.value.extra ?? {}))
+
+function openProviderCreate() {
+  providerOriginalRoute.value = ''
+  providerForm.value = emptyProviderForm()
+  onProviderPresetChange('deepseek')
+  providerEditVisible.value = true
+}
+
+function openProviderEdit(route: ProviderRoute) {
+  providerOriginalRoute.value = route.route
+  providerForm.value = {
+    preset: '',
+    route: route.route,
+    displayName: route.displayName,
+    apiKeyEnv: route.apiKeyEnv,
+    api: route.api,
+    baseUrl: route.baseUrl,
+    models: route.models.map((m) => ({
+      id: m.id,
+      name: m.name,
+      contextWindow: m.contextWindow ? String(m.contextWindow) : '',
+      maxTokens: m.maxTokens ? String(m.maxTokens) : '',
+      vision: m.input.includes('image'),
+    })),
+    extra: { ...(route.extra ?? {}) },
+  }
+  providerEditVisible.value = true
+}
+
+function addProviderModelRow() {
+  providerForm.value.models.push({ id: '', name: '', contextWindow: '', maxTokens: '', vision: false })
+}
+
+function providerPayload(form: ProviderFormState): ProviderRoute {
+  const num = (v: string) => {
+    const n = Number(v.trim())
+    return v.trim() && Number.isFinite(n) && n > 0 ? Math.floor(n) : null
+  }
+  return {
+    route: form.route.trim(),
+    displayName: form.displayName.trim(),
+    apiKeyEnv: form.apiKeyEnv.trim(),
+    api: form.api.trim(),
+    baseUrl: form.baseUrl.trim(),
+    models: form.models
+      .filter((m) => m.id.trim())
+      .map((m) => ({
+        id: m.id.trim(),
+        name: m.name.trim(),
+        contextWindow: num(m.contextWindow),
+        maxTokens: num(m.maxTokens),
+        input: m.vision ? ['text', 'image'] : ['text'],
+      })),
+    extra: form.extra,
+    catalog: PROVIDER_CATALOG_ROUTES.includes(form.route.trim()),
+  }
+}
+
+/** External-modification refusals ask for a reload; refresh and tell the user. */
+async function onProviderWriteError(e: unknown) {
+  const msg = String(e)
+  if (msg.includes('已被外部修改')) {
+    Message.error(t('instanceEdit.providerCheckReload'))
+    await loadProviderRoutes()
+    await loadCredentialRefs()
+  } else {
+    Message.error(msg)
+  }
+}
+
+async function onSaveProviderRoute() {
+  if (!homeId.value || !providerProfile.value) return
+  if (!providerFormValid.value) {
+    Message.warning(t('instanceEdit.providerErrForm'))
+    return
+  }
+  const route = providerPayload(providerForm.value)
+  providerSaving.value = true
+  try {
+    const list = await api.saveProviderRoute(
+      homeId.value,
+      providerProfile.value,
+      route,
+      providerOriginalRoute.value || null,
+      providerHash.value,
+    )
+    providerRoutes.value = list.routes
+    providerHash.value = list.hash
+    providerEditVisible.value = false
+    Message.success(t('instanceEdit.providerSaved', { name: route.route }))
+  } catch (e) {
+    await onProviderWriteError(e)
+  } finally {
+    providerSaving.value = false
+  }
+}
+
+async function onDeleteProviderRoute(route: ProviderRoute) {
+  if (!homeId.value || !providerProfile.value) return
+  providerBusy.value = route.route
+  try {
+    const list = await api.deleteProviderRoute(
+      homeId.value,
+      providerProfile.value,
+      route.route,
+      providerHash.value,
+    )
+    providerRoutes.value = list.routes
+    providerHash.value = list.hash
+    Message.success(t('instanceEdit.providerDeleted', { name: route.route }))
+  } catch (e) {
+    await onProviderWriteError(e)
+  } finally {
+    providerBusy.value = ''
+  }
+}
+
+// --- Credential refs ------------------------------------------------------------
+
+const credentialNameError = computed(() => {
+  const name = credentialForm.value.name.trim()
+  if (!name) return t('instanceEdit.credentialErrNameRequired')
+  return ENV_KEY_RE.test(name) ? '' : t('instanceEdit.credentialErrNamePattern')
+})
+
+const credentialValueError = computed(() =>
+  credentialForm.value.value.trim() ? '' : t('instanceEdit.credentialErrValueRequired'),
+)
+
+const credentialFormValid = computed(() => !credentialNameError.value && !credentialValueError.value)
+
+function openCredentialCreate() {
+  credentialEditing.value = ''
+  credentialForm.value = { name: '', value: '' }
+  credentialEditVisible.value = true
+}
+
+function openCredentialUpdate(ref: CredentialRefInfo) {
+  credentialEditing.value = ref.name
+  credentialForm.value = { name: ref.name, value: '' }
+  credentialEditVisible.value = true
+}
+
+async function onSaveCredentialRef() {
+  if (!homeId.value || !editingId.value || !credentialFormValid.value) return
+  credentialSaving.value = true
+  try {
+    const list = await api.setCredentialRef(
+      homeId.value,
+      editingId.value,
+      credentialForm.value.name.trim(),
+      credentialForm.value.value.trim(),
+      credentialHash.value,
+    )
+    credentialRefs.value = list.refs
+    credentialHash.value = list.hash
+    credentialEditVisible.value = false
+    Message.success(t('instanceEdit.credentialSaved', { name: credentialForm.value.name.trim() }))
+  } catch (e) {
+    await onProviderWriteError(e)
+  } finally {
+    credentialSaving.value = false
+  }
+}
+
+async function onDeleteCredentialRef(ref: CredentialRefInfo) {
+  if (!homeId.value || !editingId.value) return
+  credentialBusy.value = ref.name
+  try {
+    const list = await api.deleteCredentialRef(homeId.value, editingId.value, ref.name, credentialHash.value)
+    credentialRefs.value = list.refs
+    credentialHash.value = list.hash
+    Message.success(t('instanceEdit.credentialDeleted', { name: ref.name }))
+  } catch (e) {
+    await onProviderWriteError(e)
+  } finally {
+    credentialBusy.value = ''
+  }
+}
+
+// --- Pre-launch readiness check ---------------------------------------------------
+
+async function runProviderCheck() {
+  if (!homeId.value || !editingId.value || !providerProfile.value) return
+  providerChecking.value = true
+  try {
+    providerReports.value = await api.checkProviderRoutes(homeId.value, editingId.value, providerProfile.value)
+  } catch (e) {
+    Message.error(String(e))
+  } finally {
+    providerChecking.value = false
+  }
+}
+
+function providerCheckColor(status: string): 'info' | 'warning' | 'success' {
+  switch (status) {
+    case 'warn':
+      return 'warning'
+    case 'unknown':
+      return 'info'
+    default:
+      return 'success'
+  }
+}
+
 // --- Launch shortcut (issue #9) -----------------------------------------------
 
 /** Writes a dsh-launcher://launch .url shortcut for this instance + profile. */
@@ -1382,6 +1819,24 @@ watch(activeTab, async (tab) => {
     await loadMcpServers()
     return
   }
+  if (tab === 'providers') {
+    // Providers are per-profile: the scope defaults to the instance's default
+    // profile (where the DSH settings UI writes too). Changing the profile
+    // loads through the providerProfile watcher, so do not load twice here.
+    if (
+      !providerProfile.value &&
+      defaultProfile.value &&
+      profiles.value.includes(defaultProfile.value)
+    ) {
+      providerProfile.value = defaultProfile.value
+    } else if (!providerProfile.value && profiles.value.length > 0) {
+      providerProfile.value = profiles.value[0]
+    } else {
+      await loadProviderRoutes()
+    }
+    await loadCredentialRefs()
+    return
+  }
   if (tab === 'storage') {
     await loadHomeLinks()
     return
@@ -1585,6 +2040,7 @@ const terminalRunning = ref(false)
         <a-menu-item key="skills">{{ t('instanceEdit.tabs.skills') }}</a-menu-item>
         <a-menu-item key="agents">{{ t('instanceEdit.tabs.agents') }}</a-menu-item>
         <a-menu-item key="mcp">{{ t('instanceEdit.tabs.mcp') }}</a-menu-item>
+        <a-menu-item key="providers">{{ t('instanceEdit.tabs.providers') }}</a-menu-item>
         <a-menu-item key="storage">{{ t('instanceEdit.tabs.storage') }}</a-menu-item>
         <a-menu-item key="terminal">{{ t('instanceEdit.tabs.terminal') }}</a-menu-item>
       </a-menu>
@@ -2243,6 +2699,166 @@ const terminalRunning = ref(false)
             </a-alert>
           </div>
 
+          <!-- Model providers (issue #76) -->
+          <div v-else-if="activeTab === 'providers'" class="dl-card edit-card">
+            <h4 class="env-title">
+              {{ t('instanceEdit.tabs.providers') }}
+              <HintIcon :content="t('instanceEdit.providerDesc')" />
+            </h4>
+
+            <template v-if="homeId && homeId !== DEDICATED">
+              <div class="mcp-toolbar">
+                <a-select v-model="providerProfile" style="width: 300px">
+                  <a-option v-for="p in profiles" :key="p" :value="p">
+                    {{ t('instanceEdit.mcpScopeProfile') }} · {{ p }}
+                  </a-option>
+                </a-select>
+                <a-button type="primary" @click="openProviderCreate">
+                  {{ t('instanceEdit.providerAdd') }}
+                </a-button>
+                <a-button :loading="providerChecking" @click="runProviderCheck">
+                  {{ t('instanceEdit.providerCheck') }}
+                </a-button>
+                <a-button type="text" :loading="providerLoading" @click="loadProviderRoutes">
+                  ⟳
+                </a-button>
+              </div>
+              <p class="mcp-path">{{ t('instanceEdit.providerScopePath', { path: providerScopePath }) }}</p>
+
+              <a-table
+                :columns="providerColumns"
+                :data="providerRoutes"
+                :loading="providerLoading"
+                :pagination="false"
+                :scroll="{ x: 900 }"
+                row-key="route"
+                size="small"
+              >
+                <template #providerRoute="{ record }">
+                  <span class="provider-route">
+                    <strong>{{ record.route }}</strong>
+                    <span v-if="record.displayName && record.displayName !== record.route" class="provider-display">
+                      {{ record.displayName }}
+                    </span>
+                    <a-tag v-if="record.catalog" size="small" color="arcoblue">
+                      {{ t('instanceEdit.providerCatalogTag') }}
+                    </a-tag>
+                  </span>
+                </template>
+                <template #providerCredential="{ record }">
+                  <code v-if="record.apiKeyEnv">{{ record.apiKeyEnv }}</code>
+                  <span v-else class="provider-none">{{ t('instanceEdit.providerNoCredential') }}</span>
+                </template>
+                <template #providerEndpoint="{ record }">
+                  <span v-if="record.baseUrl" class="provider-endpoint">{{ record.baseUrl }}</span>
+                  <span v-else class="provider-none">{{ t('instanceEdit.providerCatalogInherit') }}</span>
+                </template>
+                <template #providerModels="{ record }">
+                  {{ t('instanceEdit.providerModelsCount', { count: record.models.length }) }}
+                </template>
+                <template #providerActions="{ record }">
+                  <a-space>
+                    <a-button size="small" :disabled="providerBusy === record.route" @click="openProviderEdit(record)">
+                      {{ t('instanceEdit.providerEdit') }}
+                    </a-button>
+                    <a-popconfirm
+                      :content="t('instanceEdit.providerDeleteConfirm', { name: record.route })"
+                      @ok="onDeleteProviderRoute(record)"
+                    >
+                      <a-button size="small" status="danger" :loading="providerBusy === record.route">
+                        {{ t('instances.table.delete') }}
+                      </a-button>
+                    </a-popconfirm>
+                  </a-space>
+                </template>
+                <template #empty>
+                  <a-empty :description="t('instanceEdit.providerEmpty')" />
+                </template>
+              </a-table>
+
+              <!-- Pre-launch readiness report -->
+              <div v-if="providerReports" class="provider-reports">
+                <a-empty v-if="providerReports.length === 0" :description="t('instanceEdit.providerCheckEmpty')" />
+                <a-alert
+                  v-for="report in providerReports"
+                  :key="report.route"
+                  :type="providerCheckColor(report.status)"
+                  class="provider-report"
+                >
+                  <template #title>
+                    {{ report.route }} · {{ t(`instanceEdit.providerCheckStatus${report.status === 'warn' ? 'Warn' : report.status === 'unknown' ? 'Unknown' : 'Ok'}`) }}
+                  </template>
+                  <ul class="provider-check-list">
+                    <li v-for="(check, idx) in report.checks" :key="idx">
+                      {{ te(`instanceEdit.providerChecks.${check.code}`) ? t(`instanceEdit.providerChecks.${check.code}`, check.params) : check.code }}
+                    </li>
+                  </ul>
+                </a-alert>
+              </div>
+
+              <!-- Credential store -->
+              <h4 class="env-title provider-credential-title">
+                {{ t('instanceEdit.credentialTitle') }}
+                <HintIcon :content="t('instanceEdit.credentialDesc')" />
+              </h4>
+              <div class="mcp-toolbar">
+                <a-button type="primary" outline @click="openCredentialCreate">
+                  {{ t('instanceEdit.credentialAdd') }}
+                </a-button>
+                <a-button type="text" :loading="credentialLoading" @click="loadCredentialRefs">
+                  ⟳
+                </a-button>
+              </div>
+              <a-table
+                :columns="credentialColumns"
+                :data="credentialRefs"
+                :loading="credentialLoading"
+                :pagination="false"
+                :scroll="{ x: 800 }"
+                row-key="name"
+                size="small"
+              >
+                <template #credentialStatus="{ record }">
+                  <a-tooltip v-if="record.shadowedByEnv" :content="t('instanceEdit.credentialShadowedHint')">
+                    <a-tag size="small" color="orange">{{ t('instanceEdit.credentialShadowed') }}</a-tag>
+                  </a-tooltip>
+                  <span v-else>-</span>
+                </template>
+                <template #credentialActions="{ record }">
+                  <a-space>
+                    <a-button
+                      size="small"
+                      :disabled="record.shadowedByEnv || credentialBusy === record.name"
+                      @click="openCredentialUpdate(record)"
+                    >
+                      {{ t('instanceEdit.credentialUpdate') }}
+                    </a-button>
+                    <a-popconfirm
+                      :content="t('instanceEdit.credentialDeleteConfirm', { name: record.name })"
+                      @ok="onDeleteCredentialRef(record)"
+                    >
+                      <a-button
+                        size="small"
+                        status="danger"
+                        :disabled="record.shadowedByEnv"
+                        :loading="credentialBusy === record.name"
+                      >
+                        {{ t('instances.table.delete') }}
+                      </a-button>
+                    </a-popconfirm>
+                  </a-space>
+                </template>
+                <template #empty>
+                  <a-empty :description="t('instanceEdit.credentialEmpty')" />
+                </template>
+              </a-table>
+            </template>
+
+            <a-alert v-else type="info">
+              {{ t('instanceEdit.profilesNeedHome') }}
+            </a-alert>
+          </div>
+
           <!-- Storage redirection (issue #51) -->
           <div v-else-if="activeTab === 'storage'" class="dl-card edit-card">
             <h4 class="env-title">
@@ -2488,6 +3104,142 @@ const terminalRunning = ref(false)
       </a-form>
     </a-modal>
 
+    <!-- Provider route create / edit (issue #76) -->
+    <a-modal
+      v-model:visible="providerEditVisible"
+      :title="
+        providerOriginalRoute
+          ? t('instanceEdit.providerEditTitle', { name: providerOriginalRoute })
+          : t('instanceEdit.providerCreateTitle')
+      "
+      :width="720"
+      :ok-loading="providerSaving"
+      :ok-button-props="{ disabled: !providerFormValid }"
+      @ok="onSaveProviderRoute"
+    >
+      <a-form :model="providerForm" layout="vertical">
+        <a-form-item v-if="!providerOriginalRoute" :label="t('instanceEdit.providerPreset')">
+          <a-select v-model="providerForm.preset" @change="onProviderPresetChange">
+            <a-option v-for="preset in PROVIDER_PRESETS" :key="preset.key" :value="preset.key">
+              {{
+                preset.key === 'custom-openai'
+                  ? t('instanceEdit.providerPresetCustom')
+                  : preset.key === 'custom-anthropic'
+                    ? t('instanceEdit.providerPresetCustomAnthropic')
+                    : preset.key
+              }}
+            </a-option>
+          </a-select>
+        </a-form-item>
+
+        <a-form-item
+          :label="t('instanceEdit.providerRouteName')"
+          required
+          :validate-status="providerRouteError ? 'error' : undefined"
+          :help="providerRouteError || t('instanceEdit.providerRouteNameHint')"
+        >
+          <a-input v-model="providerForm.route" placeholder="my-gateway" />
+        </a-form-item>
+
+        <a-form-item :label="t('instanceEdit.providerDisplayName')">
+          <a-input v-model="providerForm.displayName" />
+        </a-form-item>
+
+        <a-form-item
+          :label="t('instanceEdit.providerApiKeyEnv')"
+          :validate-status="providerEnvError ? 'error' : undefined"
+          :help="providerEnvError || t('instanceEdit.providerApiKeyEnvHint')"
+        >
+          <a-select v-model="providerForm.apiKeyEnv" allow-create allow-clear :options="credentialRefs.map((r) => r.name)" />
+        </a-form-item>
+
+        <a-form-item
+          :label="t('instanceEdit.providerApi')"
+          :required="!providerFormCatalog"
+          :validate-status="providerApiError ? 'error' : undefined"
+          :help="providerApiError || t('instanceEdit.providerApiCustomRequired')"
+        >
+          <a-select v-model="providerForm.api" allow-create allow-clear :options="PROVIDER_API_OPTIONS" />
+        </a-form-item>
+
+        <a-form-item
+          :label="t('instanceEdit.providerBaseUrl')"
+          :required="!providerFormCatalog"
+          :validate-status="providerBaseUrlError ? 'error' : undefined"
+          :help="providerBaseUrlError || t('instanceEdit.providerBaseUrlCustomRequired')"
+        >
+          <a-input v-model="providerForm.baseUrl" placeholder="https://gateway.example.com/v1" />
+        </a-form-item>
+
+        <a-form-item :label="t('instanceEdit.providerModels')">
+          <div class="mcp-rows">
+            <div v-for="(row, idx) in providerForm.models" :key="idx" class="provider-model-row">
+              <a-input
+                v-model="row.id"
+                :placeholder="t('instanceEdit.providerModelId')"
+                :status="providerModelIdError(idx) ? 'error' : undefined"
+                class="provider-model-id"
+              />
+              <a-input v-model="row.name" :placeholder="t('instanceEdit.providerModelName')" class="provider-model-name" />
+              <a-input
+                v-model="row.contextWindow"
+                :placeholder="t('instanceEdit.providerModelContext')"
+                class="provider-model-num"
+              />
+              <a-input
+                v-model="row.maxTokens"
+                :placeholder="t('instanceEdit.providerModelMaxTokens')"
+                class="provider-model-num"
+              />
+              <a-checkbox v-model="row.vision">{{ t('instanceEdit.providerModelVision') }}</a-checkbox>
+              <a-button size="mini" type="text" status="danger" @click="providerForm.models.splice(idx, 1)">
+                ✕
+              </a-button>
+            </div>
+            <a-button size="small" @click="addProviderModelRow">
+              {{ t('instanceEdit.providerModelAdd') }}
+            </a-button>
+          </div>
+        </a-form-item>
+
+        <a-alert v-if="providerExtraKeys.length" type="info">
+          {{ t('instanceEdit.providerExtraKept', { keys: providerExtraKeys.join(', ') }) }}
+        </a-alert>
+      </a-form>
+    </a-modal>
+
+    <!-- Credential ref create / update (issue #76) -->
+    <a-modal
+      v-model:visible="credentialEditVisible"
+      :title="
+        credentialEditing
+          ? t('instanceEdit.credentialUpdateTitle', { name: credentialEditing })
+          : t('instanceEdit.credentialCreateTitle')
+      "
+      :ok-loading="credentialSaving"
+      :ok-button-props="{ disabled: !credentialFormValid }"
+      @ok="onSaveCredentialRef"
+    >
+      <a-form :model="credentialForm" layout="vertical">
+        <a-form-item
+          :label="t('instanceEdit.credentialName')"
+          required
+          :validate-status="credentialNameError ? 'error' : undefined"
+          :help="credentialNameError || undefined"
+        >
+          <a-input v-model="credentialForm.name" :disabled="!!credentialEditing" placeholder="DEEPSEEK_API_KEY" />
+        </a-form-item>
+        <a-form-item
+          :label="t('instanceEdit.credentialValue')"
+          required
+          :validate-status="credentialValueError ? 'error' : undefined"
+          :help="credentialValueError || undefined"
+        >
+          <a-input-password v-model="credentialForm.value" :placeholder="t('instanceEdit.credentialValuePlaceholder')" />
+        </a-form-item>
+      </a-form>
+    </a-modal>
+
     <!-- Storage redirection target picker (issue #51) -->
     <a-modal
       :visible="linkDialogVisible"
@@ -2588,6 +3340,62 @@ const terminalRunning = ref(false)
 
 .mcp-rows {
   width: 100%;
+}
+
+.provider-route {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.provider-display {
+  color: var(--color-text-2);
+  font-size: 12px;
+}
+
+.provider-endpoint {
+  font-family: monospace;
+  font-size: 13px;
+}
+
+.provider-none {
+  color: var(--color-text-3);
+}
+
+.provider-reports {
+  margin-top: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.provider-check-list {
+  margin: 4px 0 0;
+  padding-left: 18px;
+}
+
+.provider-credential-title {
+  margin-top: 20px;
+}
+
+.provider-model-row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  margin-bottom: 8px;
+}
+
+.provider-model-id {
+  flex: 2;
+}
+
+.provider-model-name {
+  flex: 2;
+}
+
+.provider-model-num {
+  flex: 1;
+  min-width: 90px;
 }
 
 .switch-label {
