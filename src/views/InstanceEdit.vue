@@ -830,6 +830,9 @@ const MCP_NAME_RE = /^[A-Za-z0-9_-]{1,32}$/
 const HEADER_KEY_RE = /^[A-Za-z0-9!#$%&'*+.^_`|~-]+$/
 
 function isHttpUrl(value: string): boolean {
+  // Mirrors the backend rule: whitespace/control chars anywhere are invalid —
+  // the URL parser would silently percent-encode them instead of failing.
+  if (/[\s\x00-\x1f]/.test(value)) return false
   try {
     const url = new URL(value)
     return (url.protocol === 'http:' || url.protocol === 'https:') && !!url.hostname
@@ -1217,6 +1220,15 @@ const providerEnvName = computed(() => {
   return routeToEnvName(providerForm.value.route)
 })
 
+/** API key help text: a new instance has no home yet, so the key field is
+ *  disabled there (a pasted key would have nowhere to be stored). */
+const providerApiKeyHint = computed(() => {
+  if (isNew.value) return t('instanceEdit.providerApiKeyNewInstanceHint')
+  return providerOriginalRoute.value
+    ? t('instanceEdit.providerApiKeyEditHint')
+    : t('instanceEdit.providerApiKeyHint')
+})
+
 // --- Provider validation (mirrors src-tauri/src/providers.rs; a failure never saves) ---
 
 /** New route ids: lowercase start, only [a-z0-9_], no trailing underscore. */
@@ -1332,7 +1344,9 @@ function providerPayload(form: ProviderFormState, apiKeyEnv: string): ProviderRo
 /** External-modification refusals ask for a reload; refresh and tell the user. */
 async function onProviderWriteError(e: unknown) {
   const msg = String(e)
-  if (msg.includes('已被外部修改')) {
+  // STALE_HASH is the backend's stable prefix for the expected-hash guard;
+  // the Chinese substring is kept as a fallback for older backends.
+  if (msg.includes('STALE_HASH') || msg.includes('已被外部修改')) {
     Message.error(t('instanceEdit.providerCheckReload'))
     await loadProviderRoutes()
     await loadCredentialRefs()
@@ -1353,7 +1367,10 @@ async function onSaveProviderRoute() {
   try {
     // A pasted API key is stored first under the derived credential ref; a
     // shadowed name (provided by the instance's env overrides) aborts the
-    // whole save, so the route never points at a dead ref.
+    // whole save, so the route never points at a dead ref. The trade-off of
+    // this order: if the route save then fails (e.g. stale hash), the written
+    // credential stays as an orphan — harmless, visible in the credential
+    // table below, and deleted there explicitly.
     if (providerForm.value.apiKey.trim() && editingId.value) {
       const creds = await api.setCredentialRef(
         homeId.value,
@@ -3195,15 +3212,12 @@ const terminalRunning = ref(false)
 
         <a-form-item
           :label="t('instanceEdit.providerApiKey')"
-          :help="
-            providerOriginalRoute
-              ? t('instanceEdit.providerApiKeyEditHint')
-              : t('instanceEdit.providerApiKeyHint')
-          "
+          :help="providerApiKeyHint"
         >
           <a-input-password
             v-model="providerForm.apiKey"
             :placeholder="t('instanceEdit.credentialValuePlaceholder')"
+            :disabled="isNew"
           />
         </a-form-item>
 

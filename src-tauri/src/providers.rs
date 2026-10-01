@@ -240,8 +240,11 @@ fn ensure_unchanged(raw: &str, expected_hash: &str) -> Result<(), String> {
         return Ok(());
     }
     if sha256_hex(raw) != expected_hash {
+        // The STALE_HASH prefix lets the frontend branch on a stable code
+        // instead of matching this human-readable message.
         return Err(
-            "配置文件已被外部修改（可能是运行中的实例或设置界面），请重新加载后再保存".to_string(),
+            "STALE_HASH: 配置文件已被外部修改（可能是运行中的实例或设置界面），请重新加载后再保存"
+                .to_string(),
         );
     }
     Ok(())
@@ -447,6 +450,22 @@ fn is_http_url_valid(url: &str) -> bool {
     !authority.is_empty()
 }
 
+/// Advisory loopback check for the insecure-endpoint warning: only a
+/// literal loopback host (`localhost` or a 127/8 IPv4 address) exempts
+/// `http://`. A lookalike such as `http://127.evil.com` does not parse as
+/// an IPv4 address and stays insecure.
+fn is_loopback_http(url: &str) -> bool {
+    let Some(rest) = url.strip_prefix("http://") else {
+        return false;
+    };
+    let host = rest.split(['/', ':', '?', '#']).next().unwrap_or_default();
+    host == "localhost"
+        || host
+            .parse::<std::net::Ipv4Addr>()
+            .map(|ip| ip.is_loopback())
+            .unwrap_or(false)
+}
+
 /// Validates one route against the other routes of the same profile.
 /// `original` names the route being edited: an unchanged key keeps its
 /// legacy form (the DSH settings UI writes kebab-case keys, which new
@@ -576,9 +595,13 @@ fn find_pi_ai_entry(lines: &[&str]) -> Option<EntrySpan> {
 
 /// The `providers:` mapping of an entry: its line, indent, the end of the
 /// mapping (exclusive) and each route sub-block's `[start, end)` span.
+/// `route_indent` is the indent the existing route keys actually use
+/// (hand-written files may go deeper than serde_yaml's +2); new blocks must
+/// be rendered with it or the document ends up with mixed indents.
 struct ProvidersSpan {
     line: usize,
     indent: usize,
+    route_indent: usize,
     map_end: usize,
     routes: Vec<(String, usize, usize)>,
 }
@@ -606,7 +629,10 @@ fn find_providers_span(lines: &[&str], entry: &EntrySpan) -> Option<ProvidersSpa
         indent_of(lines[config_idx]) + if config_idx == entry.start { 2 } else { 0 };
     for j in (config_idx + 1)..entry.end {
         let l = &lines[j];
-        if l.trim().is_empty() {
+        let trimmed = l.trim_start();
+        // Blank and comment lines neither end the config mapping nor count
+        // as its children (comments are free-floating in YAML).
+        if trimmed.is_empty() || trimmed.starts_with('#') {
             continue;
         }
         let indent = indent_of(l);
@@ -614,7 +640,10 @@ fn find_providers_span(lines: &[&str], entry: &EntrySpan) -> Option<ProvidersSpa
             break; // left the config mapping without finding providers
         }
         let key = l.trim();
-        if indent > config_indent && (key == "providers:" || key.starts_with("providers: ")) {
+        // Only a direct child of config counts: a `providers:` key nested
+        // deeper (e.g. inside a hand-written sub-mapping) must not be
+        // hijacked as the route table.
+        if indent == config_indent + 2 && (key == "providers:" || key.starts_with("providers: ")) {
             // Inline value (`providers: {}`) is treated as an empty mapping.
             let mut routes = Vec::new();
             let mut map_end = entry.end;
@@ -622,7 +651,10 @@ fn find_providers_span(lines: &[&str], entry: &EntrySpan) -> Option<ProvidersSpa
             let mut k = j + 1;
             while k < entry.end {
                 let l2 = &lines[k];
-                if l2.trim().is_empty() {
+                let t2 = l2.trim_start();
+                // Comments do not terminate a mapping in YAML and are never
+                // route keys — skip them like blank lines.
+                if t2.is_empty() || t2.starts_with('#') {
                     k += 1;
                     continue;
                 }
@@ -642,6 +674,18 @@ fn find_providers_span(lines: &[&str], entry: &EntrySpan) -> Option<ProvidersSpa
                         let l3 = &lines[m];
                         if l3.trim().is_empty() {
                             m += 1;
+                            continue;
+                        }
+                        if l3.trim_start().starts_with('#') {
+                            // A comment deeper than the route key stays with
+                            // the block; one at route indent or less floats
+                            // between routes and belongs to neither.
+                            if indent_of(l3) > ri {
+                                m += 1;
+                                end = m;
+                            } else {
+                                m += 1;
+                            }
                             continue;
                         }
                         if indent_of(l3) <= ri {
@@ -666,6 +710,7 @@ fn find_providers_span(lines: &[&str], entry: &EntrySpan) -> Option<ProvidersSpa
             return Some(ProvidersSpan {
                 line: j,
                 indent,
+                route_indent: route_indent.unwrap_or(indent + 2),
                 map_end,
                 routes,
             });
@@ -777,6 +822,26 @@ fn render_route_block(route: &ProviderRoute, indent: usize) -> Result<String, St
     Ok(out)
 }
 
+/// Guards against splicing block children below a non-empty inline flow
+/// value (e.g. `providers: {old: {...}}`): rewriting the key to its bare
+/// block form would silently drop the inline entries. An empty inline map
+/// (`key: {}`, the collapsed state of a just-emptied mapping) is fine — the
+/// caller rewrites the key line before inserting.
+fn ensure_no_inline_entries(line: &str, key: &str) -> Result<(), String> {
+    // The key line may be the entry's own `- ` line (e.g. `- config: {}`).
+    let t = line.trim().trim_start_matches("- ").trim_start();
+    if t == format!("{key}:") {
+        return Ok(());
+    }
+    let value = t[key.len() + 1..].trim();
+    if value == "{}" {
+        return Ok(());
+    }
+    Err(format!(
+        "「{key}」为包含既有条目的内联 flow 形式，为避免数据丢失请先手工展开为块形式后再保存"
+    ))
+}
+
 /// Inserts `route`'s block into the raw patch text, replacing the block of
 /// `replaces` when that route already exists. Everything outside the spliced
 /// region is preserved byte-for-byte.
@@ -808,7 +873,10 @@ pub fn splice_route(
 
     match find_providers_span(&lines, &entry) {
         Some(span) => {
-            let block = render_route_block(route, span.indent + 2)?;
+            // Render with the indent the existing route keys actually use,
+            // or a hand-written deeper-indented file gets mixed-indent
+            // children appended (invalid YAML).
+            let block = render_route_block(route, span.route_indent)?;
             let target = replaces.unwrap_or(&route.route);
             let mut out_lines: Vec<String> = lines.iter().map(|s| s.to_string()).collect();
             if let Some((_, start, end)) = span.routes.iter().find(|(name, _, _)| name == target) {
@@ -825,9 +893,10 @@ pub fn splice_route(
                     .split('\n')
                     .map(String::from)
                     .collect();
-                // An inline value (`providers: {}`, the collapsed state of a
-                // just-emptied mapping) cannot have children appended below
-                // it — rewrite the key to its bare block form first.
+                // An inline value cannot have children appended below it:
+                // collapse an empty one (`providers: {}`) to the bare block
+                // form first, refuse a non-empty flow value.
+                ensure_no_inline_entries(&out_lines[span.line], "providers")?;
                 if out_lines[span.line].trim() != "providers:" {
                     let pad = " ".repeat(span.indent);
                     out_lines[span.line] = format!("{pad}providers:");
@@ -838,7 +907,7 @@ pub fn splice_route(
                 out_lines = new_lines;
             }
             let mut out = out_lines.join("\n");
-            if raw.ends_with('\n') || !out.is_empty() {
+            if raw.ends_with('\n') {
                 out.push('\n');
             }
             Ok(out)
@@ -851,6 +920,17 @@ pub fn splice_route(
             let pad4 = " ".repeat(entry.indent + 4);
             let insert_at = match find_config_line(&lines, &entry) {
                 Some(config_idx) => {
+                    // Same inline-flow rule as `providers:` above: collapse
+                    // `config: {}` to the bare block form, refuse non-empty.
+                    // The key may sit on the entry's own `- ` line; the
+                    // rewrite must keep that list marker.
+                    ensure_no_inline_entries(&out_lines[config_idx], "config")?;
+                    let t = out_lines[config_idx].trim().to_string();
+                    if t != "config:" && t != "- config:" {
+                        let pad = " ".repeat(indent_of(&out_lines[config_idx]));
+                        let dash = if t.starts_with("- ") { "- " } else { "" };
+                        out_lines[config_idx] = format!("{pad}{dash}config:");
+                    }
                     out_lines.insert(config_idx + 1, format!("{pad4}providers:"));
                     config_idx + 2
                 }
@@ -870,7 +950,7 @@ pub fn splice_route(
                 out_lines.insert(insert_at + i, l.clone());
             }
             let mut out = out_lines.join("\n");
-            if raw.ends_with('\n') || !out.is_empty() {
+            if raw.ends_with('\n') {
                 out.push('\n');
             }
             Ok(out)
@@ -905,7 +985,7 @@ pub fn splice_route_removal(raw: &str, route: &str) -> Result<String, String> {
         out_lines = new_lines;
     }
     let mut out = out_lines.join("\n");
-    if raw.ends_with('\n') || !out.is_empty() {
+    if raw.ends_with('\n') {
         out.push('\n');
     }
     Ok(out)
@@ -940,7 +1020,8 @@ fn parse_credential_refs(raw: &str) -> Result<Vec<(String, String)>, String> {
 fn mask_secret(value: &str) -> String {
     let chars: Vec<char> = value.chars().collect();
     if chars.len() <= 8 {
-        return "*".repeat(chars.len().max(4));
+        // A fixed-width mask so the length of a short secret stays secret.
+        return "*".repeat(8);
     }
     let head: String = chars[..4].iter().collect();
     let tail: String = chars[chars.len() - 4..].iter().collect();
@@ -977,7 +1058,10 @@ fn find_refs_span(lines: &[&str]) -> Option<RefsSpan> {
         let mut entries = Vec::new();
         let mut map_end = lines.len();
         for (j, l) in lines.iter().enumerate().skip(i + 1) {
-            if l.trim().is_empty() {
+            let trimmed = l.trim_start();
+            // Comments do not terminate a mapping in YAML — skip them like
+            // blank lines instead of breaking or recording phantom entries.
+            if trimmed.is_empty() || trimmed.starts_with('#') {
                 continue;
             }
             if indent_of(l) == 0 {
@@ -1013,28 +1097,32 @@ pub fn splice_credential_ref(raw: &str, name: &str, value: &str) -> Result<Strin
             if let Some((_, idx)) = span.entries.iter().find(|(n, _)| n == name) {
                 out_lines[*idx] = entry_line;
             } else {
-                // An inline value (`refs: {}`, the collapsed state of a
-                // just-emptied map) cannot have entries appended below it —
-                // rewrite the key to its bare block form first.
+                // An inline value cannot have entries appended below it:
+                // collapse an empty one (`refs: {}`) to the bare block form
+                // first, refuse a non-empty flow value.
+                ensure_no_inline_entries(&out_lines[span.line], "refs")?;
                 if out_lines[span.line].trim() != "refs:" {
                     out_lines[span.line] = "refs:".to_string();
                 }
                 out_lines.insert(span.map_end, entry_line);
             }
             let mut out = out_lines.join("\n");
-            if raw.ends_with('\n') || !out.is_empty() {
+            if raw.ends_with('\n') {
                 out.push('\n');
             }
             Ok(out)
         }
         None => {
+            let had_trailing_newline = raw.ends_with('\n');
             let mut out = raw.trim_end_matches('\n').to_string();
             if !out.is_empty() {
                 out.push('\n');
             }
             out.push_str("refs:\n");
             out.push_str(&entry_line);
-            out.push('\n');
+            if had_trailing_newline {
+                out.push('\n');
+            }
             Ok(out)
         }
     }
@@ -1057,7 +1145,7 @@ pub fn splice_credential_ref_removal(raw: &str, name: &str) -> Result<String, St
         out_lines.remove(*idx);
     }
     let mut out = out_lines.join("\n");
-    if raw.ends_with('\n') || !out.is_empty() {
+    if raw.ends_with('\n') {
         out.push('\n');
     }
     Ok(out)
@@ -1137,10 +1225,13 @@ pub fn save_provider_route(
         }
         _ => splice_route(&raw, &next, original)?,
     };
+    // Refuse to persist a document that no longer parses — defense in depth
+    // for the line-based splice engine against exotic hand-written shapes.
+    let reparsed = parse_provider_routes(&text)?;
     write_text(&path, &text)?;
     crate::log_info!("已保存模型供应商路由「{}」: {}", next.route, path.display());
     Ok(ProviderRouteList {
-        routes: parse_provider_routes(&text)?,
+        routes: reparsed,
         hash: sha256_hex(&text),
     })
 }
@@ -1159,10 +1250,12 @@ pub fn delete_provider_route(
     let raw = read_text(&path)?;
     ensure_unchanged(&raw, &expected_hash)?;
     let text = splice_route_removal(&raw, &route)?;
+    // Refuse to persist a document that no longer parses.
+    let reparsed = parse_provider_routes(&text)?;
     write_text(&path, &text)?;
     crate::log_info!("已删除模型供应商路由 {route}: {}", path.display());
     Ok(ProviderRouteList {
-        routes: parse_provider_routes(&text)?,
+        routes: reparsed,
         hash: sha256_hex(&text),
     })
 }
@@ -1235,6 +1328,8 @@ pub fn set_credential_ref(
     } else {
         splice_credential_ref(&raw, &name, &value)?
     };
+    // Refuse to persist a document that no longer parses.
+    parse_credential_refs(&text)?;
     write_text(&path, &text)?;
     crate::log_info!("已写入凭据引用 {name}: {}", path.display());
     list_credential_refs(state, home_id, instance_id)
@@ -1260,6 +1355,8 @@ pub fn delete_credential_ref(
     let raw = read_text(&path)?;
     ensure_unchanged(&raw, &expected_hash)?;
     let text = splice_credential_ref_removal(&raw, &name)?;
+    // Refuse to persist a document that no longer parses.
+    parse_credential_refs(&text)?;
     write_text(&path, &text)?;
     crate::log_info!("已删除凭据引用 {name}: {}", path.display());
     list_credential_refs(state, home_id, instance_id)
@@ -1373,10 +1470,7 @@ pub fn check_provider_routes(
                 checks.push(check_item("missingBaseUrl", "warn", &[]));
             } else if !is_http_url_valid(&route.base_url) {
                 checks.push(check_item("invalidBaseUrl", "warn", &[]));
-            } else if route.base_url.starts_with("http://")
-                && !route.base_url.starts_with("http://127.")
-                && !route.base_url.starts_with("http://localhost")
-            {
+            } else if route.base_url.starts_with("http://") && !is_loopback_http(&route.base_url) {
                 checks.push(check_item("insecureBaseUrl", "warn", &[]));
             } else {
                 checks.push(check_item("baseUrlOk", "ok", &[]));
@@ -1673,7 +1767,9 @@ refs:
         assert!(masked.starts_with("sk-e"));
         assert!(masked.ends_with("d842"));
         assert!(!masked.contains("cc3d238a"));
-        assert_eq!(mask_secret("short"), "*****");
+        // Short secrets get a fixed-width mask so their length stays secret.
+        assert_eq!(mask_secret("short"), "********");
+        assert_eq!(mask_secret("12345678"), "********");
     }
 
     #[test]
@@ -1755,6 +1851,159 @@ refs:
         let hash = sha256_hex(raw);
         ensure_unchanged(raw, &hash).unwrap();
         ensure_unchanged(raw, "").unwrap(); // empty = guard skipped
-        assert!(ensure_unchanged("tampered", &hash).is_err());
+        let err = ensure_unchanged("tampered", &hash).unwrap_err();
+        assert!(err.starts_with("STALE_HASH:"));
+    }
+
+    #[test]
+    fn comments_inside_providers_mapping_do_not_break_splices() {
+        // Hand-written comments are free-floating in YAML: they neither end
+        // the mapping nor count as route keys. A comment at the providers-key
+        // indent used to truncate the span scan, silently dropping every
+        // route below it from replace/delete decisions.
+        let raw = r#"- id: llm-pi-ai
+  name: '@deepseek-ai/dsh-llm-pi-ai'
+  config:
+    providers:
+      deepseek:
+        apiKeyEnv: DEEPSEEK_API_KEY
+    # section break
+      openai:
+        apiKeyEnv: OPENAI_API_KEY
+"#;
+        // Deleting the first route must keep the comment and the route
+        // below it (previously the last-route collapse destroyed both).
+        let text = splice_route_removal(raw, "deepseek").unwrap();
+        assert!(text.contains("# section break"));
+        let routes = parse_provider_routes(&text).unwrap();
+        assert_eq!(routes.len(), 1);
+        assert_eq!(routes[0].route, "openai");
+        // Replacing the route below the comment must not duplicate it.
+        let mut edited = parse_provider_routes(raw).unwrap()[1].clone();
+        edited.display_name = "Edited".to_string();
+        let text = splice_route(raw, &edited, Some("openai")).unwrap();
+        let routes = parse_provider_routes(&text).unwrap();
+        assert_eq!(routes.len(), 2);
+        assert_eq!(routes[1].display_name, "Edited");
+        assert!(text.contains("# section break"));
+    }
+
+    #[test]
+    fn comments_inside_refs_map_do_not_duplicate_entries() {
+        // A comment at column 0 inside the refs map used to end the span
+        // scan: editing a ref below the comment then took the append branch
+        // and wrote a duplicate key.
+        let raw = "version: 1\nrefs:\n  A_KEY: aaa111\n# note\n  B_KEY: bbb222\n";
+        let text = splice_credential_ref(raw, "B_KEY", "ccc333").unwrap();
+        let refs = parse_credential_refs(&text).unwrap();
+        assert_eq!(refs.len(), 2);
+        assert_eq!(refs[1], ("B_KEY".to_string(), "ccc333".to_string()));
+        assert!(text.contains("# note"));
+    }
+
+    #[test]
+    fn hand_written_deep_indent_keeps_new_block_aligned() {
+        // Routes indented deeper than serde_yaml's +2 must get new siblings
+        // at their own indent, or the file ends up with mixed indents.
+        let raw = r#"- id: llm-pi-ai
+  name: '@deepseek-ai/dsh-llm-pi-ai'
+  config:
+    providers:
+        deepseek:
+            apiKeyEnv: DEEPSEEK_API_KEY
+"#;
+        let text = splice_route(raw, &custom_route("added"), None).unwrap();
+        assert!(text.contains("        added:"));
+        let routes = parse_provider_routes(&text).unwrap();
+        assert_eq!(routes.len(), 2);
+        assert_eq!(routes[1].route, "added");
+        // Replacing the deep-indented route keeps the indent too.
+        let mut edited = parse_provider_routes(raw).unwrap()[0].clone();
+        edited.display_name = "Edited".to_string();
+        let text = splice_route(raw, &edited, Some("deepseek")).unwrap();
+        let routes = parse_provider_routes(&text).unwrap();
+        assert_eq!(routes.len(), 1);
+        assert_eq!(routes[0].display_name, "Edited");
+    }
+
+    #[test]
+    fn inline_empty_config_expands_before_inserting_providers() {
+        // `config: {}` cannot take block children: the key line collapses to
+        // its bare form first.
+        let raw = "- id: llm-pi-ai\n  name: '@deepseek-ai/dsh-llm-pi-ai'\n  config: {}\n";
+        let text = splice_route(raw, &custom_route("added"), None).unwrap();
+        assert!(!text.contains("config: {}"));
+        let routes = parse_provider_routes(&text).unwrap();
+        assert_eq!(routes.len(), 1);
+        assert_eq!(routes[0].route, "added");
+    }
+
+    #[test]
+    fn non_empty_inline_flow_is_refused_not_dropped() {
+        // `refs: {A: x}` rewritten to a bare key would silently drop A.
+        let raw = "version: 1\nrefs: {A_KEY: aaa111}\n";
+        let err = splice_credential_ref(raw, "B_KEY", "bbb222").unwrap_err();
+        assert!(err.contains("内联 flow"));
+        // Same guard for the providers key.
+        let raw = "- id: llm-pi-ai\n  name: '@deepseek-ai/dsh-llm-pi-ai'\n  config:\n    providers: {deepseek: {apiKeyEnv: K}}\n";
+        let err = splice_route(raw, &custom_route("added"), None).unwrap_err();
+        assert!(err.contains("内联 flow"));
+        // And for a non-empty inline config.
+        let raw = "- id: llm-pi-ai\n  name: '@deepseek-ai/dsh-llm-pi-ai'\n  config: {other: 1}\n";
+        let err = splice_route(raw, &custom_route("added"), None).unwrap_err();
+        assert!(err.contains("内联 flow"));
+    }
+
+    #[test]
+    fn dash_line_inline_config_expands_and_keeps_list_marker() {
+        // The config key may sit on the entry's own `- ` line; collapsing
+        // `- config: {}` must keep the list marker or the entry breaks.
+        let raw = "- config: {}\n  id: llm-pi-ai\n  name: '@deepseek-ai/dsh-llm-pi-ai'\n";
+        let text = splice_route(raw, &custom_route("added"), None).unwrap();
+        assert!(text.contains("- config:"));
+        let routes = parse_provider_routes(&text).unwrap();
+        assert_eq!(routes.len(), 1);
+        assert_eq!(routes[0].route, "added");
+        // A non-empty inline flow on the dash line is still refused.
+        let raw = "- config: {other: 1}\n  id: llm-pi-ai\n  name: '@deepseek-ai/dsh-llm-pi-ai'\n";
+        let err = splice_route(raw, &custom_route("added"), None).unwrap_err();
+        assert!(err.contains("内联 flow"));
+    }
+
+    #[test]
+    fn nested_providers_key_is_not_hijacked() {
+        // A `providers:` key deeper than a direct config child belongs to
+        // some other sub-mapping; the route table must be created fresh.
+        let raw = r#"- id: llm-pi-ai
+  name: '@deepseek-ai/dsh-llm-pi-ai'
+  config:
+    experimental:
+      providers:
+        fake: {}
+"#;
+        let text = splice_route(raw, &custom_route("added"), None).unwrap();
+        assert!(text.contains("experimental:"));
+        assert!(text.contains("fake: {}"));
+        let routes = parse_provider_routes(&text).unwrap();
+        assert_eq!(routes.len(), 1);
+        assert_eq!(routes[0].route, "added");
+    }
+
+    #[test]
+    fn missing_trailing_newline_stays_missing() {
+        let raw = "version: 1\nrefs:\n  A_KEY: aaa111";
+        let text = splice_credential_ref(raw, "B_KEY", "bbb222").unwrap();
+        assert!(!text.ends_with('\n'));
+        let text = splice_credential_ref_removal(raw, "A_KEY").unwrap();
+        assert!(!text.ends_with('\n'));
+    }
+
+    #[test]
+    fn loopback_http_detection_requires_a_real_loopback_host() {
+        assert!(is_loopback_http("http://localhost:3000/v1"));
+        assert!(is_loopback_http("http://127.0.0.1:8080"));
+        assert!(!is_loopback_http("http://127.evil.com"));
+        assert!(!is_loopback_http("http://192.168.1.10"));
+        assert!(!is_loopback_http("https://localhost"));
     }
 }

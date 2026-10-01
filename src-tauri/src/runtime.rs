@@ -316,7 +316,10 @@ fn extract_node_archive(archive: &Path, node_dir: &Path) -> Result<(), String> {
                 #[cfg(unix)]
                 if let Some(rel) = tar_rel(&clean) {
                     use std::os::unix::fs::PermissionsExt;
+                    // A zero header mode would render the file inaccessible
+                    // (0000); fall back to the default instead of honoring it.
                     let mode = entry.header().mode().unwrap_or(0o644) & 0o777;
+                    let mode = if mode == 0 { 0o644 } else { mode };
                     let target = node_dir.join(rel);
                     std::fs::set_permissions(&target, std::fs::Permissions::from_mode(mode))
                         .map_err(|e| format!("设置文件权限失败 {}: {e}", target.display()))?;
@@ -388,8 +391,12 @@ fn extract_node_archive(archive: &Path, node_dir: &Path) -> Result<(), String> {
                         std::fs::create_dir_all(parent)
                             .map_err(|e| format!("创建目录失败: {e}"))?;
                     }
-                    std::fs::hard_link(&src, &target)
-                        .map_err(|e| format!("创建硬链接失败 {}: {e}", target.display()))?;
+                    // A missing or not-yet-extracted hard-link target must not
+                    // abort the whole install (the pre-#73 code skipped hard
+                    // links entirely); node dists only ever use symlinks.
+                    if let Err(e) = std::fs::hard_link(&src, &target) {
+                        crate::log_warn!("跳过失败的硬链接 {}: {e}", target.display());
+                    }
                 }
             }
         }
