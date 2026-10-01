@@ -391,6 +391,8 @@
     "close": "关闭",
     "cancel": "取消启动",
     "compatBlocked": "兼容性检查未通过（{count} 项待解决），已中止启动",
+    "providerCheck": "模型供应商自检",
+    "providerCheckBlocking": "发现阻塞性错误，但启动不会因此中断（仍可在启动后于「模型供应商」页签修复）。",
     "stages": {
       "preflight": "兼容性检查",
       "spawning": "拉起实例进程",

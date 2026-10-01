@@ -6,9 +6,10 @@ import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { Message } from '@arco-design/web-vue'
 import { api } from '@/api'
-import type { CompatibilityReport, EarlyLoadingContext, LaunchStage } from '@/api/types'
+import type { CompatibilityReport, EarlyLoadingContext, LaunchStage, ValidationReport } from '@/api/types'
 import FramelessTitleBar from '@/components/FramelessTitleBar.vue'
 import CompatReport from '@/components/CompatibilityReport.vue'
+import ProviderReport from '@/components/ProviderReport.vue'
 
 const props = defineProps<{ instanceId: string }>()
 
@@ -20,6 +21,8 @@ const detail = ref('')
 const cancelling = ref(false)
 /** Compatibility report forwarded from the launch driver, rendered inline. */
 const compat = ref<CompatibilityReport | null>(null)
+/** Provider pre-launch self-check report forwarded from the launch driver. */
+const providerReport = ref<ValidationReport | null>(null)
 
 /** The pipeline stages in display order (terminal states excluded). */
 const PIPELINE: LaunchStage[] = ['preflight', 'spawning', 'waiting-ready', 'opening-window']
@@ -42,6 +45,7 @@ function stageState(s: LaunchStage): 'done' | 'active' | 'todo' {
 
 let unlisten: (() => void) | undefined
 let unlistenCompat: (() => void) | undefined
+let unlistenProvider: (() => void) | undefined
 
 onMounted(async () => {
   try {
@@ -69,7 +73,11 @@ onMounted(async () => {
     if (report.instance_id !== props.instanceId) return
     compat.value = report
     // Grow the window to fit the inline report (it starts compact).
-    void resizeFor(520)
+    void relayout()
+  })
+  unlistenProvider = await api.onEarlyLoadingProvider((report) => {
+    providerReport.value = report
+    void relayout()
   })
 })
 
@@ -81,9 +89,20 @@ async function resizeFor(height: number) {
   await getCurrentWindow().setSize(new LogicalSize(520, height))
 }
 
+/** Recomputes the window height from the inline reports currently shown
+ *  (compatibility + provider self-check), so the frameless window grows just
+ *  enough to fit them instead of clipping. */
+async function relayout() {
+  if (!api.isTauri) return
+  const height =
+    320 + (compat.value ? 220 : 0) + (providerReport.value?.routes.length ? 200 : 0)
+  await resizeFor(height)
+}
+
 onUnmounted(() => {
   unlisten?.()
   unlistenCompat?.()
+  unlistenProvider?.()
 })
 
 async function closeWindow() {
@@ -158,6 +177,18 @@ async function onCancel() {
         class="compat-area"
       >
         <CompatReport :report="compat" />
+      </a-scrollbar>
+
+      <!-- Provider pre-launch self-check (issue #83): rendered inline, advisory
+           only, never blocks the launch. Hidden when there are no routes. -->
+      <a-scrollbar
+        v-if="providerReport && providerReport.routes.length"
+        type="track"
+        outer-style="max-height: 200px"
+        style="max-height: 200px; overflow-y: auto"
+        class="provider-area"
+      >
+        <ProviderReport :report="providerReport" />
       </a-scrollbar>
     </div>
 

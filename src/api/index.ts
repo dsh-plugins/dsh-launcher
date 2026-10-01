@@ -1596,6 +1596,9 @@ export const api = {
   /** Forwards the compatibility report to the early-loading window (rendered inline there). */
   reportLaunchCompat: (instanceId: string, report: CompatibilityReport) =>
     call<void>('report_launch_compat', { instance_id: instanceId, report_json: JSON.stringify(report) }),
+  /** Forwards the provider self-check report to the early-loading window (rendered inline there). */
+  reportLaunchProvider: (instanceId: string, report: ValidationReport) =>
+    call<void>('report_launch_provider', { instance_id: instanceId, report_json: JSON.stringify(report) }),
   /** Cancels a launch in progress (stops the spawned process if any). */
   cancelInstanceLaunch: (instanceId: string) =>
     call<void>('cancel_instance_launch', { instance_id: instanceId }),
@@ -1755,6 +1758,16 @@ export const api = {
     if (isTauri) {
       const { listen } = await import('@tauri-apps/api/event')
       const un = await listen<CompatibilityReport>('early-loading://compatibility', (e) => cb(e.payload))
+      return un
+    }
+    return () => {}
+  },
+
+  /** Early-loading window: provider self-check report forwarded via report_launch_provider. */
+  async onEarlyLoadingProvider(cb: Listener<ValidationReport>): Promise<() => void> {
+    if (isTauri) {
+      const { listen } = await import('@tauri-apps/api/event')
+      const un = await listen<ValidationReport>('early-loading://provider', (e) => cb(e.payload))
       return un
     }
     return () => {}
