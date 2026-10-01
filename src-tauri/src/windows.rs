@@ -1,7 +1,5 @@
 use std::path::PathBuf;
 
-use base64::Engine;
-use sha2::{Digest, Sha256};
 use tauri::{AppHandle, Manager, WebviewUrl, WebviewWindowBuilder, WindowEvent};
 
 use crate::AppState;
@@ -72,6 +70,8 @@ fn apply_window_store<'a>(
     // it is compiled out rather than relied on to be ignored at runtime.
     #[cfg(any(target_os = "macos", target_os = "ios"))]
     {
+        use sha2::{Digest, Sha256};
+
         // Stable per instance: derived from the id, so a window keeps its own
         // cookies across restarts without the launcher persisting anything.
         let digest = Sha256::digest(instance_id.as_bytes());
@@ -95,16 +95,19 @@ fn loopback_origin(url: &str) -> Option<String> {
 }
 
 /// The WebView2 data directory of an instance's DSH page: one directory per
-/// instance, so a store only ever holds the cookies of that instance's origin.
+/// instance, so a store never holds the cookies of another instance's origin.
 ///
 /// DSH names each browser-auth cookie after the request authority
-/// (`dsh-auth-<base64url(sha256(host:port))>`) and keeps it for 30 days. A
-/// shared store therefore accumulates one live cookie per port an instance
-/// ever bound; after roughly 80 restarts the request head crosses node:http's
-/// 16 KiB `maxHeaderSize`, every request — including the one carrying a fresh
-/// `?token=` — is answered `431` before it is parsed, and the window can never
-/// refresh the cookie that would prune the store again. A private directory
-/// bounds that corpus by construction.
+/// (`dsh-auth-<base64url(sha256(host:port))>`) and keeps it for 30 days. The
+/// isolation this directory buys is per *instance*, not per authority: an
+/// instance that restarts on a new port (the default `--port 0`) reuses this
+/// same directory, so one dead 30-day cookie per port it ever bound piles up
+/// next to the live one; after roughly 80 restarts the request head crosses
+/// node:http's 16 KiB `maxHeaderSize`, every request — including the one
+/// carrying a fresh `?token=` — is answered `431` before it is parsed, and
+/// the window can never refresh the cookie that would prune the store again.
+/// `prune_auth_cookies` is what keeps that corpus bounded, by dropping every
+/// `dsh-auth-*` cookie belonging to the instance's own host on each reopen.
 fn webview_data_dir(app: &AppHandle, instance_id: &str) -> Option<PathBuf> {
     let state = app.try_state::<AppState>()?;
     let dir = state.data_dir.join("webview").join(instance_id);
@@ -160,33 +163,38 @@ fn clear_webview_data(win: &tauri::WebviewWindow, app: &AppHandle, instance_id: 
     }
 }
 
-/// Drops the instance's own DSH browser-auth cookie immediately before the
-/// window is pointed at a fresh token URL. DSH signs that cookie with a secret
-/// minted per process, so after an instance restart the stored cookie is dead
-/// and the leftover only inflates the request head.
+/// Whether a stored cookie is one of the instance's own dead DSH
+/// browser-auth cookies and should therefore be dropped.
+///
+/// `name` must carry DSH's `dsh-auth-` prefix, which pins the cookie to this
+/// launcher's own scheme instead of any other cookie in the store, and
+/// `domain` must be the instance's own host, which keeps the blast radius at
+/// the current page's origin. The authority — and with it the port — is
+/// deliberately *not* compared: DSH puts `host:port` in the cookie name, so
+/// matching the one authority the window is heading for now would leave every
+/// cookie an earlier port minted in place for its full 30-day life.
+fn should_prune(name: &str, domain: Option<&str>, host: &str) -> bool {
+    name.starts_with("dsh-auth-") && domain == Some(host)
+}
+
+/// Drops the instance's dead DSH browser-auth cookies immediately before the
+/// window is pointed at a fresh token URL. DSH signs those cookies with a
+/// secret minted per process, so after an instance restart every stored cookie
+/// is dead and the leftovers only inflate the request head — which is exactly
+/// what `should_prune` decides, for every authority the instance ever bound.
 fn prune_auth_cookies(win: &tauri::WebviewWindow, origin: &str, instance_id: &str) {
     let Ok(origin_url) = origin.parse::<tauri::Url>() else {
         return;
     };
-    let (host, port) = match (
-        origin_url.host_str().map(str::to_string),
-        origin_url.port_or_known_default(),
-    ) {
-        (Some(host), Some(port)) => (host, port),
-        _ => return,
+    let Some(host) = origin_url.host_str().map(str::to_string) else {
+        return;
     };
-    let authority = format!("{host}:{port}");
     // Tauri documents cookies() as deadlocking in a synchronous command or
     // event handler on Windows; the window event hook is exactly that, so the
     // read stays on a plain worker thread.
     let win = win.clone();
     let id = instance_id.to_string();
     std::thread::spawn(move || {
-        let name = format!(
-            "dsh-auth-{}",
-            base64::engine::general_purpose::URL_SAFE_NO_PAD
-                .encode(Sha256::digest(authority.as_bytes()))
-        );
         let cookies = match win.cookies() {
             Ok(cookies) => cookies,
             Err(e) => {
@@ -195,9 +203,10 @@ fn prune_auth_cookies(win: &tauri::WebviewWindow, origin: &str, instance_id: &st
             }
         };
         for cookie in cookies {
-            // An instance store holds only its own origin; the name/domain
-            // check keeps the blast radius at exactly that one cookie.
-            if cookie.name() != name || cookie.domain() != Some(host.as_str()) {
+            // Every dsh-auth-* cookie on the instance's own host is one of its
+            // own: the store is private to the instance, and the domain check
+            // still keeps other origins out of the blast radius.
+            if !should_prune(cookie.name(), cookie.domain(), host.as_str()) {
                 continue;
             }
             if let Err(e) = win.delete_cookie(cookie) {
@@ -315,8 +324,9 @@ pub fn open_instance_window(
         .inner_size(1024.0, 576.0)
         .min_inner_size(800.0, 500.0)
         .center();
-    // Own browser data store, so cookies of other instances and of earlier
-    // ports never accumulate in this window's request head.
+    // Own browser data store: cookies of other instances never reach this
+    // window. Earlier ports of *this* instance do share it, which is why
+    // prune_auth_cookies drops them on every reopen.
     let win = apply_window_store(builder, app, instance_id)
         .build()
         .map_err(|e| e.to_string())?;
@@ -409,6 +419,11 @@ pub fn close_tui_window(app: &AppHandle, instance_id: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    // Both crates are reached only from here (and, for sha2, from the
+    // macOS/iOS store block), so the imports live where they are used rather
+    // than in the file header, where a Windows build would flag them unused.
+    use base64::Engine;
+    use sha2::{Digest, Sha256};
 
     #[test]
     fn loopback_origin_accepts_only_plain_loopback_http() {
@@ -426,18 +441,81 @@ mod tests {
         assert_eq!(loopback_origin("https://127.0.0.1:10086/"), None);
     }
 
-    /// Pins the cookie the launcher prunes to the one DSH mints. The name is
-    /// `dsh-auth-<base64url(sha256(authority))>`; if DSH ever changes that
-    /// scheme the prune silently stops matching and stores grow again.
+    /// The name DSH mints for the `host:port` an instance is served on:
+    /// `dsh-auth-<base64url(sha256(authority))>`. The launcher no longer
+    /// computes this to match cookies — `should_prune` matches the prefix —
+    /// but the naming scheme is still what makes the port part of the cookie
+    /// name, so it stays pinned here.
+    fn authority_cookie_name(authority: &str) -> String {
+        format!(
+            "dsh-auth-{}",
+            base64::engine::general_purpose::URL_SAFE_NO_PAD
+                .encode(Sha256::digest(authority.as_bytes()))
+        )
+    }
+
+    /// Pins the cookie name to the one DSH mints; if DSH ever changes that
+    /// scheme the names used below would no longer be the ones the browser
+    /// holds, and these tests would stop describing reality.
     #[test]
     fn dsh_auth_cookie_name_follows_the_origin_authority() {
         let origin = loopback_origin("http://127.0.0.1:10086/?token=abc").unwrap();
         let authority = origin.strip_prefix("http://").unwrap();
-        let name = format!(
-            "dsh-auth-{}",
-            base64::engine::general_purpose::URL_SAFE_NO_PAD
-                .encode(Sha256::digest(authority.as_bytes()))
+        assert_eq!(
+            authority_cookie_name(authority),
+            "dsh-auth-k320QAAWVPdxfnOxhyOWdX-dQ03IEKrIdtzGoIirIUY"
         );
-        assert_eq!(name, "dsh-auth-k320QAAWVPdxfnOxhyOWdX-dQ03IEKrIdtzGoIirIUY");
+    }
+
+    /// An instance that restarts on a fresh port (the default `--port 0`)
+    /// keeps its store but gets a new cookie name, so the store holds the
+    /// current authority plus one dead cookie per port it ever bound. All of
+    /// them must be pruned on the next open — the exact-name match the
+    /// launcher used before only ever removed the current one.
+    #[test]
+    fn should_prune_hits_every_authority_a_port_ever_minted() {
+        let historical = [
+            authority_cookie_name("127.0.0.1:10086"),
+            authority_cookie_name("127.0.0.1:49184"),
+        ];
+        let current = authority_cookie_name("127.0.0.1:52311");
+        let host = "127.0.0.1";
+        let names = [&current, &historical[0], &historical[1]];
+        let pruned = names
+            .iter()
+            .filter(|name| should_prune(name, Some(host), host))
+            .count();
+        assert_eq!(pruned, 3, "every dsh-auth-* cookie on the host is pruned");
+        // Regression contrast: the old rule compared against the single name
+        // derived from the authority in the URL, so a restart pruned nothing.
+        let exact = names.iter().filter(|name| **name == &current).count();
+        assert_eq!(
+            exact, 1,
+            "exact-name matching could only hit the current one"
+        );
+    }
+
+    /// `should_prune` must not widen past the launcher's own cookies on the
+    /// instance's own host — the store is private to the instance, but it is
+    /// still a whole browser profile.
+    #[test]
+    fn should_prune_leaves_foreign_cookies_alone() {
+        let host = "127.0.0.1";
+        // Another authority's digest is NOT foreign: it is exactly an earlier
+        // port's cookie, i.e. the thing this fix exists to delete.
+        assert!(should_prune("dsh-auth-something-else", Some(host), host));
+        // Genuinely foreign: wrong prefix entirely. The predicate matches the
+        // literal `dsh-auth-`, hyphen included, so a name without it is out.
+        assert!(!should_prune("session", Some(host), host));
+        assert!(!should_prune("dsh-authX", Some(host), host));
+        assert!(!should_prune("Dsh-Auth-abc", Some(host), host));
+        // Another origin: the domain check is the second half of the rule.
+        assert!(!should_prune("dsh-auth-abc", Some("localhost"), host));
+        assert!(!should_prune("dsh-auth-abc", None, host));
+        // Bare prefix with an empty suffix (a name DSH does not currently
+        // mint): matched on purpose, so a future DSH scheme that drops the
+        // digest is still pruned instead of silently piling up. Pinned here so
+        // widening the prefix rule stays a deliberate decision.
+        assert!(should_prune("dsh-auth-", Some(host), host));
     }
 }
