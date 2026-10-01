@@ -1046,19 +1046,17 @@ interface ProviderPreset {
   catalog: boolean
   api: string
   baseUrl: string
-  apiKeyEnv: string
 }
 
 const PROVIDER_PRESETS: ProviderPreset[] = [
-  { key: 'deepseek', catalog: true, api: '', baseUrl: '', apiKeyEnv: 'DEEPSEEK_API_KEY' },
-  { key: 'openai', catalog: true, api: '', baseUrl: '', apiKeyEnv: 'OPENAI_API_KEY' },
-  { key: 'anthropic', catalog: true, api: '', baseUrl: '', apiKeyEnv: 'ANTHROPIC_API_KEY' },
-  { key: 'kimi-coding', catalog: true, api: '', baseUrl: '', apiKeyEnv: 'KIMI_API_KEY' },
-  { key: 'moonshotai', catalog: true, api: '', baseUrl: '', apiKeyEnv: 'MOONSHOT_API_KEY' },
-  { key: 'zai', catalog: true, api: '', baseUrl: '', apiKeyEnv: 'ZAI_API_KEY' },
-  { key: 'openrouter', catalog: true, api: '', baseUrl: '', apiKeyEnv: 'OPENROUTER_API_KEY' },
-  { key: 'custom-openai', catalog: false, api: 'openai-responses', baseUrl: '', apiKeyEnv: '' },
-  { key: 'custom-anthropic', catalog: false, api: 'anthropic-messages', baseUrl: '', apiKeyEnv: '' },
+  { key: 'deepseek', catalog: true, api: '', baseUrl: '' },
+  { key: 'openai', catalog: true, api: '', baseUrl: '' },
+  { key: 'anthropic', catalog: true, api: '', baseUrl: '' },
+  { key: 'moonshotai', catalog: true, api: '', baseUrl: '' },
+  { key: 'zai', catalog: true, api: '', baseUrl: '' },
+  { key: 'openrouter', catalog: true, api: '', baseUrl: '' },
+  { key: 'custom-openai', catalog: false, api: 'openai-responses', baseUrl: '' },
+  { key: 'custom-anthropic', catalog: false, api: 'anthropic-messages', baseUrl: '' },
 ]
 
 const providerProfile = ref<string | undefined>(undefined)
@@ -1084,7 +1082,12 @@ interface ProviderFormState {
   preset: string
   route: string
   displayName: string
-  apiKeyEnv: string
+  /** The API key to store under the derived credential ref; empty = keep the
+   * existing credential (editing) / leave unresolved (adding). */
+  apiKey: string
+  /** The route's current credential ref (editing); preserved unless a new
+   * key is stored under the derived name. */
+  existingEnv: string
   api: string
   baseUrl: string
   models: ProviderModelRow[]
@@ -1097,7 +1100,8 @@ function emptyProviderForm(): ProviderFormState {
     preset: 'deepseek',
     route: '',
     displayName: '',
-    apiKeyEnv: '',
+    apiKey: '',
+    existingEnv: '',
     api: '',
     baseUrl: '',
     models: [],
@@ -1128,8 +1132,8 @@ const providerScopePath = computed(() => {
 })
 
 const providerColumns = computed(() => [
-  { title: t('instanceEdit.providerColRoute'), slotName: 'providerRoute', width: 220 },
-  { title: t('instanceEdit.providerColCredential'), slotName: 'providerCredential', width: 200 },
+  { title: t('instanceEdit.providerColRoute'), slotName: 'providerRoute', width: 260 },
+  { title: t('instanceEdit.providerColCredential'), slotName: 'providerCredential', width: 250 },
   { title: t('instanceEdit.providerColEndpoint'), slotName: 'providerEndpoint', ellipsis: true, tooltip: true },
   { title: t('instanceEdit.providerColModels'), slotName: 'providerModels', width: 90 },
   { title: t('instances.table.actions'), slotName: 'providerActions', width: 150, align: 'center' as const, fixed: 'right' as const },
@@ -1185,31 +1189,53 @@ function onProviderPresetChange(value: unknown) {
   if (!preset) return
   providerForm.value.api = preset.api
   providerForm.value.baseUrl = preset.baseUrl
-  providerForm.value.apiKeyEnv = preset.apiKeyEnv
   if (preset.catalog) {
     providerForm.value.route = preset.key
     if (!providerForm.value.displayName) providerForm.value.displayName = preset.key
   }
 }
 
+/** The credential ref derived from a route id: uppercased, sanitized,
+ *  suffixed — `my_gw` becomes `MY_GW_API_KEY`. */
+function routeToEnvName(route: string): string {
+  const clean = route
+    .trim()
+    .toUpperCase()
+    .replace(/[^A-Z0-9]+/g, '_')
+    .replace(/^_+|_+$/g, '')
+  return clean ? `${clean}_API_KEY` : ''
+}
+
+/** The credential ref this form saves under: the stored key wins (editing),
+ *  otherwise the derived name; an explicit new API key always lands on the
+ *  derived name so a rename re-derives it. */
+const providerEnvName = computed(() => {
+  if (providerForm.value.apiKey.trim()) return routeToEnvName(providerForm.value.route)
+  if (providerOriginalRoute.value && providerForm.value.existingEnv) {
+    return providerForm.value.existingEnv
+  }
+  return routeToEnvName(providerForm.value.route)
+})
+
 // --- Provider validation (mirrors src-tauri/src/providers.rs; a failure never saves) ---
 
-const PROVIDER_ROUTE_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/
+/** New route ids: lowercase start, only [a-z0-9_], no trailing underscore. */
+const PROVIDER_ROUTE_RE = /^[a-z]([a-z0-9_]*[a-z0-9])?$/
 
 const providerRouteError = computed(() => {
   const route = providerForm.value.route.trim()
   if (!route) return t('instanceEdit.providerErrRouteRequired')
-  if (!PROVIDER_ROUTE_RE.test(route)) return t('instanceEdit.providerErrRoutePattern')
   const clash = providerRoutes.value.some(
     (r) => r.route === route && r.route !== providerOriginalRoute.value,
   )
-  return clash ? t('instanceEdit.providerErrRouteDuplicated') : ''
-})
-
-const providerEnvError = computed(() => {
-  const key = providerForm.value.apiKeyEnv.trim()
-  if (!key) return ''
-  return ENV_KEY_RE.test(key) ? '' : t('instanceEdit.providerErrEnvKey')
+  if (clash) return t('instanceEdit.providerErrRouteDuplicated')
+  // A route being edited keeps its legacy key (e.g. kebab-case written by the
+  // DSH settings UI); the strict rule only gates new names.
+  if (route === providerOriginalRoute.value) return ''
+  if (route.length > 64 || !PROVIDER_ROUTE_RE.test(route)) {
+    return t('instanceEdit.providerErrRoutePattern')
+  }
+  return ''
 })
 
 const providerBaseUrlError = computed(() => {
@@ -1237,7 +1263,6 @@ function providerModelIdError(idx: number): string {
 const providerFormValid = computed(
   () =>
     !providerRouteError.value &&
-    !providerEnvError.value &&
     !providerBaseUrlError.value &&
     !providerApiError.value &&
     providerForm.value.models.every((_, idx) => !providerModelIdError(idx)),
@@ -1259,7 +1284,8 @@ function openProviderEdit(route: ProviderRoute) {
     preset: '',
     route: route.route,
     displayName: route.displayName,
-    apiKeyEnv: route.apiKeyEnv,
+    apiKey: '',
+    existingEnv: route.apiKeyEnv,
     api: route.api,
     baseUrl: route.baseUrl,
     models: route.models.map((m) => ({
@@ -1278,7 +1304,7 @@ function addProviderModelRow() {
   providerForm.value.models.push({ id: '', name: '', contextWindow: '', maxTokens: '', vision: false })
 }
 
-function providerPayload(form: ProviderFormState): ProviderRoute {
+function providerPayload(form: ProviderFormState, apiKeyEnv: string): ProviderRoute {
   const num = (v: string) => {
     const n = Number(v.trim())
     return v.trim() && Number.isFinite(n) && n > 0 ? Math.floor(n) : null
@@ -1286,7 +1312,7 @@ function providerPayload(form: ProviderFormState): ProviderRoute {
   return {
     route: form.route.trim(),
     displayName: form.displayName.trim(),
-    apiKeyEnv: form.apiKeyEnv.trim(),
+    apiKeyEnv,
     api: form.api.trim(),
     baseUrl: form.baseUrl.trim(),
     models: form.models
@@ -1321,9 +1347,24 @@ async function onSaveProviderRoute() {
     Message.warning(t('instanceEdit.providerErrForm'))
     return
   }
-  const route = providerPayload(providerForm.value)
+  const envName = providerEnvName.value
+  const route = providerPayload(providerForm.value, envName)
   providerSaving.value = true
   try {
+    // A pasted API key is stored first under the derived credential ref; a
+    // shadowed name (provided by the instance's env overrides) aborts the
+    // whole save, so the route never points at a dead ref.
+    if (providerForm.value.apiKey.trim() && editingId.value) {
+      const creds = await api.setCredentialRef(
+        homeId.value,
+        editingId.value,
+        envName,
+        providerForm.value.apiKey.trim(),
+        credentialHash.value,
+      )
+      credentialRefs.value = creds.refs
+      credentialHash.value = creds.hash
+    }
     const list = await api.saveProviderRoute(
       homeId.value,
       providerProfile.value,
@@ -2735,18 +2776,18 @@ const terminalRunning = ref(false)
                 size="small"
               >
                 <template #providerRoute="{ record }">
-                  <span class="provider-route">
+                  <span class="provider-route" :title="record.displayName || record.route">
                     <strong>{{ record.route }}</strong>
                     <span v-if="record.displayName && record.displayName !== record.route" class="provider-display">
                       {{ record.displayName }}
                     </span>
-                    <a-tag v-if="record.catalog" size="small" color="arcoblue">
+                    <a-tag v-if="record.catalog" size="small" color="arcoblue" class="provider-tag">
                       {{ t('instanceEdit.providerCatalogTag') }}
                     </a-tag>
                   </span>
                 </template>
                 <template #providerCredential="{ record }">
-                  <code v-if="record.apiKeyEnv">{{ record.apiKeyEnv }}</code>
+                  <code v-if="record.apiKeyEnv" class="provider-cred">{{ record.apiKeyEnv }}</code>
                   <span v-else class="provider-none">{{ t('instanceEdit.providerNoCredential') }}</span>
                 </template>
                 <template #providerEndpoint="{ record }">
@@ -3117,7 +3158,7 @@ const terminalRunning = ref(false)
       :ok-button-props="{ disabled: !providerFormValid }"
       @ok="onSaveProviderRoute"
     >
-      <a-form :model="providerForm" layout="vertical">
+      <a-form :model="providerForm" layout="vertical" class="provider-form-scroll">
         <a-form-item v-if="!providerOriginalRoute" :label="t('instanceEdit.providerPreset')">
           <a-select v-model="providerForm.preset" @change="onProviderPresetChange">
             <a-option v-for="preset in PROVIDER_PRESETS" :key="preset.key" :value="preset.key">
@@ -3147,10 +3188,23 @@ const terminalRunning = ref(false)
 
         <a-form-item
           :label="t('instanceEdit.providerApiKeyEnv')"
-          :validate-status="providerEnvError ? 'error' : undefined"
-          :help="providerEnvError || t('instanceEdit.providerApiKeyEnvHint')"
+          :help="t('instanceEdit.providerApiKeyEnvHint')"
         >
-          <a-select v-model="providerForm.apiKeyEnv" allow-create allow-clear :options="credentialRefs.map((r) => r.name)" />
+          <a-input :model-value="providerEnvName" readonly />
+        </a-form-item>
+
+        <a-form-item
+          :label="t('instanceEdit.providerApiKey')"
+          :help="
+            providerOriginalRoute
+              ? t('instanceEdit.providerApiKeyEditHint')
+              : t('instanceEdit.providerApiKeyHint')
+          "
+        >
+          <a-input-password
+            v-model="providerForm.apiKey"
+            :placeholder="t('instanceEdit.credentialValuePlaceholder')"
+          />
         </a-form-item>
 
         <a-form-item
@@ -3343,14 +3397,36 @@ const terminalRunning = ref(false)
 }
 
 .provider-route {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
+  display: block;
+  max-width: 100%;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.provider-route strong {
+  margin-right: 8px;
 }
 
 .provider-display {
   color: var(--color-text-2);
   font-size: 12px;
+  margin-right: 8px;
+}
+
+.provider-tag {
+  vertical-align: baseline;
+}
+
+.provider-cred {
+  white-space: nowrap;
+  font-size: 12px;
+}
+
+.provider-form-scroll {
+  max-height: 62vh;
+  overflow-y: auto;
+  padding-right: 8px;
 }
 
 .provider-endpoint {

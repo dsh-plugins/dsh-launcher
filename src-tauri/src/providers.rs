@@ -409,16 +409,25 @@ fn is_env_key_valid(key: &str) -> bool {
     chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
 }
 
-/// Route keys are cordis dict keys and URL path segments in the WebUI; keep
-/// them conservative ASCII.
+/// New route ids: lowercase letters, digits and underscores, starting with a
+/// letter and never ending on an underscore (the credential ref name is
+/// derived from the id by uppercasing it). Routes created before this rule
+/// (e.g. kebab-case keys the DSH settings UI wrote) are grandfathered — see
+/// [`validate_route`].
 fn is_route_key_valid(route: &str) -> bool {
-    let mut chars = route.chars();
-    match chars.next() {
-        Some(c) if c.is_ascii_alphanumeric() => {}
-        _ => return false,
+    let bytes = route.as_bytes();
+    if bytes.is_empty() || route.len() > 64 {
+        return false;
     }
-    route.len() <= 64
-        && chars.all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '_' || c == '-')
+    if !bytes[0].is_ascii_lowercase() {
+        return false;
+    }
+    if bytes[route.len() - 1] == b'_' {
+        return false;
+    }
+    route
+        .chars()
+        .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
 }
 
 /// http(s) URL with a non-empty host and no whitespace.
@@ -438,15 +447,22 @@ fn is_http_url_valid(url: &str) -> bool {
     !authority.is_empty()
 }
 
-/// Validates one route against the other routes of the same profile. The
-/// frontend runs the same rules to render field-level errors before saving.
-pub fn validate_route(route: &ProviderRoute, others: &[ProviderRoute]) -> Result<(), String> {
+/// Validates one route against the other routes of the same profile.
+/// `original` names the route being edited: an unchanged key keeps its
+/// legacy form (the DSH settings UI writes kebab-case keys, which new
+/// launcher-created routes no longer accept). The frontend runs the same
+/// rules to render field-level errors before saving.
+pub fn validate_route(
+    route: &ProviderRoute,
+    others: &[ProviderRoute],
+    original: Option<&str>,
+) -> Result<(), String> {
     if route.route.trim().is_empty() {
-        return Err("请填写路由名称".to_string());
+        return Err("请填写路由 ID".to_string());
     }
-    if !is_route_key_valid(&route.route) {
+    if original != Some(route.route.as_str()) && !is_route_key_valid(&route.route) {
         return Err(
-            "路由名称需以字母或数字开头，只能包含字母、数字、.、_、-，且不超过 64 个字符"
+            "路由 ID 需以小写字母开头，只能包含小写字母、数字、下划线，且不能以下划线结尾"
                 .to_string(),
         );
     }
@@ -809,6 +825,13 @@ pub fn splice_route(
                     .split('\n')
                     .map(String::from)
                     .collect();
+                // An inline value (`providers: {}`, the collapsed state of a
+                // just-emptied mapping) cannot have children appended below
+                // it — rewrite the key to its bare block form first.
+                if out_lines[span.line].trim() != "providers:" {
+                    let pad = " ".repeat(span.indent);
+                    out_lines[span.line] = format!("{pad}providers:");
+                }
                 let mut new_lines: Vec<String> = out_lines[..insert_at].to_vec();
                 new_lines.extend(block_lines);
                 new_lines.extend(out_lines[insert_at..].iter().cloned());
@@ -990,6 +1013,12 @@ pub fn splice_credential_ref(raw: &str, name: &str, value: &str) -> Result<Strin
             if let Some((_, idx)) = span.entries.iter().find(|(n, _)| n == name) {
                 out_lines[*idx] = entry_line;
             } else {
+                // An inline value (`refs: {}`, the collapsed state of a
+                // just-emptied map) cannot have entries appended below it —
+                // rewrite the key to its bare block form first.
+                if out_lines[span.line].trim() != "refs:" {
+                    out_lines[span.line] = "refs:".to_string();
+                }
                 out_lines.insert(span.map_end, entry_line);
             }
             let mut out = out_lines.join("\n");
@@ -1087,7 +1116,7 @@ pub fn save_provider_route(
 
     let mut next = route;
     normalize(&mut next);
-    validate_route(&next, &others)?;
+    validate_route(&next, &others, original)?;
 
     // Carry over the unmanaged keys of the route being replaced.
     if let Some(orig) = original {
@@ -1565,32 +1594,60 @@ refs:
             api_key_env: "DEEPSEEK_API_KEY".to_string(),
             ..Default::default()
         };
-        validate_route(&route, &[]).unwrap();
+        validate_route(&route, &[], None).unwrap();
     }
 
     #[test]
     fn validate_refuses_custom_route_without_endpoint() {
         let mut route = custom_route("gw");
         route.base_url.clear();
-        assert!(validate_route(&route, &[]).is_err());
+        assert!(validate_route(&route, &[], None).is_err());
         let mut route = custom_route("gw");
         route.api.clear();
-        assert!(validate_route(&route, &[]).is_err());
+        assert!(validate_route(&route, &[], None).is_err());
     }
 
     #[test]
     fn validate_refuses_duplicates_and_bad_names() {
         let existing = custom_route("gw");
         let dup = custom_route("gw");
-        assert!(validate_route(&dup, &[existing]).is_err());
+        assert!(validate_route(&dup, &[existing], None).is_err());
         let bad = custom_route("bad route!");
-        assert!(validate_route(&bad, &[]).is_err());
+        assert!(validate_route(&bad, &[], None).is_err());
         let bad_env = ProviderRoute {
             route: "deepseek".to_string(),
             api_key_env: "1BAD".to_string(),
             ..Default::default()
         };
-        assert!(validate_route(&bad_env, &[]).is_err());
+        assert!(validate_route(&bad_env, &[], None).is_err());
+    }
+
+    #[test]
+    fn validate_enforces_the_new_route_id_rule() {
+        // New ids: lowercase start, only [a-z0-9_], no trailing underscore.
+        assert!(validate_route(&custom_route("my_route_2"), &[], None).is_ok());
+        assert!(validate_route(&custom_route("a"), &[], None).is_ok());
+        assert!(validate_route(&custom_route("my-route"), &[], None).is_err());
+        assert!(validate_route(&custom_route("MyRoute"), &[], None).is_err());
+        assert!(validate_route(&custom_route("_route"), &[], None).is_err());
+        assert!(validate_route(&custom_route("route_"), &[], None).is_err());
+        assert!(validate_route(&custom_route("2route"), &[], None).is_err());
+    }
+
+    #[test]
+    fn validate_grandfathers_an_unchanged_legacy_key() {
+        // A kebab-case route the DSH settings UI wrote stays editable as long
+        // as the key does not change; renaming it must follow the new rule.
+        let legacy = ProviderRoute {
+            route: "anvilcraft-ai".to_string(),
+            api_key_env: "ANVILCRAFT_AI_API_KEY".to_string(),
+            api: "openai-responses".to_string(),
+            base_url: "https://ai.anvilcraft.dev".to_string(),
+            ..Default::default()
+        };
+        validate_route(&legacy, &[], Some("anvilcraft-ai")).unwrap();
+        assert!(validate_route(&legacy, &[], Some("other-route")).is_err());
+        assert!(validate_route(&legacy, &[], None).is_err());
     }
 
     #[test]
@@ -1660,6 +1717,36 @@ refs:
         assert!(names.contains(&"B".to_string()));
         assert!(names.contains(&"C".to_string()));
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn rename_of_last_route_reexpands_collapsed_providers() {
+        // Deleting the last route collapses the mapping to `providers: {}`;
+        // re-inserting (the second half of a rename) must expand the key
+        // back to block form instead of appending below the inline value.
+        let one = splice_route_removal(SAMPLE, "mclans-ai").unwrap();
+        let collapsed = splice_route_removal(&one, "anvilcraft-ai").unwrap();
+        assert!(collapsed.contains("providers: {}"));
+        let renamed = splice_route(&collapsed, &custom_route("renamed"), None).unwrap();
+        assert!(!renamed.contains("providers: {}"));
+        let routes = parse_provider_routes(&renamed).unwrap();
+        assert_eq!(routes.len(), 1);
+        assert_eq!(routes[0].route, "renamed");
+    }
+
+    #[test]
+    fn credential_set_after_last_removal_reexpands_refs() {
+        // `refs: {}` is the collapsed end state of deleting the last ref;
+        // setting a new one must not append below the inline value.
+        let text = splice_credential_ref_removal(CREDS, "ANVILCRAFT_AI_API_KEY").unwrap();
+        let text = splice_credential_ref_removal(&text, "MCLANS_AI_API_KEY").unwrap();
+        assert!(text.contains("refs: {}"));
+        let text = splice_credential_ref(&text, "NEW_KEY", "sk-123456789").unwrap();
+        assert!(!text.contains("refs: {}"));
+        let refs = parse_credential_refs(&text).unwrap();
+        assert_eq!(refs.len(), 1);
+        assert_eq!(refs[0].0, "NEW_KEY");
+        assert!(text.contains("records:"));
     }
 
     #[test]
