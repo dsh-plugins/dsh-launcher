@@ -254,6 +254,32 @@ fn extract_node_archive(archive: &Path, node_dir: &Path) -> Result<(), String> {
         Ok(())
     }
 
+    /// The in-archive path of one tar entry with the root component stripped,
+    /// or `None` for the root entry itself. Shared by every tar entry kind.
+    /// Only the unix tar handling needs it (Windows unpacks zips).
+    #[cfg(unix)]
+    fn tar_rel(clean: &Path) -> Option<PathBuf> {
+        let rel: PathBuf = clean.components().skip(1).collect();
+        (!rel.as_os_str().is_empty()).then_some(rel)
+    }
+
+    /// Lexically resolves `.` / `..` without touching the filesystem, so a
+    /// link target can be bounds-checked before it is created (unix tars).
+    #[cfg(unix)]
+    fn normalize_lexical(path: &Path) -> PathBuf {
+        let mut out = PathBuf::new();
+        for c in path.components() {
+            match c {
+                std::path::Component::CurDir => {}
+                std::path::Component::ParentDir => {
+                    out.pop();
+                }
+                other => out.push(other.as_os_str()),
+            }
+        }
+        out
+    }
+
     if cfg!(windows) {
         let file = std::fs::File::open(archive).map_err(|e| format!("打开安装包失败: {e}"))?;
         let mut zip = zip::ZipArchive::new(file).map_err(|e| format!("解析安装包失败: {e}"))?;
@@ -280,9 +306,91 @@ fn extract_node_archive(archive: &Path, node_dir: &Path) -> Result<(), String> {
                 .components()
                 .filter(|c| matches!(c, std::path::Component::Normal(_)))
                 .collect();
-            let is_dir = entry.header().entry_type().is_dir();
-            if entry.header().entry_type().is_file() || is_dir {
-                write_entry(node_dir, &clean, is_dir, &mut entry)?;
+            let entry_type = entry.header().entry_type();
+            if entry_type.is_file() {
+                // Issue #73: the tar branch must apply the header mode — a
+                // plain File::create lands 0644 and `bin/node` then fails
+                // execve with EACCES ("校验 Node.js 失败: Permission
+                // denied (os error 13)" on macOS/Linux).
+                write_entry(node_dir, &clean, false, &mut entry)?;
+                #[cfg(unix)]
+                if let Some(rel) = tar_rel(&clean) {
+                    use std::os::unix::fs::PermissionsExt;
+                    let mode = entry.header().mode().unwrap_or(0o644) & 0o777;
+                    let target = node_dir.join(rel);
+                    std::fs::set_permissions(&target, std::fs::Permissions::from_mode(mode))
+                        .map_err(|e| format!("设置文件权限失败 {}: {e}", target.display()))?;
+                }
+            } else if entry_type.is_dir() {
+                write_entry(node_dir, &clean, true, &mut entry)?;
+            } else if entry_type.is_symlink() {
+                // Issue #73: node dist tarballs carry bin/npm, bin/npx and
+                // bin/corepack as symlinks into lib/; skipping them leaves
+                // the runtime without a working npm for the pnpm bootstrap.
+                #[cfg(unix)]
+                {
+                    let Some(rel) = tar_rel(&clean) else {
+                        continue;
+                    };
+                    let target = node_dir.join(&rel);
+                    let link = entry
+                        .link_name()
+                        .map_err(|e| format!("读取符号链接目标失败: {e}"))?;
+                    let Some(link) = link else {
+                        continue;
+                    };
+                    // The link target resolves from the symlink's own
+                    // directory; it must stay inside node_dir (a dist tar
+                    // only ever links within its own tree).
+                    let base = target
+                        .parent()
+                        .map(|p| p.to_path_buf())
+                        .unwrap_or_else(|| node_dir.to_path_buf());
+                    let resolved = normalize_lexical(&base.join(&link));
+                    if !resolved.starts_with(node_dir) {
+                        crate::log_warn!("跳过逃逸的符号链接: {}", target.display());
+                        continue;
+                    }
+                    if let Some(parent) = target.parent() {
+                        std::fs::create_dir_all(parent)
+                            .map_err(|e| format!("创建目录失败: {e}"))?;
+                    }
+                    if target.symlink_metadata().is_ok() {
+                        std::fs::remove_file(&target).ok();
+                    }
+                    std::os::unix::fs::symlink(&link, &target)
+                        .map_err(|e| format!("创建符号链接失败 {}: {e}", target.display()))?;
+                }
+            } else if entry_type.is_hard_link() {
+                #[cfg(unix)]
+                {
+                    let Some(rel) = tar_rel(&clean) else {
+                        continue;
+                    };
+                    let target = node_dir.join(&rel);
+                    let link = entry
+                        .link_name()
+                        .map_err(|e| format!("读取硬链接目标失败: {e}"))?;
+                    let Some(link) = link else {
+                        continue;
+                    };
+                    // A hard link's target is archive-root-relative, so it
+                    // goes through the same strip-and-sanitize as entry names.
+                    let src_clean: PathBuf = link
+                        .components()
+                        .filter(|c| matches!(c, std::path::Component::Normal(_)))
+                        .collect();
+                    let Some(src_rel) = tar_rel(&src_clean) else {
+                        continue;
+                    };
+                    let src = node_dir.join(src_rel);
+                    if let Some(parent) = target.parent() {
+                        std::fs::create_dir_all(parent)
+                            .map_err(|e| format!("创建目录失败: {e}"))?;
+                    }
+                    std::fs::hard_link(&src, &target)
+                        .map_err(|e| format!("创建硬链接失败 {}: {e}", target.display()))?;
+                }
             }
         }
     }
@@ -448,4 +556,124 @@ async fn do_install_node(
     crate::tasks::ensure_pnpm_pub(app, state, task_id).await?;
     crate::tasks::push_task_log_pub(app, state, task_id, "pnpm 已就绪").await;
     Ok(got)
+}
+
+// ---------------------------------------------------------------------------
+// tests
+// ---------------------------------------------------------------------------
+
+// The change only touches the tar branch, which is dead code on Windows
+// (dist archives for Windows are zips), so the tests are unix-only and the
+// CI linux/macos legs exercise them.
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+
+    fn unique_temp(tag: &str) -> PathBuf {
+        std::env::temp_dir().join(format!("dsh-runtime-test-{tag}-{}", uuid::Uuid::new_v4()))
+    }
+
+    /// Builds a minimal node-dist-shaped tar.gz: a root directory, one
+    /// executable file, one in-tree symlink, one escaping symlink. Written to
+    /// a temp file; the caller gets (archive, node_dir, temp_root).
+    fn build_dist_tarball(tag: &str) -> (PathBuf, PathBuf, PathBuf) {
+        let root = unique_temp(tag);
+        std::fs::create_dir_all(&root).unwrap();
+        let archive = root.join("node.tar.gz");
+        let node_dir = root.join("node");
+
+        let mut builder = tar::Builder::new(Vec::new());
+        let top = "node-v24.0.0-darwin-arm64";
+
+        let mut header = tar::Header::new_gnu();
+        header.set_entry_type(tar::EntryType::Directory);
+        header.set_path(format!("{top}/bin")).unwrap();
+        header.set_mode(0o755);
+        header.set_cksum();
+        builder.append(&header, std::io::empty()).unwrap();
+
+        let data = b"#!/bin/sh\necho node\n";
+        let mut header = tar::Header::new_gnu();
+        header.set_entry_type(tar::EntryType::Regular);
+        header.set_path(format!("{top}/bin/node")).unwrap();
+        header.set_size(data.len() as u64);
+        header.set_mode(0o755);
+        header.set_cksum();
+        builder.append(&header, &data[..]).unwrap();
+
+        let mut header = tar::Header::new_gnu();
+        header.set_entry_type(tar::EntryType::Symlink);
+        header.set_path(format!("{top}/bin/npm")).unwrap();
+        header
+            .set_link_name("../lib/node_modules/npm/bin/npm-cli.js")
+            .unwrap();
+        header.set_size(0);
+        header.set_cksum();
+        builder.append(&header, std::io::empty()).unwrap();
+
+        let mut header = tar::Header::new_gnu();
+        header.set_entry_type(tar::EntryType::Symlink);
+        header.set_path(format!("{top}/bin/evil")).unwrap();
+        header.set_link_name("../../../../outside").unwrap();
+        header.set_size(0);
+        header.set_cksum();
+        builder.append(&header, std::io::empty()).unwrap();
+
+        let tar_bytes = builder.into_inner().unwrap();
+        let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+        std::io::Write::write_all(&mut encoder, &tar_bytes).unwrap();
+        std::fs::write(&archive, encoder.finish().unwrap()).unwrap();
+        (archive, node_dir, root)
+    }
+
+    #[test]
+    fn extract_tar_unpacks_regular_files_on_every_platform() {
+        let (archive, node_dir, root) = build_dist_tarball("basic");
+        extract_node_archive(&archive, &node_dir).unwrap();
+        assert_eq!(
+            std::fs::read(node_dir.join("bin").join("node")).unwrap(),
+            b"#!/bin/sh\necho node\n"
+        );
+        // The escaping symlink must never appear, on any platform.
+        assert!(!node_dir.join("bin").join("evil").exists());
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// Issue #73: without the header mode the extracted `bin/node` lands 0644
+    /// and the post-install verify spawn fails with EACCES on macOS/Linux.
+    #[cfg(unix)]
+    #[test]
+    fn extract_tar_preserves_the_executable_bit() {
+        use std::os::unix::fs::PermissionsExt;
+        let (archive, node_dir, root) = build_dist_tarball("mode");
+        extract_node_archive(&archive, &node_dir).unwrap();
+        let mode = std::fs::metadata(node_dir.join("bin").join("node"))
+            .unwrap()
+            .permissions()
+            .mode();
+        assert_ne!(mode & 0o111, 0, "executable bit lost: mode {mode:o}");
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// Issue #73: bin/npm / bin/npx / bin/corepack are symlinks in the dist
+    /// tarball; dropping them leaves the runtime without a working npm.
+    #[cfg(unix)]
+    #[test]
+    fn extract_tar_recreates_in_tree_symlinks() {
+        let (archive, node_dir, root) = build_dist_tarball("links");
+        extract_node_archive(&archive, &node_dir).unwrap();
+        let link = node_dir.join("bin").join("npm");
+        assert!(link.symlink_metadata().unwrap().file_type().is_symlink());
+        assert_eq!(
+            std::fs::read_link(&link).unwrap(),
+            Path::new("../lib/node_modules/npm/bin/npm-cli.js")
+        );
+        // The escaping symlink is skipped, not created.
+        assert!(node_dir
+            .join("bin")
+            .join("evil")
+            .symlink_metadata()
+            .is_err());
+        std::fs::remove_dir_all(&root).ok();
+    }
 }
