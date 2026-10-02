@@ -50,6 +50,17 @@ pub struct EarlyLoadingContext {
     pub instance_id: String,
     pub name: String,
     pub profile: Option<String>,
+    /// Provider self-check report already computed for this launch, if any.
+    ///
+    /// Delivered here instead of only by `EARLY_LOADING_PROVIDER_EVENT`:
+    /// the report is produced by a fast local-IO check and the webview needs
+    /// a moment to mount and register its listener, so an event-only relay
+    /// can fire before anyone is listening and be dropped silently (Tauri
+    /// does not buffer events for absent subscribers). The frontend seeds its
+    /// state from this field and then applies the event, so either arrival
+    /// order renders the same report. The event is kept for the case where the
+    /// page is already up (e.g. a re-run within a live window).
+    pub provider_report: Option<Vec<crate::providers::ProviderRouteReport>>,
 }
 
 fn window_label(instance_id: &str) -> String {
@@ -69,6 +80,15 @@ pub async fn open_early_loading_window(
     instance_id: String,
 ) -> Result<(), String> {
     let label = window_label(&instance_id);
+    // A new launch invalidates any report left over from an earlier one: the
+    // launch driver reports before the webview mounts, so a report can be
+    // stashed while no window exists (e.g. the previous open attempt failed).
+    // Draining here keeps a stale report from being replayed into this launch.
+    state
+        .launch_provider_reports
+        .lock()
+        .unwrap()
+        .remove(&instance_id);
     if let Some(win) = app.get_webview_window(&label) {
         let _ = win.show();
         let _ = win.unminimize();
@@ -129,9 +149,17 @@ pub fn get_early_loading_context(
         .find(|i| i.id == instance_id)
         .ok_or_else(|| "实例不存在".to_string())?;
     Ok(EarlyLoadingContext {
-        instance_id,
+        instance_id: instance_id.clone(),
         name: inst.name.clone(),
         profile: inst.last_profile.clone().or(inst.default_profile.clone()),
+        // Take the pending report so a later re-open of the window does not
+        // replay a stale report; a report produced after this call still
+        // arrives by event.
+        provider_report: state
+            .launch_provider_reports
+            .lock()
+            .unwrap()
+            .remove(&instance_id),
     })
 }
 
@@ -205,16 +233,29 @@ pub fn report_launch_compat(
 #[tauri::command(rename_all = "snake_case")]
 pub fn report_launch_provider(
     app: AppHandle,
+    state: tauri::State<'_, AppState>,
     instance_id: String,
     report_json: String,
 ) -> Result<(), String> {
+    // Validate before relaying so a malformed payload fails loudly here, and
+    // parse into the typed report so it can be stashed for the context read.
+    let report: Vec<crate::providers::ProviderRouteReport> = serde_json::from_str(&report_json)
+        .map_err(|e| format!("无效的供应商自检报告 JSON: {e}"))?;
+    // Stash first, unconditionally: the self-check is fast local IO and the
+    // window's webview may not have mounted yet, so the event alone can be
+    // dropped. `get_early_loading_context` hands the stashed report to the
+    // page, which makes both arrival orders work.
+    state
+        .launch_provider_reports
+        .lock()
+        .unwrap()
+        .insert(instance_id.clone(), report.clone());
     let label = window_label(&instance_id);
     if app.get_webview_window(&label).is_none() {
+        // Window already closed (user clicked 关闭): the launch continues
+        // silently, the report is a no-op by design.
         return Ok(());
     }
-    // Validate before relaying so a malformed payload fails loudly here.
-    let report: serde_json::Value = serde_json::from_str(&report_json)
-        .map_err(|e| format!("无效的供应商自检报告 JSON: {e}"))?;
     app.emit_to(&label, EARLY_LOADING_PROVIDER_EVENT, report)
         .map_err(|e| e.to_string())
 }

@@ -69,6 +69,13 @@ pub struct AppState {
     /// `start_instance` / `start_compatible_instance` clear a stale flag at
     /// the start of a new launch.
     pub launch_cancels: StdMutex<std::collections::HashSet<String>>,
+    /// Provider self-check reports produced for an in-flight launch, keyed by
+    /// instance id. The report is computed by fast local IO, so it can be
+    /// ready before the early-loading window's webview has mounted and
+    /// registered its event listener; stashing it lets
+    /// `get_early_loading_context` hand it over on page load instead of
+    /// losing the event. Drained by that read (issue #83).
+    pub launch_provider_reports: StdMutex<HashMap<String, Vec<providers::ProviderRouteReport>>>,
     /// WSL distros recently verified running (`wsl.rs::ensure_distro_running`
     /// TTL cache): distro → last successful boot/probe timestamp.
     pub distro_ready: tokio::sync::Mutex<HashMap<String, std::time::Instant>>,
@@ -234,6 +241,7 @@ pub fn run() {
                 terminals: tokio::sync::Mutex::new(HashMap::new()),
                 tui_sessions: tokio::sync::Mutex::new(HashMap::new()),
                 launch_cancels: StdMutex::new(std::collections::HashSet::new()),
+                launch_provider_reports: StdMutex::new(HashMap::new()),
                 distro_ready: tokio::sync::Mutex::new(HashMap::new()),
                 window_urls: StdMutex::new(HashMap::new()),
                 instance_trays: StdMutex::new(std::collections::HashSet::new()),

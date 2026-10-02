@@ -6,21 +6,14 @@
 // manual trigger in InstanceEdit.vue uses, so both views always agree.
 import type { ProviderRouteReport } from '@/api/types'
 import { useI18n } from 'vue-i18n'
+import {
+  providerCheckStatusKeySuffix,
+  providerCheckTagColor,
+  translateProviderCheck,
+} from '@/utils/provider-check'
 
 defineProps<{ report: ProviderRouteReport[] }>()
-const { t } = useI18n()
-
-function tagColor(status: string): string {
-  if (status === 'ok') return 'green'
-  if (status === 'warn') return 'orange'
-  return 'gray'
-}
-
-function statusKey(status: string): string {
-  if (status === 'warn') return 'instanceEdit.providerCheckStatusWarn'
-  if (status === 'unknown') return 'instanceEdit.providerCheckStatusUnknown'
-  return 'instanceEdit.providerCheckStatusOk'
-}
+const { t, te } = useI18n()
 </script>
 
 <template>
@@ -33,13 +26,13 @@ function statusKey(status: string): string {
     >
       <div class="provider-report-head">
         <strong>{{ r.route }}</strong>
-        <a-tag :color="tagColor(r.status)" size="small">
-          {{ t(statusKey(r.status)) }}
+        <a-tag :color="providerCheckTagColor(r.status)" size="small">
+          {{ t(`instanceEdit.providerCheckStatus${providerCheckStatusKeySuffix(r.status)}`) }}
         </a-tag>
       </div>
       <ul v-if="r.checks.length" class="provider-report-msgs">
         <li v-for="(c, i) in r.checks" :key="i">
-          {{ t(`instanceEdit.providerChecks.${c.code}`, c.params) }}
+          {{ translateProviderCheck(t, te, c.code, c.params) }}
         </li>
       </ul>
     </div>

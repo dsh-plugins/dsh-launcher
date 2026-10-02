@@ -186,6 +186,13 @@ export interface EarlyLoadingContext {
   instance_id: string
   name: string
   profile: string | null
+  /**
+   * Provider self-check report already computed for this launch, if any.
+   * Carried on the context (not only emitted as an event) because the check
+   * is fast local IO and can finish before the webview registers its
+   * listener — an event-only relay would be dropped silently.
+   */
+  provider_report?: ProviderRouteReport[] | null
 }
 
 export interface InstanceStatus {

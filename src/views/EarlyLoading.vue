@@ -2,7 +2,7 @@
 // Content of the frameless `early-loading-<instance>` window: shows the
 // launch stages (compatibility preflight → spawn → wait for the DSH page →
 // open the window) while an instance starts. A real OS window, not a modal.
-import { computed, onMounted, onUnmounted, ref } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { Message } from '@arco-design/web-vue'
 import { api } from '@/api'
@@ -27,6 +27,12 @@ const providerReport = ref<ProviderRouteReport[] | null>(null)
 /** The pipeline stages in display order (terminal states excluded). */
 const PIPELINE: LaunchStage[] = ['preflight', 'spawning', 'waiting-ready', 'opening-window']
 
+/** Per-area cap: past this an inline report scrolls inside its own area
+ *  instead of growing the window without bound. Generous enough that the
+ *  usual short report is never clipped (the window only grows to what the
+ *  content needs, see `relayout`). */
+const MAX_REPORT_HEIGHT = 420
+
 const terminal = computed(() => stage.value === 'done' || stage.value === 'cancelled' || stage.value === 'failed')
 const failed = computed(() => stage.value === 'failed')
 
@@ -47,11 +53,36 @@ let unlisten: (() => void) | undefined
 let unlistenCompat: (() => void) | undefined
 let unlistenProvider: (() => void) | undefined
 
+/** Template refs used to measure the inline reports' natural height. */
+const compatAreaEl = ref<HTMLElement | null>(null)
+const providerAreaEl = ref<HTMLElement | null>(null)
+
+/** Template-ref setter for the two report scroll areas. Arco's `a-scrollbar`
+ *  is a component, so the ref receives the instance: unwrap `$el` to reach the
+ *  DOM node whose `scrollHeight` is what we want to measure. */
+function setAreaEl(which: 'compat' | 'provider', el: unknown) {
+  const maybe = el as { $el?: unknown } | null
+  const node = (maybe && maybe.$el ? maybe.$el : el) as HTMLElement | null
+  const target = node && typeof node === 'object' && 'scrollHeight' in node ? node : null
+  if (which === 'compat') compatAreaEl.value = target
+  else providerAreaEl.value = target
+}
+
 onMounted(async () => {
   try {
     ctx.value = await api.getEarlyLoadingContext(props.instanceId)
   } catch {
     ctx.value = { instance_id: props.instanceId, name: props.instanceId, profile: null }
+  }
+  // The self-check is fast local IO and can finish before this webview has
+  // mounted, so the backend also hands the report over with the context
+  // (issue #83). Seed from it, then keep listening: whichever arrives first
+  // renders the same report, and a later one (re-check in a live window)
+  // still updates.
+  if (ctx.value.provider_report?.length) {
+    providerReport.value = ctx.value.provider_report
+    await nextTick()
+    void relayout()
   }
   unlisten = await api.onEarlyLoadingProgress((p) => {
     if (p.instance_id !== props.instanceId) return
@@ -89,13 +120,49 @@ async function resizeFor(height: number) {
   await getCurrentWindow().setSize(new LogicalSize(520, height))
 }
 
+/** Window height with no inline report shown (title bar + stages + actions). */
+const BASE_HEIGHT = 320
+/** Fallback inline-report height used only before the DOM can be measured. */
+const ESTIMATED_REPORT_HEIGHT = 200
+
 /** Recomputes the window height from the inline reports currently shown
  *  (compatibility + provider self-check), so the frameless window grows just
- *  enough to fit them instead of clipping. */
+ *  enough to fit them instead of clipping.
+ *
+ *  The report height is measured, not estimated: a hardcoded per-report
+ *  allowance silently truncates long reports (several routes × several
+ *  checks, and the English strings run longer than the Chinese ones) — and a
+ *  truncated `warn` / `unknown` is exactly what the user needs to read. Each
+ *  report area still scrolls internally past {@link MAX_REPORT_HEIGHT}, so a
+ *  very long report stays inside the screen. */
 async function relayout() {
   if (!api.isTauri) return
-  const height = 320 + (compat.value ? 220 : 0) + (providerReport.value?.length ? 200 : 0)
-  await resizeFor(height)
+  // Wait for the just-updated report to be laid out before measuring it.
+  await nextTick()
+  let reportHeight = reportsHeight()
+  if (!reportHeight) {
+    if (compat.value) reportHeight += ESTIMATED_REPORT_HEIGHT
+    if (providerReport.value?.length) reportHeight += ESTIMATED_REPORT_HEIGHT
+  }
+  const height = BASE_HEIGHT + reportHeight
+  // Never grow past the usable screen: the report areas take over scrolling.
+  const ceiling = Math.max(BASE_HEIGHT, (window.screen?.availHeight ?? 800) - 80)
+  await resizeFor(Math.min(height, ceiling))
+}
+
+/** Combined *displayed* height of the inline report areas (0 when hidden).
+ *
+ *  `scrollHeight` is the full content height, but each area is capped at
+ *  {@link MAX_REPORT_HEIGHT} and scrolls the overflow itself, so the window
+ *  must only grow by what is actually visible — otherwise one very long
+ *  report would inflate the window to the screen ceiling instead of scrolling
+ *  in place. */
+function reportsHeight(): number {
+  let sum = 0
+  for (const el of [compatAreaEl.value, providerAreaEl.value]) {
+    if (el) sum += Math.min(el.scrollHeight, MAX_REPORT_HEIGHT)
+  }
+  return sum
 }
 
 onUnmounted(() => {
@@ -170,9 +237,10 @@ async function onCancel() {
            longer shows it as a separate modal during launch). -->
       <a-scrollbar
         v-if="compat"
+        :ref="(el: unknown) => setAreaEl('compat', el)"
         type="track"
-        outer-style="max-height: 220px"
-        style="max-height: 220px; overflow-y: auto"
+        :outer-style="{ maxHeight: `${MAX_REPORT_HEIGHT}px` }"
+        :style="{ maxHeight: `${MAX_REPORT_HEIGHT}px`, overflowY: 'auto' }"
         class="compat-area"
       >
         <CompatReport :report="compat" />
@@ -182,9 +250,10 @@ async function onCancel() {
            only, never blocks the launch. Hidden when there are no routes. -->
       <a-scrollbar
         v-if="providerReport && providerReport.length"
+        :ref="(el: unknown) => setAreaEl('provider', el)"
         type="track"
-        outer-style="max-height: 200px"
-        style="max-height: 200px; overflow-y: auto"
+        :outer-style="{ maxHeight: `${MAX_REPORT_HEIGHT}px` }"
+        :style="{ maxHeight: `${MAX_REPORT_HEIGHT}px`, overflowY: 'auto' }"
         class="provider-area"
       >
         <ProviderReport :report="providerReport" />

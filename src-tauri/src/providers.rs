@@ -158,7 +158,7 @@ pub struct CredentialRefList {
 }
 
 /// One readiness check of a route, translated by the frontend via `code`.
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ProviderCheckItem {
     /// Stable code (`instanceEdit.providerCheck.<code>` i18n key suffix).
@@ -170,7 +170,7 @@ pub struct ProviderCheckItem {
 }
 
 /// The readiness report of one route: the worst status of its checks.
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ProviderRouteReport {
     pub route: String,

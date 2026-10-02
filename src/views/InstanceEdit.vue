@@ -8,6 +8,11 @@ import type { CompatibilityReport as CompatibilityReportType } from '@/api/types
 import CompatibilityReport from '@/components/CompatibilityReport.vue'
 import { latestRequest } from '@/utils/latest-request'
 import { renderMarkdown } from '@/utils/markdown'
+import {
+  providerCheckStatus,
+  providerCheckStatusKeySuffix,
+  translateProviderCheck,
+} from '@/utils/provider-check'
 import { useLauncherStore } from '@/stores/launcher'
 import type {
   CredentialRefInfo,
@@ -1497,8 +1502,10 @@ async function runProviderCheck() {
   }
 }
 
+/** `a-alert` type for a status. Shares its severity table with the
+ *  early-loading window's ProviderReport.vue so both surfaces agree. */
 function providerCheckColor(status: string): 'info' | 'warning' | 'success' {
-  switch (status) {
+  switch (providerCheckStatus(status)) {
     case 'warn':
       return 'warning'
     case 'unknown':
@@ -2844,11 +2851,11 @@ const terminalRunning = ref(false)
                   class="provider-report"
                 >
                   <template #title>
-                    {{ report.route }} · {{ t(`instanceEdit.providerCheckStatus${report.status === 'warn' ? 'Warn' : report.status === 'unknown' ? 'Unknown' : 'Ok'}`) }}
+                    {{ report.route }} · {{ t(`instanceEdit.providerCheckStatus${providerCheckStatusKeySuffix(report.status)}`) }}
                   </template>
                   <ul class="provider-check-list">
                     <li v-for="(check, idx) in report.checks" :key="idx">
-                      {{ te(`instanceEdit.providerChecks.${check.code}`) ? t(`instanceEdit.providerChecks.${check.code}`, check.params) : check.code }}
+                      {{ translateProviderCheck(t, te, check.code, check.params) }}
                     </li>
                   </ul>
                 </a-alert>
