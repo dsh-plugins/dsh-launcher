@@ -595,6 +595,11 @@ mod tests {
         let mut header = tar::Header::new_gnu();
         header.set_entry_type(tar::EntryType::Directory);
         header.set_path(format!("{top}/bin")).unwrap();
+        // GNU headers are zero-filled; an untouched size field is 12 NUL bytes,
+        // which fails the tar crate's strict octal parse on read-back
+        // ("numeric field was not a number"). Real dist tarballs always carry
+        // an ASCII "0" here, so spell it out for the synthetic entry too.
+        header.set_size(0);
         header.set_mode(0o755);
         header.set_cksum();
         builder.append(&header, std::io::empty()).unwrap();
