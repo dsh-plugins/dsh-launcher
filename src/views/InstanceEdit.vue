@@ -1211,7 +1211,11 @@ async function openProviderEdit(route: ProviderRoute) {
 async function loadRouteCredential(envVar: string) {
   if (!providerEditable.value || !envVar.trim()) return
   try {
-    const cred = await api.readCredential(editingId.value!, envVar.trim())
+    const cred = await api.readCredential(
+      editingId.value!,
+      providerScopeProfile.value,
+      envVar.trim()
+    )
     routeForm.value.credentialLocked = cred?.source === 'env-override'
     routeForm.value.credentialHint = cred
       ? t('instanceEdit.providerCredentialFrom', {

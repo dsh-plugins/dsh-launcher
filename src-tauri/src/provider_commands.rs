@@ -59,6 +59,20 @@ fn scope_path(
     provider_patch::patch_path(&home, profile)
 }
 
+/// 凭证解析的作用域基准目录。
+///
+/// 与 `validate_providers` 透传给 [`crate::provider_validator::validate_routes`] 的
+/// `profile_path` 保持一致：全局作用域返回 `home`，profile 作用域返回
+/// `profiles/<p>` 目录。这样「凭据状态列 / 读取」与「校验报告」使用**完全相同**的
+/// 解析作用域，避免出现"状态列报缺失、校验报告却说已配置（来源: Profile .env）"
+/// 的自相矛盾（issue #76 PR 评审 [Medium]）。
+fn credential_scope_path(home: &Path, profile: Option<&str>) -> PathBuf {
+    match profile {
+        None => home.to_path_buf(),
+        Some(p) => crate::plugins::profile_dir_pub(home, p),
+    }
+}
+
 /// 读取作用域内的全部路由。
 fn read_routes(
     state: &State<'_, AppState>,
@@ -234,16 +248,21 @@ pub struct CredentialStatus {
 }
 
 /// 读取环境变量的值（用于显示已配置的凭证）。
+///
+/// `profile` 决定凭证解析的作用域：全局作用域只查 `<DSH_HOME>`，profile 作用域
+/// 还会查 `profiles/<p>/.env`。必须与 [`validate_providers`] 的解析作用域一致。
 #[tauri::command]
 pub fn read_credential(
     state: State<'_, AppState>,
     instance_id: String,
+    profile: Option<String>,
     env_var: String,
 ) -> Result<Option<CredentialSource>, String> {
     let home = get_home_path(&state, &instance_id)?;
     let env_overrides = env_overrides_of(&state, &instance_id);
+    let base = credential_scope_path(&home, profile.as_deref());
 
-    credential_manager::get_credential(&home, Some(&home), &env_overrides, &env_var)
+    credential_manager::get_credential(&home, Some(&base), &env_overrides, &env_var)
 }
 
 /// 保存凭证到 `<DSH_HOME>/.credentials.yaml`。
@@ -279,6 +298,7 @@ pub fn list_credential_status(
     let home = get_home_path(&state, &instance_id)?;
     let env_overrides = env_overrides_of(&state, &instance_id);
     let routes = read_routes(&state, &instance_id, profile.as_deref())?;
+    let base = credential_scope_path(&home, profile.as_deref());
 
     let mut statuses = Vec::new();
     for route in &routes {
@@ -287,7 +307,7 @@ pub fn list_credential_status(
             continue;
         }
         let is_set =
-            credential_manager::get_credential(&home, Some(&home), &env_overrides, key)?.is_some();
+            credential_manager::get_credential(&home, Some(&base), &env_overrides, key)?.is_some();
         statuses.push(CredentialStatus {
             route_name: route.name.clone(),
             env_var: key.to_string(),

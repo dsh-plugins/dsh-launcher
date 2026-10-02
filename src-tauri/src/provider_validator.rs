@@ -195,10 +195,9 @@ fn validate_single_route(
     match route.base_url.as_deref().filter(|s| !s.is_empty()) {
         Some(url) => {
             if let Err(e) = provider_config::validate_base_url(url) {
+                // 格式非法的 baseURL 运行期必然失败，与"缺少凭据"一致升级为 Error。
                 messages.push(format!("baseURL 验证失败: {}", e));
-                if status == ValidationStatus::Ok {
-                    status = ValidationStatus::Warning;
-                }
+                status = ValidationStatus::Error;
             } else if !url.starts_with("https://") {
                 messages.push("建议使用 HTTPS 端点以确保安全".to_string());
                 if status == ValidationStatus::Ok {

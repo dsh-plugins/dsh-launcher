@@ -1857,10 +1857,14 @@ export const api = {
   },
 
   /** Resolves a credential env var across all layers (value masked). */
-  async readCredential(instanceId: string, envVar: string): Promise<CredentialSource | null> {
+  async readCredential(
+    instanceId: string,
+    profile: string | null,
+    envVar: string
+  ): Promise<CredentialSource | null> {
     if (isTauri) {
       const { invoke } = await import('@tauri-apps/api/core')
-      return invoke('read_credential', { instanceId, envVar })
+      return invoke('read_credential', { instanceId, profile, envVar })
     }
     return null
   },

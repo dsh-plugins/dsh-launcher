@@ -144,11 +144,14 @@ fn route_to_value(route: &ProviderRoute) -> Result<serde_yaml::Value, String> {
 // 写入：摘除 / 追加本模块管理的 pi-ai 条目
 // ---------------------------------------------------------------------------
 
-/// 摘除本模块管理的 pi-ai 条目（连同标记注释），其余每一行按字节保留。
+/// 摘除所有 pi-ai provider 条目（连同标记注释），其余每一行按字节保留。
 ///
-/// 只移除由标记界定、或 `- name: '@deepseek-ai/dsh-llm-pi-ai'` 开头的顶层条目；
-/// 手写在别处的 pi-ai 条目**不**在此摘除（它们由 `render_providers` 追加回去时
-/// 会与原条目共存——这是有意的：本模块只拥有自己写下的那一条）。
+/// 被摘除的包括两类（见 [`pi_ai_entry_start`]）：
+/// * 由标记界定的整块（本模块 `render_providers` 写入的注释块）；
+/// * 任何以 `- name: '@deepseek-ai/dsh-llm-pi-ai'` 开头的条目——无论顶层裸条目，
+///   还是挂在 `insert:` 下的嵌套形式。手写（无标记）的 pi-ai 条目**也会**在此被摘除，
+///   之后由 `render_providers` 依据解析出的 routes 重新渲染本模块管理的条目；被解析
+///   进 routes 的条目因此原样保留。
 ///
 /// 标记必须顶格（第 0 列）；缩进的同名注释不会被当作标记，避免误删文件。
 pub fn strip_provider_entry(raw: &str) -> String {
