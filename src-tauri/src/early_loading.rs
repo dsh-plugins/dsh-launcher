@@ -213,8 +213,8 @@ pub fn report_launch_provider(
         return Ok(());
     }
     // Validate before relaying so a malformed payload fails loudly here.
-    let report: serde_json::Value =
-        serde_json::from_str(&report_json).map_err(|e| format!("无效的供应商自检报告 JSON: {e}"))?;
+    let report: serde_json::Value = serde_json::from_str(&report_json)
+        .map_err(|e| format!("无效的供应商自检报告 JSON: {e}"))?;
     app.emit_to(&label, EARLY_LOADING_PROVIDER_EVENT, report)
         .map_err(|e| e.to_string())
 }
