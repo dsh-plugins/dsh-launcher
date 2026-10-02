@@ -391,6 +391,7 @@
     "close": "Close",
     "cancel": "Cancel launch",
     "compatBlocked": "Compatibility check failed ({count} unresolved); launch aborted",
+    "providerCheck": "Provider self-check",
     "stages": {
       "preflight": "Compatibility check",
       "spawning": "Spawning the instance",

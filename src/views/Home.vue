@@ -359,6 +359,22 @@ const launchSubtitle = computed(() => {
   return `${v} · ${p}`
 })
 
+/** Runs the provider pre-launch self-check (issue #83) and forwards the report
+ *  to the early-loading window for inline display. Shares the
+ *  check_provider_routes engine (and its report shape) with the manual trigger
+ *  in the instance's Providers tab. The check is advisory only: any failure is
+ *  swallowed so it can never block or abort the launch. */
+async function runProviderPreflight(id: string, homeId: string, profile: string) {
+  try {
+    const report = await api.checkProviderRoutes(homeId, id, profile)
+    if (report && report.length) {
+      await api.reportLaunchProvider(id, report).catch(() => {})
+    }
+  } catch {
+    // Self-check is advisory; a failure must not prevent the launch.
+  }
+}
+
 async function onStart() {
   if (!selectedInstanceId.value || !selectedProfile.value) return
   const id = selectedInstanceId.value
@@ -369,6 +385,11 @@ async function onStart() {
   // compatibility preflight) until the DSH window is up.
   earlyLoadingActive.value.add(id)
   await api.openEarlyLoading(id).catch(() => {})
+  // Provider pre-launch self-check (issue #83): advisory, non-blocking. The
+  // report is forwarded to the early-loading window; launch continues either way.
+  if (selectedInstance.value) {
+    await runProviderPreflight(id, selectedInstance.value.home_id, selectedProfile.value)
+  }
   try {
     await api.reportLaunchStage(id, 'spawning')
     await api.startInstance(id, selectedProfile.value)
@@ -422,6 +443,11 @@ async function onCompatibleStart() {
   earlyLoadingActive.value.add(id)
   await api.openEarlyLoading(id).catch(() => {})
   void api.reportLaunchStage(id, 'preflight')
+  // Provider pre-launch self-check (issue #83): runs during the preflight
+  // stage, advisory and non-blocking (the launch proceeds regardless).
+  if (selectedInstance.value) {
+    await runProviderPreflight(id, selectedInstance.value.home_id, profile)
+  }
   try {
     const report = await api.startCompatibleInstance(id, profile)
     // A launch driven by the early-loading window renders the report there,
