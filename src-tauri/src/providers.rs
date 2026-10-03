@@ -203,7 +203,11 @@ fn validate_base_url(url: &str) -> Result<(), String> {
     }
 }
 
-fn validate_route(route: &ProviderRoute, taken: &[String], catalog: &[String]) -> Result<(), String> {
+fn validate_route(
+    route: &ProviderRoute,
+    taken: &[String],
+    catalog: &[String],
+) -> Result<(), String> {
     if route.id.is_empty() {
         return Err("请填写 Provider ID。".to_string());
     }
@@ -331,7 +335,9 @@ fn pi_ai_dir(version_dir: &Path) -> Option<PathBuf> {
 /// Provider display name, read from the compiled provider module. Falls back
 /// to the id: the id is what DSH's own picker shows anyway.
 fn provider_name(dir: &Path, id: &str) -> String {
-    let Ok(source) = std::fs::read_to_string(dir.join("dist").join("providers").join(format!("{id}.js"))) else {
+    let Ok(source) =
+        std::fs::read_to_string(dir.join("dist").join("providers").join(format!("{id}.js")))
+    else {
         return id.to_string();
     };
     let pattern = format!(r#"id:\s*"{id}",\s*name:\s*"([^"]+)""#);
@@ -350,7 +356,9 @@ fn provider_name(dir: &Path, id: &str) -> String {
 /// is treated as supporting keys: wrongly offering a provider only leads to a
 /// failed probe, while wrongly hiding one removes it entirely.
 fn provider_supports_api_key(dir: &Path, id: &str) -> bool {
-    let Ok(source) = std::fs::read_to_string(dir.join("dist").join("providers").join(format!("{id}.js"))) else {
+    let Ok(source) =
+        std::fs::read_to_string(dir.join("dist").join("providers").join(format!("{id}.js")))
+    else {
         return true;
     };
     match regex::Regex::new(r"\bapiKey\s*:") {
@@ -399,8 +407,7 @@ fn load_catalog_at(version_dir: &Path) -> Result<(PathBuf, ProviderCatalog), Str
         )
     })?;
     let data = dir.join("dist").join("providers").join("data");
-    let entries = std::fs::read_dir(&data)
-        .map_err(|e| format!("读取提供方目录失败: {e}"))?;
+    let entries = std::fs::read_dir(&data).map_err(|e| format!("读取提供方目录失败: {e}"))?;
 
     let mut providers: Vec<CatalogProvider> = Vec::new();
     let mut failed: Vec<String> = Vec::new();
@@ -437,7 +444,11 @@ fn load_catalog_at(version_dir: &Path) -> Result<(PathBuf, ProviderCatalog), Str
     let notice = if failed.is_empty() {
         None
     } else {
-        Some(format!("有 {} 个内置提供方未能读取：{}", failed.len(), failed.join(", ")))
+        Some(format!(
+            "有 {} 个内置提供方未能读取：{}",
+            failed.len(),
+            failed.join(", ")
+        ))
     };
     Ok((dir, ProviderCatalog { providers, notice }))
 }
@@ -453,7 +464,11 @@ fn cached_catalog(version_dir: &Path) -> Result<(PathBuf, ProviderCatalog), Stri
     let (dir, catalog) = load_catalog_at(version_dir)?;
     let mut cache = CATALOG_CACHE.lock().unwrap();
     cache.retain(|(d, _, _)| d != version_dir);
-    cache.push((version_dir.to_path_buf(), std::time::Instant::now(), catalog.clone()));
+    cache.push((
+        version_dir.to_path_buf(),
+        std::time::Instant::now(),
+        catalog.clone(),
+    ));
     Ok((dir, catalog))
 }
 
@@ -572,7 +587,10 @@ pub fn read_routes(raw: &str) -> Result<Vec<RouteEntry>, String> {
                 continue;
             }
             if let Some(map) = value.as_mapping() {
-                out.push(RouteEntry { id, map: map.clone() });
+                out.push(RouteEntry {
+                    id,
+                    map: map.clone(),
+                });
             }
         }
         return Ok(out);
@@ -582,7 +600,11 @@ pub fn read_routes(raw: &str) -> Result<Vec<RouteEntry>, String> {
 
 /// Projects one parsed route onto the wire type, keeping the unmanaged keys
 /// listed so the form can say they are preserved.
-fn to_wire(entry: &RouteEntry, catalog: &[String], credential: Option<CredentialInfo>) -> ProviderRoute {
+fn to_wire(
+    entry: &RouteEntry,
+    catalog: &[String],
+    credential: Option<CredentialInfo>,
+) -> ProviderRoute {
     let get = |key: &str| entry.map.get(key).cloned();
     let managed = ["apiKeyEnv", "displayName", "api", "baseURL", "models"];
     let extra_keys = entry
@@ -640,7 +662,10 @@ fn set_u64(map: &mut serde_yaml::Mapping, key: &str, value: u64) {
 /// `api` / `baseURL` are only written when the form supplied them: a built-in
 /// provider's endpoint and protocol come from the catalogue, and the form never
 /// shows them, so an empty value must not invent one.
-pub fn apply_route(route: &ProviderRoute, existing: Option<&serde_yaml::Mapping>) -> serde_yaml::Mapping {
+pub fn apply_route(
+    route: &ProviderRoute,
+    existing: Option<&serde_yaml::Mapping>,
+) -> serde_yaml::Mapping {
     let mut map = existing.cloned().unwrap_or_default();
 
     let reference = if route.api_key_env.trim().is_empty() {
@@ -744,14 +769,19 @@ fn insert_at(lines: &[String], start: usize, end: usize) -> usize {
 
 /// Finds a key at one indent inside a range; returns its line and the end of
 /// its block (exclusive, trailing blanks trimmed).
-fn find_key(lines: &[String], start: usize, end: usize, indent: usize, key: &str) -> Option<(usize, usize)> {
+fn find_key(
+    lines: &[String],
+    start: usize,
+    end: usize,
+    indent: usize,
+    key: &str,
+) -> Option<(usize, usize)> {
     for i in start..end {
         if indent_of(&lines[i]) != indent || key_of(&lines[i]).as_deref() != Some(key) {
             continue;
         }
         let mut block_end = end;
-        for j in (i + 1)..end {
-            let candidate = &lines[j];
+        for (j, candidate) in lines.iter().enumerate().take(end).skip(i + 1) {
             if candidate.trim().is_empty() || indent_of(candidate) > indent {
                 continue;
             }
@@ -780,7 +810,11 @@ fn entry_module(lines: &[String], start: usize, end: usize) -> Option<String> {
 
 enum Spot {
     /// `providers:` already exists; replace its content.
-    Existing { key_line: usize, content_end: usize, indent: usize },
+    Existing {
+        key_line: usize,
+        content_end: usize,
+        indent: usize,
+    },
     /// `config:` exists but has no `providers:`; insert inside it.
     UnderConfig { at: usize, indent: usize },
     /// The entry exists but has no `config:`; insert inside the entry.
@@ -801,7 +835,8 @@ fn locate_providers(lines: &[String]) -> Result<Spot, String> {
         };
         if !inline_value(&lines[config_line]).is_empty() {
             return Err(
-                "llm-pi-ai 条目的 config 是内联写法，启动器无法安全改写，请改为分行写法".to_string(),
+                "llm-pi-ai 条目的 config 是内联写法，启动器无法安全改写，请改为分行写法"
+                    .to_string(),
             );
         }
         match find_key(lines, config_line + 1, config_end, 4, "providers") {
@@ -1004,7 +1039,10 @@ pub fn request_headers(api: &str, api_key: Option<&str>) -> Vec<(String, String)
     let mut headers = vec![("accept".to_string(), "application/json".to_string())];
     let key = api_key.map(|k| k.trim()).filter(|k| !k.is_empty());
     if api == "anthropic-messages" {
-        headers.push(("anthropic-version".to_string(), ANTHROPIC_VERSION.to_string()));
+        headers.push((
+            "anthropic-version".to_string(),
+            ANTHROPIC_VERSION.to_string(),
+        ));
         if let Some(key) = key {
             headers.push(("x-api-key".to_string(), key.to_string()));
         }
@@ -1162,7 +1200,10 @@ async fn fetch_listing(
 // Path / state helpers
 // ---------------------------------------------------------------------------
 
-fn version_dir_of(state: &AppState, instance_id: &str) -> Result<(PathBuf, Option<String>), String> {
+fn version_dir_of(
+    state: &AppState,
+    instance_id: &str,
+) -> Result<(PathBuf, Option<String>), String> {
     let cfg = state.config.lock().unwrap();
     let inst = cfg
         .instances
@@ -1174,10 +1215,7 @@ fn version_dir_of(state: &AppState, instance_id: &str) -> Result<(PathBuf, Optio
         .iter()
         .find(|v| v.id == inst.version_id)
         .ok_or_else(|| "版本不存在".to_string())?;
-    Ok((
-        crate::wsl::version_fs_path(version),
-        version.wsl.clone(),
-    ))
+    Ok((crate::wsl::version_fs_path(version), version.wsl.clone()))
 }
 
 fn env_overrides_of(state: &AppState, instance_id: Option<&str>) -> BTreeMap<String, String> {
@@ -1261,8 +1299,7 @@ fn routes_with_credentials(
                 .map(yaml_str)
                 .filter(|v| !v.is_empty())
                 .unwrap_or_else(|| derive_key_ref(&entry.id));
-            let credential =
-                crate::credentials::describe(&reference, &env, home, profile).ok();
+            let credential = crate::credentials::describe(&reference, &env, home, profile).ok();
             to_wire(entry, catalog, credential)
         })
         .collect()
@@ -1383,8 +1420,10 @@ pub async fn save_provider_route(
             let info = crate::credentials::describe(&reference, &env, &home, None)?;
             crate::credentials::ensure_writable(&info)?;
             let store = crate::credentials::store_path(&home);
-            crate::wsl::run_blocking(move || crate::credentials::set(&store, &reference, api_key.trim()))
-                .await??;
+            crate::wsl::run_blocking(move || {
+                crate::credentials::set(&store, &reference, api_key.trim())
+            })
+            .await??;
         }
         return list_provider_routes(state, home_id, profile, instance_id).await;
     }
@@ -1417,10 +1456,14 @@ pub async fn save_provider_route(
         crate::credentials::ensure_writable(&info)?;
         let store = crate::credentials::store_path(&home);
         let key = api_key.trim().to_string();
-        crate::wsl::run_blocking(move || crate::credentials::set(&store, &reference, &key)).await??;
+        crate::wsl::run_blocking(move || crate::credentials::set(&store, &reference, &key))
+            .await??;
     }
 
-    let existing = entries.iter().find(|e| e.id == original).map(|e| e.map.clone());
+    let existing = entries
+        .iter()
+        .find(|e| e.id == original)
+        .map(|e| e.map.clone());
     let map = apply_route(&route, existing.as_ref());
     let final_id = if original.is_empty() {
         route.id.clone()
@@ -1531,7 +1574,8 @@ pub async fn discover_provider_models(
     if !LISTABLE_PROTOCOLS.contains(&api.as_str()) {
         return Err("pi-ai 协议不支持读取模型列表，请手动添加模型。".to_string());
     }
-    if !input.api_key.trim().is_empty() && !crate::credentials::is_valid_secret(input.api_key.trim())
+    if !input.api_key.trim().is_empty()
+        && !crate::credentials::is_valid_secret(input.api_key.trim())
     {
         return Err("该 API 密钥格式错误，请检查。".to_string());
     }
@@ -1564,7 +1608,11 @@ pub async fn discover_provider_models(
 
     let url = listing_url(&base_url, &api);
     let client = http_client()?;
-    let probe_key = if key.is_empty() { None } else { Some(key.as_str()) };
+    let probe_key = if key.is_empty() {
+        None
+    } else {
+        Some(key.as_str())
+    };
     fetch_listing(&client, &url, &api, probe_key).await
 }
 
@@ -1579,10 +1627,8 @@ pub async fn describe_credential(
     crate::wsl::ensure_home_running(&state, &home_id).await?;
     let home = home_fs_of(&state, &home_id)?;
     let env = env_overrides_of(&state, instance_id.as_deref());
-    crate::wsl::run_blocking(move || {
-        crate::credentials::describe(&reference, &env, &home, None)
-    })
-    .await?
+    crate::wsl::run_blocking(move || crate::credentials::describe(&reference, &env, &home, None))
+        .await?
 }
 
 #[cfg(test)]
@@ -1638,7 +1684,16 @@ mod tests {
         assert_eq!(route.base_url, "https://gateway.example/v1");
         assert_eq!(route.models.len(), 1);
         assert_eq!(route.models[0].context_window, Some(262144));
-        assert_eq!(route.extra_keys, vec!["compat", "headers", "timeoutMs", "retryPolicy", "modelOverrides"]);
+        assert_eq!(
+            route.extra_keys,
+            vec![
+                "compat",
+                "headers",
+                "timeoutMs",
+                "retryPolicy",
+                "modelOverrides"
+            ]
+        );
     }
 
     #[test]
@@ -1857,9 +1912,7 @@ mod tests {
     fn request_headers_per_protocol() {
         let anthropic = request_headers("anthropic-messages", Some("k"));
         assert!(anthropic.iter().any(|(k, v)| k == "x-api-key" && v == "k"));
-        assert!(anthropic
-            .iter()
-            .any(|(k, _)| k == "anthropic-version"));
+        assert!(anthropic.iter().any(|(k, _)| k == "anthropic-version"));
 
         let openai = request_headers("openai-completions", Some("k"));
         assert!(openai
@@ -1947,22 +2000,30 @@ mod tests {
         let models = catalog_models_at(&found, "moonshotai").unwrap();
         assert_eq!(models.len(), 1);
         assert_eq!(models[0].id, "kimi-k2.6");
-        assert_eq!(models[0].input, vec!["text".to_string(), "image".to_string()]);
+        assert_eq!(
+            models[0].input,
+            vec!["text".to_string(), "image".to_string()]
+        );
 
         let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
     fn catalog_missing_is_an_error_not_a_panic() {
-        let dir = std::env::temp_dir().join(format!("dsh-launcher-cat-missing-{}", uuid::Uuid::new_v4()));
+        let dir =
+            std::env::temp_dir().join(format!("dsh-launcher-cat-missing-{}", uuid::Uuid::new_v4()));
         let err = load_catalog_at(&dir).unwrap_err();
         assert!(err.contains("@earendil-works/pi-ai"), "{err}");
     }
 
     #[test]
     fn oauth_only_providers_are_flagged() {
-        let dir = std::env::temp_dir().join(format!("dsh-launcher-cat-oauth-{}", uuid::Uuid::new_v4()));
-        let package = dir.join("node_modules").join("@earendil-works").join("pi-ai");
+        let dir =
+            std::env::temp_dir().join(format!("dsh-launcher-cat-oauth-{}", uuid::Uuid::new_v4()));
+        let package = dir
+            .join("node_modules")
+            .join("@earendil-works")
+            .join("pi-ai");
         let data = package.join("dist").join("providers").join("data");
         std::fs::create_dir_all(&data).unwrap();
         std::fs::write(

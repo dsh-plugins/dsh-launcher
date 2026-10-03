@@ -296,8 +296,7 @@ fn locate_section(lines: &[String], key: &str) -> Option<Section> {
         let rest = inline_value(line);
         if rest.is_empty() {
             let mut end = lines.len();
-            for j in (i + 1)..lines.len() {
-                let candidate = &lines[j];
+            for (j, candidate) in lines.iter().enumerate().skip(i + 1) {
                 if candidate.trim().is_empty() || indent_of(candidate) > 0 {
                     continue;
                 }
@@ -345,8 +344,7 @@ fn entry_range(lines: &[String], section: &Section, key: &str) -> Option<(usize,
             continue;
         }
         let mut end = section.end;
-        for j in (i + 1)..section.end {
-            let candidate = &lines[j];
+        for (j, candidate) in lines.iter().enumerate().take(section.end).skip(i + 1) {
             if candidate.trim().is_empty() || indent_of(candidate) > item_indent {
                 continue;
             }
@@ -387,10 +385,7 @@ fn entry_indent(lines: &[String], section: &Section) -> usize {
 }
 
 fn new_store(reference: &str, value: &str) -> String {
-    format!(
-        "version: 1\nrefs:\n  {reference}: {}\n",
-        quote_yaml(value)
-    )
+    format!("version: 1\nrefs:\n  {reference}: {}\n", quote_yaml(value))
 }
 
 /// Produces the document with `refs.<reference>` set, leaving everything else
@@ -559,7 +554,8 @@ refs:
 "#;
 
     fn temp_dir(tag: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("dsh-launcher-cred-{tag}-{}", uuid::Uuid::new_v4()));
+        let dir =
+            std::env::temp_dir().join(format!("dsh-launcher-cred-{tag}-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
         dir
     }
