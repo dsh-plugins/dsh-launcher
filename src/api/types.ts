@@ -457,69 +457,86 @@ export interface McpServer {
 }
 
 // ---------------------------------------------------------------------------
-// Model providers (issue #76: `@deepseek-ai/dsh-llm-pi-ai` config.providers)
+// Model providers (issue #89) — mirrors src-tauri/src/providers.rs
 // ---------------------------------------------------------------------------
 
-/** One model entry of a route's `models` list. */
+/** One model entry as the models form shows it. */
 export interface ProviderModel {
   id: string
   name: string
-  contextWindow?: number | null
-  maxTokens?: number | null
-  /** Request modalities, e.g. ['text', 'image']. */
-  input: string[]
+  contextWindow: number | null
+  maxTokens: number | null
 }
 
-/** One editable provider route: the dict key plus the managed profile fields. */
+/** One configured route: a `providers` key plus what the form edits. */
 export interface ProviderRoute {
-  /** Dict key in `providers` — the route name. */
-  route: string
+  /** The `providers` dictionary key — permanent, never renamed. */
+  id: string
   displayName: string
+  /** Credential reference; derived from the id when left empty. */
   apiKeyEnv: string
   api: string
   baseUrl: string
-  models: ProviderModel[]
-  /** Profile keys the form does not surface (reasoning, headers), preserved. */
-  extra: Record<string, unknown>
-  /** Whether the route names a pi-ai built-in catalog provider. */
+  /** True when the installed catalogue ships this provider. */
   catalog: boolean
+  /** True for the synthetic DeepSeek card, which is credential-only. */
+  official: boolean
+  models: ProviderModel[]
+  /** Route keys the form does not surface; they are kept as-is on save. */
+  extraKeys: string[]
+  /** Filled by list; ignored by save. */
+  credential: CredentialInfo | null
 }
 
-/** The routes of one profile plus the hash guard writes must pass back. */
-export interface ProviderRouteList {
-  routes: ProviderRoute[]
-  /** sha256 of the patch file at read time. */
-  hash: string
-}
-
-/** One credential-store ref, masked for display. */
-export interface CredentialRefInfo {
+/** A provider the installed catalogue can supply. */
+export interface CatalogProvider {
+  id: string
   name: string
-  /** Masked value (`sk-a…wxyz`); the full value never leaves the backend. */
-  masked: string
-  /** The instance's env_overrides already provides this name (read-only). */
-  shadowedByEnv: boolean
+  api: string
+  baseUrl: string
+  modelCount: number
+  /** False for OAuth-only providers, which DSH does not list either. */
+  apiKey: boolean
 }
 
-/** Credential refs of one DSH_HOME plus the hash guard. */
-export interface CredentialRefList {
-  refs: CredentialRefInfo[]
-  hash: string
+/** A model as the catalogue or a discovery response describes it. */
+export interface CatalogModel {
+  id: string
+  name: string
+  contextWindow: number | null
+  maxTokens: number | null
+  input: string[]
 }
 
-/** One readiness check of a route, translated by the frontend via `code`. */
-export interface ProviderCheckItem {
-  code: string
-  /** 'ok' | 'warn' | 'unknown'. */
-  status: string
-  params: Record<string, string>
+export interface ProviderCatalog {
+  providers: CatalogProvider[]
+  /** Set when part of the catalogue could not be read. */
+  notice: string | null
 }
 
-/** The readiness report of one route: the worst status of its checks. */
-export interface ProviderRouteReport {
-  route: string
-  status: string
-  checks: ProviderCheckItem[]
+/** Descriptor for one credential reference; never carries the secret. */
+export interface CredentialInfo {
+  configured: boolean
+  /** "env" | "file" | "project-env" | "user-env"; null when unset. */
+  source: string | null
+  /** Only the "file" layer is writable through the launcher. */
+  writable: boolean
+  /** The instance's env overrides supply it, outranking the store. */
+  overriddenByInstance: boolean
+}
+
+/** Input for model discovery; mirrors what the form currently holds. */
+export interface DiscoverModelsInput {
+  instanceId: string
+  homeId: string
+  profile: string | null
+  /** Catalogue provider id when adding a built-in provider. */
+  provider: string | null
+  baseUrl: string
+  api: string
+  apiKey: string
+  /** Route being edited, so a stored key can be reused. */
+  routeId: string | null
 }
 
 export interface NewInstanceInput {
