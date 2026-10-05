@@ -31,6 +31,7 @@ import type {
 import TerminalEmbed from './TerminalEmbed.vue'
 import SkillRepoDialog from '@/components/SkillRepoDialog.vue'
 import MigratePluginsDialog from '@/components/MigratePluginsDialog.vue'
+import ModelPickerDialog from '@/components/ModelPickerDialog.vue'
 import HintIcon from '@/components/HintIcon.vue'
 import { shortRepoName } from '@/utils/repo'
 
@@ -1036,9 +1037,6 @@ const modelsBusy = ref('')
 /** null = the HOME itself, otherwise the selected profile. */
 const modelsScopeProfile = computed(() => (modelsScope.value === MODELS_GLOBAL ? null : modelsScope.value))
 
-/** The instance id drives catalogue discovery; fall back to undefined. */
-const modelsInstanceId = computed(() => editingId.value)
-
 const modelsScopePath = computed(() => {
   const home = store.homes.find((h) => h.id === homeId.value)
   if (!home) return ''
@@ -1049,28 +1047,50 @@ const modelsScopePath = computed(() => {
   return parts.join(sep)
 })
 
+const catalogError = ref('')
+/** Guards against a stale scope's response racing in after a scope switch. */
+const modelsRequests = latestRequest()
+
 async function loadModels() {
+  const request = modelsRequests.begin()
   providerRoutes.value = []
   catalog.value = null
+  catalogError.value = ''
   if (!homeId.value || homeId.value === DEDICATED || !editingId.value) return
   modelsLoading.value = true
   catalogLoading.value = true
   try {
     const [routes, cat] = await Promise.all([
       api.listProviderRoutes(homeId.value, modelsScopeProfile.value, editingId.value),
-      api.listProviderCatalog(editingId.value).catch(() => null),
+      // A failed catalogue must not silently look like "nothing to add":
+      // surface the error in the add dialog instead (no silent fallbacks).
+      api.listProviderCatalog(editingId.value).then(
+        (value) => ({ ok: true as const, value }),
+        (error) => ({ ok: false as const, error }),
+      ),
     ])
+    if (!modelsRequests.isCurrent(request)) return
     providerRoutes.value = routes
-    catalog.value = cat
+    if (cat.ok) {
+      catalog.value = cat.value
+    } else {
+      catalogError.value = String(cat.error)
+      Message.error(catalogError.value)
+    }
   } catch (e) {
-    Message.error(String(e))
+    if (modelsRequests.isCurrent(request)) Message.error(String(e))
   } finally {
-    modelsLoading.value = false
-    catalogLoading.value = false
+    if (modelsRequests.isCurrent(request)) {
+      modelsLoading.value = false
+      catalogLoading.value = false
+    }
   }
 }
 
 watch(modelsScope, async () => {
+  // Switching scopes invalidates any in-flight load so an older scope's
+  // response can never overwrite the newer one's list.
+  modelsRequests.invalidate()
   if (activeTab.value === 'models') await loadModels()
 })
 
@@ -1090,8 +1110,6 @@ interface ProviderFormState {
   /** Write-only: never read back, only stored in `.credentials.yaml`. */
   apiKey: string
   models: ProviderModel[]
-  /** Config keys the form does not surface; sent back untouched. */
-  extra: Record<string, unknown>
 }
 
 function emptyProviderForm(): ProviderFormState {
@@ -1104,7 +1122,6 @@ function emptyProviderForm(): ProviderFormState {
     baseUrl: '',
     apiKey: '',
     models: [],
-    extra: {},
   }
 }
 
@@ -1118,8 +1135,11 @@ const providerEditTarget = ref<ProviderRoute | null>(null)
 
 const providerTitle = computed(() => {
   if (providerForm.value.official) return t('instanceEdit.modelsDeepSeekTitle')
+  // The edit check must come first: an existing built-in provider also has a
+  // catalogue id, and its dialog is an edit, not an add.
+  if (providerOriginalId.value) return t('instanceEdit.modelsEditTitle')
   if (providerForm.value.catalogProviderId) return t('instanceEdit.modelsAddCatalogTitle')
-  return providerOriginalId.value ? t('instanceEdit.modelsEditTitle') : t('instanceEdit.modelsAddCustomTitle')
+  return t('instanceEdit.modelsAddCustomTitle')
 })
 
 /** Built-in providers the form may add (OAuth-only ones are excluded). */
@@ -1184,7 +1204,6 @@ function openEditProvider(route: ProviderRoute) {
     baseUrl: route.baseUrl,
     apiKey: '',
     models: route.models.map((m) => ({ ...m })),
-    extra: {},
   }
   providerEditVisible.value = true
 }
@@ -1206,13 +1225,32 @@ const providerBaseUrlError = computed(() => {
   return providerForm.value.baseUrl.trim() ? '' : t('instanceEdit.modelsErrBaseUrlRequired')
 })
 
+const providerApiError = computed(() => {
+  if (providerForm.value.catalogProviderId || providerForm.value.official) return ''
+  return providerForm.value.api ? '' : t('instanceEdit.modelsErrApiRequired')
+})
+
+/** A key is only mandatory where the route has nothing else to resolve to. */
+const providerApiKeyError = computed(() => {
+  const form = providerForm.value
+  if (!form.official && !form.catalogProviderId) return ''
+  // An existing credential may be kept by leaving the field blank.
+  if (providerEditTarget.value?.credential?.configured) return ''
+  return form.apiKey.trim() ? '' : t('instanceEdit.modelsErrApiKeyRequired')
+})
+
 const providerModelsError = computed(() => {
   if (providerForm.value.catalogProviderId || providerForm.value.official) return ''
   return providerForm.value.models.length > 0 ? '' : t('instanceEdit.modelsErrModelsRequired')
 })
 
 const providerFormValid = computed(
-  () => !providerIdError.value && !providerBaseUrlError.value && !providerModelsError.value,
+  () =>
+    !providerIdError.value &&
+    !providerApiError.value &&
+    !providerBaseUrlError.value &&
+    !providerApiKeyError.value &&
+    !providerModelsError.value,
 )
 
 /** Built-in routes inherit their models from the catalogue; never store them. */
@@ -1291,21 +1329,19 @@ async function openModelPicker() {
   modelsPickerVisible.value = true
   pickerModels.value = []
   try {
-    if (form.catalogProviderId) {
-      pickerModels.value = await api.listCatalogModels(editingId.value ?? '', form.catalogProviderId)
-    } else {
-      const input: DiscoverModelsInput = {
-        instanceId: editingId.value ?? '',
-        homeId: homeId.value ?? '',
-        profile: modelsScopeProfile.value,
-        provider: null,
-        baseUrl: form.baseUrl.trim(),
-        api: form.api,
-        apiKey: form.apiKey,
-        routeId: providerOriginalId.value || null,
-      }
-      pickerModels.value = await api.discoverProviderModels(input)
+    // Only the custom form opens the picker: built-in providers inherit
+    // their models from the catalogue and never show a model list here.
+    const input: DiscoverModelsInput = {
+      instanceId: editingId.value ?? '',
+      homeId: homeId.value ?? '',
+      profile: modelsScopeProfile.value,
+      provider: null,
+      baseUrl: form.baseUrl.trim(),
+      api: form.api,
+      apiKey: form.apiKey,
+      routeId: providerOriginalId.value || null,
     }
+    pickerModels.value = await api.discoverProviderModels(input)
   } catch (e) {
     Message.error(String(e))
   } finally {
@@ -1331,6 +1367,44 @@ function onAdoptModels(ids: string[]) {
 
 function removeModel(id: string) {
   providerForm.value.models = providerForm.value.models.filter((m) => m.id !== id)
+}
+
+// Manual model entry: the picker can fail (offline endpoint, unsupported
+// listing), so a hand-typed row must work exactly the same (issue #89 #3).
+
+/** Model IDs are endpoint-defined, so only whitespace is forbidden. */
+const MODEL_ID_RE = /^\S+$/
+
+const newModel = ref<{ id: string; name: string; contextWindow?: number; maxTokens?: number }>({
+  id: '',
+  name: '',
+})
+
+const newModelError = computed(() => {
+  const id = newModel.value.id.trim()
+  if (!id) return ''
+  if (!MODEL_ID_RE.test(id)) return t('instanceEdit.modelsErrModelIdPattern')
+  if (providerForm.value.models.some((m) => m.id === id)) {
+    return t('instanceEdit.modelsErrModelIdDuplicated')
+  }
+  return ''
+})
+
+function addManualModel() {
+  const id = newModel.value.id.trim()
+  if (!id || newModelError.value) return
+  const cw = newModel.value.contextWindow
+  const mt = newModel.value.maxTokens
+  providerForm.value.models = [
+    ...providerForm.value.models,
+    {
+      id,
+      name: newModel.value.name.trim() || id,
+      contextWindow: cw && cw > 0 ? cw : null,
+      maxTokens: mt && mt > 0 ? mt : null,
+    },
+  ]
+  newModel.value = { id: '', name: '' }
 }
 
 const officialCard = computed(() => providerRoutes.value.find((r) => r.official) ?? null)
@@ -2926,13 +3000,15 @@ const terminalRunning = ref(false)
         <!-- API key: write-only, never read back -->
         <a-form-item
           :label="t('instanceEdit.modelsApiKey')"
-          :validate-status="providerEditTarget?.credential?.overriddenByInstance ? 'warning' : undefined"
+          :required="!!providerApiKeyError"
+          :validate-status="providerApiKeyError ? 'error' : providerEditTarget?.credential?.overriddenByInstance ? 'warning' : undefined"
           :help="
-            providerEditTarget?.credential?.overriddenByInstance
+            providerApiKeyError ||
+            (providerEditTarget?.credential?.overriddenByInstance
               ? t('instanceEdit.modelsKeyOverridden')
               : providerEditTarget?.credential?.configured
                 ? t('instanceEdit.modelsKeyConfigured')
-                : t('instanceEdit.modelsApiKeyHint')
+                : t('instanceEdit.modelsApiKeyHint'))
           "
         >
           <a-input-password
@@ -2980,8 +3056,17 @@ const terminalRunning = ref(false)
           >
             <a-input v-model="providerForm.baseUrl" placeholder="https://gateway.example/v1" />
           </a-form-item>
-          <a-form-item :label="t('instanceEdit.modelsApi')">
-            <a-select v-model="providerForm.api" style="width: 320px">
+          <a-form-item
+            :label="t('instanceEdit.modelsApi')"
+            required
+            :validate-status="providerApiError ? 'error' : undefined"
+            :help="providerApiError || undefined"
+          >
+            <a-select
+              v-model="providerForm.api"
+              :placeholder="t('instanceEdit.modelsErrApiRequired')"
+              style="width: 320px"
+            >
               <a-option v-for="opt in PROVIDER_API_OPTIONS" :key="opt" :value="opt">{{ opt }}</a-option>
             </a-select>
           </a-form-item>
@@ -2993,16 +3078,56 @@ const terminalRunning = ref(false)
           >
             <div class="model-rows">
               <div v-for="model in providerForm.models" :key="model.id" class="model-row">
+                <span class="model-id">{{ model.id }}</span>
                 <a-input v-model="model.name" :placeholder="model.id" class="model-name" />
-                <span class="model-meta">
-                  {{ model.contextWindow ? t('instanceEdit.modelsCwValue', { n: model.contextWindow }) : '—' }}
-                  ·
-                  {{ model.maxTokens ? t('instanceEdit.modelsMtValue', { n: model.maxTokens }) : '—' }}
-                </span>
+                <a-input-number
+                  :model-value="model.contextWindow ?? undefined"
+                  :placeholder="t('instanceEdit.modelsContextWindow')"
+                  hide-button
+                  class="model-num"
+                  @update:model-value="(v) => (model.contextWindow = typeof v === 'number' && v > 0 ? v : null)"
+                />
+                <a-input-number
+                  :model-value="model.maxTokens ?? undefined"
+                  :placeholder="t('instanceEdit.modelsMaxTokens')"
+                  hide-button
+                  class="model-num"
+                  @update:model-value="(v) => (model.maxTokens = typeof v === 'number' && v > 0 ? v : null)"
+                />
                 <a-button status="danger" type="text" @click="removeModel(model.id)">
                   {{ t('instances.table.delete') }}
                 </a-button>
               </div>
+              <!-- Manual entry row: works exactly like the picker (issue #89 #3) -->
+              <div class="model-row model-row-new">
+                <a-input
+                  v-model="newModel.id"
+                  :placeholder="t('instanceEdit.modelsModelId')"
+                  class="model-id-input"
+                />
+                <a-input v-model="newModel.name" :placeholder="t('instanceEdit.modelsDisplayName')" class="model-name" />
+                <a-input-number
+                  v-model="newModel.contextWindow"
+                  :placeholder="t('instanceEdit.modelsContextWindow')"
+                  hide-button
+                  class="model-num"
+                />
+                <a-input-number
+                  v-model="newModel.maxTokens"
+                  :placeholder="t('instanceEdit.modelsMaxTokens')"
+                  hide-button
+                  class="model-num"
+                />
+                <a-button
+                  size="small"
+                  type="text"
+                  :disabled="!newModel.id.trim() || !!newModelError"
+                  @click="addManualModel"
+                >
+                  {{ t('instanceEdit.modelsAddModel') }}
+                </a-button>
+              </div>
+              <p v-if="newModelError" class="model-row-error">{{ newModelError }}</p>
               <a-button size="small" class="model-fetch-btn" :loading="modelsPickerLoading" @click="openModelPicker">
                 {{ t('instanceEdit.modelsFetch') }}
               </a-button>
@@ -3010,9 +3135,6 @@ const terminalRunning = ref(false)
           </a-form-item>
         </template>
 
-        <a-alert v-if="Object.keys(providerForm.extra).length" type="info">
-          {{ t('instanceEdit.modelsExtraKept', { keys: Object.keys(providerForm.extra).join(', ') }) }}
-        </a-alert>
       </a-form>
     </a-modal>
 
@@ -3034,13 +3156,21 @@ const terminalRunning = ref(false)
             :key="p.id"
             class="add-mode-card"
             type="button"
+            :disabled="providerRoutes.some((r) => r.id === p.id)"
             @click="onPickCatalog(p)"
           >
             <span class="add-mode-title">{{ p.name }}</span>
             <span class="add-mode-sub">{{ p.api }} · {{ p.baseUrl }}</span>
           </button>
         </div>
-        <a-empty v-if="!catalogLoading && catalogProviders.length === 0" :description="t('instanceEdit.modelsCatalogEmpty')" />
+        <!-- A failed catalogue must say so, not masquerade as an empty one. -->
+        <a-alert v-if="catalogError" type="error">
+          {{ t('instanceEdit.modelsCatalogError', { error: catalogError }) }}
+        </a-alert>
+        <a-empty
+          v-else-if="!catalogLoading && catalogProviders.length === 0"
+          :description="t('instanceEdit.modelsCatalogEmpty')"
+        />
       </a-spin>
     </a-modal>
 
@@ -3563,14 +3693,34 @@ const terminalRunning = ref(false)
   gap: 8px;
 }
 
+.model-id {
+  min-width: 0;
+  max-width: 40%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-family-code, monospace);
+  font-size: 12px;
+  color: var(--color-text-2);
+}
+
+.model-id-input {
+  flex: 1;
+}
+
 .model-name {
   flex: 1;
 }
 
-.model-meta {
-  color: var(--color-text-3);
+.model-num {
+  width: 120px;
+  flex-shrink: 0;
+}
+
+.model-row-error {
+  margin: 0;
   font-size: 12px;
-  white-space: nowrap;
+  color: rgb(var(--danger-6));
 }
 
 .model-fetch-btn {
@@ -3594,8 +3744,13 @@ const terminalRunning = ref(false)
   background: var(--color-bg-2);
   cursor: pointer;
 
-  &:hover {
+  &:hover:not(:disabled) {
     border-color: var(--color-primary-light-3);
+  }
+
+  &:disabled {
+    opacity: 0.45;
+    cursor: not-allowed;
   }
 }
 

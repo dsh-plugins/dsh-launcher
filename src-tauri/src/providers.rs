@@ -656,6 +656,22 @@ fn set_u64(map: &mut serde_yaml::Mapping, key: &str, value: u64) {
     );
 }
 
+/// Credential reference for a route: the form's explicit value wins, an edit
+/// keeps the reference the stored mapping already carries (a hand-written
+/// `apiKeyEnv` must survive a UI save untouched — deriving a fresh one would
+/// orphan the credential it points at), and only a route with nothing to
+/// inherit derives `<ID>_API_KEY`.
+fn resolve_api_key_env(route: &ProviderRoute, existing: Option<&serde_yaml::Mapping>) -> String {
+    if !route.api_key_env.trim().is_empty() {
+        return route.api_key_env.trim().to_string();
+    }
+    existing
+        .and_then(|m| m.get("apiKeyEnv"))
+        .map(yaml_str)
+        .filter(|v| !v.is_empty())
+        .unwrap_or_else(|| derive_key_ref(&route.id))
+}
+
 /// Applies the form onto a route, starting from the parsed mapping so every key
 /// the form does not own is carried over untouched.
 ///
@@ -668,11 +684,7 @@ pub fn apply_route(
 ) -> serde_yaml::Mapping {
     let mut map = existing.cloned().unwrap_or_default();
 
-    let reference = if route.api_key_env.trim().is_empty() {
-        derive_key_ref(&route.id)
-    } else {
-        route.api_key_env.trim().to_string()
-    };
+    let reference = resolve_api_key_env(route, existing);
     set_str(&mut map, "apiKeyEnv", &reference);
 
     if route.display_name.trim().is_empty() {
@@ -946,6 +958,11 @@ fn emit_seq_item(item: &serde_yaml::Value, indent: usize, out: &mut Vec<String>)
 /// Splices the rendered routes into the raw document, keeping every other line.
 pub fn render_routes(raw: &str, entries: &[RouteEntry]) -> Result<String, String> {
     let mut lines: Vec<String> = raw.lines().map(|l| l.to_string()).collect();
+    // Strip only top-level empty-sequence placeholders, *before* locating the
+    // providers section: deleting lines after `locate_providers` would shift
+    // the indexes it returned and splice at the wrong place, and a nested
+    // `key:\n  []` is a legal empty sequence that must survive untouched.
+    lines.retain(|l| !(indent_of(l) == 0 && l.trim() == "[]"));
     let spot = locate_providers(&lines)?;
     if entries.is_empty() && matches!(spot, Spot::AppendEntry) {
         // Nothing to write and nothing there yet: leave the file alone.
@@ -953,7 +970,6 @@ pub fn render_routes(raw: &str, entries: &[RouteEntry]) -> Result<String, String
     }
 
     let trailing_newline = raw.ends_with('\n');
-    lines.retain(|l| l.trim() != "[]");
     let providers_indent = match &spot {
         Spot::Existing { indent, .. } | Spot::UnderConfig { indent, .. } => *indent,
         _ => 4,
@@ -1285,11 +1301,11 @@ fn routes_with_credentials(
     state: &AppState,
     home: &Path,
     instance_id: Option<&str>,
+    profile: Option<&str>,
     entries: &[RouteEntry],
     catalog: &[String],
 ) -> Vec<ProviderRoute> {
     let env = env_overrides_of(state, instance_id);
-    let profile = None;
     entries
         .iter()
         .map(|entry| {
@@ -1305,9 +1321,14 @@ fn routes_with_credentials(
         .collect()
 }
 
-fn deepseek_card(state: &AppState, home: &Path, instance_id: Option<&str>) -> ProviderRoute {
+fn deepseek_card(
+    state: &AppState,
+    home: &Path,
+    instance_id: Option<&str>,
+    profile: Option<&str>,
+) -> ProviderRoute {
     let env = env_overrides_of(state, instance_id);
-    let credential = crate::credentials::describe(DEEPSEEK_REF, &env, home, None).ok();
+    let credential = crate::credentials::describe(DEEPSEEK_REF, &env, home, profile).ok();
     ProviderRoute {
         id: DEEPSEEK_ID.to_string(),
         display_name: "DeepSeek".to_string(),
@@ -1338,26 +1359,6 @@ pub async fn list_provider_catalog(
     Ok(catalog)
 }
 
-/// Model list of a built-in provider, answered by the catalogue — no network.
-#[tauri::command]
-pub async fn list_catalog_models(
-    state: State<'_, AppState>,
-    instance_id: String,
-    provider_id: String,
-) -> Result<Vec<CatalogModel>, String> {
-    let (version_dir, distro) = version_dir_of(&state, &instance_id)?;
-    if let Some(distro) = distro {
-        crate::wsl::ensure_distro_running(&state, &distro).await?;
-    }
-    let version_dir = version_dir.clone();
-    let provider_id = provider_id.clone();
-    crate::wsl::run_blocking(move || {
-        let (dir, _) = cached_catalog(&version_dir)?;
-        catalog_models_at(&dir, &provider_id)
-    })
-    .await?
-}
-
 /// Configured routes of one scope, with the DeepSeek card first — the order
 /// DSH's own models page uses.
 #[tauri::command]
@@ -1376,11 +1377,17 @@ pub async fn list_provider_routes(
         Some(id) => catalog_ids_of(&state, id),
         None => Vec::new(),
     };
-    let mut out = vec![deepseek_card(&state, &home, instance_id.as_deref())];
+    let mut out = vec![deepseek_card(
+        &state,
+        &home,
+        instance_id.as_deref(),
+        profile.as_deref(),
+    )];
     out.extend(routes_with_credentials(
         &state,
         &home,
         instance_id.as_deref(),
+        profile.as_deref(),
         &entries,
         &catalog,
     ));
@@ -1417,7 +1424,7 @@ pub async fn save_provider_route(
         }
         if !api_key.trim().is_empty() {
             let env = env_overrides_of(&state, instance_id.as_deref());
-            let info = crate::credentials::describe(&reference, &env, &home, None)?;
+            let info = crate::credentials::describe(&reference, &env, &home, profile.as_deref())?;
             crate::credentials::ensure_writable(&info)?;
             let store = crate::credentials::store_path(&home);
             crate::wsl::run_blocking(move || {
@@ -1445,14 +1452,17 @@ pub async fn save_provider_route(
         .collect();
     validate_route(&route, &taken, &catalog)?;
 
-    let reference = if route.api_key_env.trim().is_empty() {
-        derive_key_ref(&route.id)
-    } else {
-        route.api_key_env.trim().to_string()
-    };
+    // The stored mapping decides which credential reference an edit keeps:
+    // resolving before the write keeps the credential file and the patch in
+    // sync even when the form never touches `apiKeyEnv`.
+    let existing = entries
+        .iter()
+        .find(|e| e.id == original)
+        .map(|e| e.map.clone());
+    let reference = resolve_api_key_env(&route, existing.as_ref());
     if !api_key.trim().is_empty() {
         let env = env_overrides_of(&state, instance_id.as_deref());
-        let info = crate::credentials::describe(&reference, &env, &home, None)?;
+        let info = crate::credentials::describe(&reference, &env, &home, profile.as_deref())?;
         crate::credentials::ensure_writable(&info)?;
         let store = crate::credentials::store_path(&home);
         let key = api_key.trim().to_string();
@@ -1460,10 +1470,6 @@ pub async fn save_provider_route(
             .await??;
     }
 
-    let existing = entries
-        .iter()
-        .find(|e| e.id == original)
-        .map(|e| e.map.clone());
     let map = apply_route(&route, existing.as_ref());
     let final_id = if original.is_empty() {
         route.id.clone()
@@ -1614,21 +1620,6 @@ pub async fn discover_provider_models(
         Some(key.as_str())
     };
     fetch_listing(&client, &url, &api, probe_key).await
-}
-
-/// Descriptor for one credential reference; never returns the secret.
-#[tauri::command]
-pub async fn describe_credential(
-    state: State<'_, AppState>,
-    instance_id: Option<String>,
-    home_id: String,
-    reference: String,
-) -> Result<CredentialInfo, String> {
-    crate::wsl::ensure_home_running(&state, &home_id).await?;
-    let home = home_fs_of(&state, &home_id)?;
-    let env = env_overrides_of(&state, instance_id.as_deref());
-    crate::wsl::run_blocking(move || crate::credentials::describe(&reference, &env, &home, None))
-        .await?
 }
 
 #[cfg(test)]
@@ -1890,6 +1881,107 @@ mod tests {
         assert_eq!(derive_key_ref("minimax-cn"), "MINIMAX_CN_API_KEY");
         assert_eq!(derive_key_ref("my-gateway"), "MY_GATEWAY_API_KEY");
         assert_eq!(derive_key_ref("zai"), "ZAI_API_KEY");
+    }
+
+    #[test]
+    fn editing_keeps_a_custom_api_key_env() {
+        let entries = read_routes(SAMPLE_PATCH).unwrap();
+        // The form never surfaces `apiKeyEnv`, so it arrives empty; the stored
+        // reference must survive untouched instead of being rewritten.
+        let edited = ProviderRoute {
+            id: "my-gateway".to_string(),
+            display_name: "网关".to_string(),
+            api: "openai-completions".to_string(),
+            base_url: "https://gateway.example/v1".to_string(),
+            models: vec![ProviderModel {
+                id: "m".to_string(),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let map = apply_route(&edited, Some(&entries[0].map));
+        assert_eq!(
+            map.get("apiKeyEnv").map(yaml_str).as_deref(),
+            Some("GATEWAY_API_KEY")
+        );
+        // A brand-new route (nothing to inherit) still derives `<ID>_API_KEY`.
+        let fresh = apply_route(&edited, None);
+        assert_eq!(
+            fresh.get("apiKeyEnv").map(yaml_str).as_deref(),
+            Some("MY_GATEWAY_API_KEY")
+        );
+    }
+
+    #[test]
+    fn nested_empty_sequence_placeholders_survive_a_save() {
+        // `placeholders:\n    []` is a legal empty sequence inside a sibling
+        // entry *before* the providers block: it must neither shift the splice
+        // indexes (the old code stripped every bare `[]` line after locating
+        // the section) nor be deleted.
+        let raw = concat!(
+            "# header\n",
+            "- id: ui-settings-general\n",
+            "  name: \"x\"\n",
+            "  placeholders:\n",
+            "    []\n",
+            "# 手写注释\n",
+            "- id: llm-pi-ai\n",
+            "  name: \"@deepseek-ai/dsh-llm-pi-ai\"\n",
+            "  config:\n",
+            "    providers:\n",
+            "      my-gateway:\n",
+            "        apiKeyEnv: GATEWAY_API_KEY\n",
+        );
+        let entries = read_routes(raw).unwrap();
+        assert_eq!(entries.len(), 1);
+        let mut next = entries.clone();
+        next[0].map.insert(
+            serde_yaml::Value::String("displayName".to_string()),
+            serde_yaml::Value::String("网关".to_string()),
+        );
+        let out = render_routes(raw, &next).unwrap();
+        assert!(
+            out.contains("placeholders:\n    []\n"),
+            "嵌套空序列被误删:\n{out}"
+        );
+        assert!(out.contains("# 手写注释"));
+        let reparsed = read_routes(&out).unwrap();
+        let route = reparsed.iter().find(|e| e.id == "my-gateway").unwrap();
+        assert_eq!(
+            route.map.get("displayName").map(yaml_str).as_deref(),
+            Some("网关")
+        );
+        assert_eq!(
+            route.map.get("apiKeyEnv").map(yaml_str).as_deref(),
+            Some("GATEWAY_API_KEY")
+        );
+    }
+
+    #[test]
+    fn nested_empty_sequence_after_providers_survives_too() {
+        // Same placeholder, but after the providers block: the old code
+        // silently deleted it, turning `placeholders:` from an empty sequence
+        // into null.
+        let raw = concat!(
+            "- id: llm-pi-ai\n",
+            "  name: \"@deepseek-ai/dsh-llm-pi-ai\"\n",
+            "  config:\n",
+            "    providers:\n",
+            "      my-gateway:\n",
+            "        apiKeyEnv: GATEWAY_API_KEY\n",
+            "  placeholders:\n",
+            "    []\n",
+        );
+        let entries = read_routes(raw).unwrap();
+        assert_eq!(entries.len(), 1);
+        let out = render_routes(raw, &entries).unwrap();
+        assert!(
+            out.contains("placeholders:\n    []\n"),
+            "嵌套空序列被误删:\n{out}"
+        );
+        let reparsed = read_routes(&out).unwrap();
+        assert_eq!(reparsed.len(), 1);
+        assert_eq!(reparsed[0].id, "my-gateway");
     }
 
     #[test]

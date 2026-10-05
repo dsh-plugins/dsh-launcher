@@ -57,7 +57,6 @@ import type {
   LaunchStage,
   CatalogModel,
   CatalogProvider,
-  CredentialInfo,
   DiscoverModelsInput,
   ProviderCatalog,
   ProviderRoute,
@@ -268,6 +267,38 @@ async function mockCall<T>(cmd: string, args?: Record<string, unknown>): Promise
   const db = loadDb()
   function fail(msg: string): never {
     throw new Error(msg)
+  }
+
+  /** The DeepSeek synthetic card, exactly what the real backend prepends. */
+  const mockDeepseekCard: ProviderRoute = {
+    id: 'deepseek-official',
+    displayName: 'DeepSeek',
+    apiKeyEnv: 'DEEPSEEK_API_KEY',
+    api: '',
+    baseUrl: 'https://api.deepseek.com/anthropic',
+    catalog: false,
+    official: true,
+    models: [],
+    extraKeys: [],
+    credential: null,
+  }
+  /** Attaches credential descriptors and prepends the DeepSeek card, so every
+   * provider command resolves to the same shape the real backend re-reads. */
+  function mockProviderRoutes(list: ProviderRoute[]): ProviderRoute[] {
+    const withCredential = (r: ProviderRoute): ProviderRoute => {
+      const ref = r.apiKeyEnv || `${r.id.toUpperCase().replace(/[^A-Z0-9]+/g, '_')}_API_KEY`
+      const key = r.official ? 'DEEPSEEK_API_KEY' : ref
+      return {
+        ...r,
+        credential: {
+          configured: !!db.credentials[key],
+          source: db.credentials[key] ? 'file' : null,
+          writable: true,
+          overriddenByInstance: false,
+        },
+      }
+    }
+    return [withCredential(mockDeepseekCard), ...list.map(withCredential)]
   }
 
   switch (cmd) {
@@ -1041,46 +1072,9 @@ async function mockCall<T>(cmd: string, args?: Record<string, unknown>): Promise
     // ---- Model providers (issue #89) ----
     case 'list_provider_catalog':
       return { providers: MOCK_CATALOG, notice: null } as T
-    case 'list_catalog_models': {
-      const providerId = String(args?.providerId ?? '')
-      return [
-        { id: `${providerId}-fast`, name: `${providerId} fast`, context_window: 262144, max_tokens: 65536, input: ['text'] },
-        { id: `${providerId}-pro`, name: `${providerId} pro`, context_window: 1000000, max_tokens: 131072, input: ['text', 'image'] },
-      ] as T
-    }
     case 'list_provider_routes': {
       const key = providerScopeKey(args)
-      const list = [...(db.providers[key] ?? [])]
-      const ref = (r: ProviderRoute) => r.apiKeyEnv || `${r.id.toUpperCase().replace(/[^A-Z0-9]+/g, '_')}_API_KEY`
-      const withCredential = (r: ProviderRoute): ProviderRoute => ({
-        ...r,
-        credential: r.official
-          ? {
-              configured: !!db.credentials['DEEPSEEK_API_KEY'],
-              source: db.credentials['DEEPSEEK_API_KEY'] ? 'file' : null,
-              writable: true,
-              overriddenByInstance: false,
-            }
-          : {
-              configured: !!db.credentials[ref(r)],
-              source: db.credentials[ref(r)] ? 'file' : null,
-              writable: true,
-              overriddenByInstance: false,
-            },
-      })
-      const deepseek: ProviderRoute = {
-        id: 'deepseek-official',
-        displayName: 'DeepSeek',
-        apiKeyEnv: 'DEEPSEEK_API_KEY',
-        api: '',
-        baseUrl: 'https://api.deepseek.com/anthropic',
-        catalog: false,
-        official: true,
-        models: [],
-        extraKeys: [],
-        credential: null,
-      }
-      return [withCredential(deepseek), ...list.map(withCredential)] as T
+      return mockProviderRoutes([...(db.providers[key] ?? [])]) as T
     }
     case 'save_provider_route': {
       const key = providerScopeKey(args)
@@ -1094,14 +1088,15 @@ async function mockCall<T>(cmd: string, args?: Record<string, unknown>): Promise
       }
       if (route.official) {
         saveDb(db)
-        return list as T
+        // The real backend re-reads the scope, DeepSeek card included.
+        return mockProviderRoutes(list) as T
       }
       const index = originalId ? list.findIndex((r) => r.id === originalId) : -1
       if (index >= 0) list[index] = { ...route, id: originalId }
       else list.push(route)
       db.providers[key] = list
       saveDb(db)
-      return list as T
+      return mockProviderRoutes(list) as T
     }
     case 'delete_provider_route': {
       const key = providerScopeKey(args)
@@ -1120,7 +1115,7 @@ async function mockCall<T>(cmd: string, args?: Record<string, unknown>): Promise
         }
       }
       saveDb(db)
-      return (db.providers[key] ?? []) as T
+      return mockProviderRoutes(db.providers[key] ?? []) as T
     }
     // The browser preview never touches the network.
     case 'discover_provider_models': {
@@ -1130,15 +1125,6 @@ async function mockCall<T>(cmd: string, args?: Record<string, unknown>): Promise
         { id: `${prefix}-discovered-1`, name: `${prefix} discovered 1`, contextWindow: 131072, maxTokens: 32768, input: [] },
         { id: `${prefix}-discovered-2`, name: `${prefix} discovered 2`, contextWindow: 262144, maxTokens: 65536, input: [] },
       ] as T
-    }
-    case 'describe_credential': {
-      const reference = String(args?.reference ?? '')
-      return {
-        configured: !!db.credentials[reference],
-        source: db.credentials[reference] ? 'file' : null,
-        writable: true,
-        overridden_by_instance: false,
-      } as T
     }
     case 'read_modpack_manifest':
       return {
@@ -1693,9 +1679,6 @@ export const api = {
    */
   listProviderCatalog: (instanceId: string) =>
     call<ProviderCatalog>('list_provider_catalog', { instanceId }),
-  /** Models of a built-in provider, answered by the catalogue — no network. */
-  listCatalogModels: (instanceId: string, providerId: string) =>
-    call<CatalogModel[]>('list_catalog_models', { instanceId, providerId }),
   /**
    * Configured routes of one scope, DeepSeek card first (issue #89).
    * `profile: null` reads `<HOME>/cordis.patch.yml`; a profile name reads
@@ -1730,9 +1713,6 @@ export const api = {
   /** Asks an endpoint which models it serves; built-ins skip the request. */
   discoverProviderModels: (input: DiscoverModelsInput) =>
     call<CatalogModel[]>('discover_provider_models', { input }),
-  /** Descriptor for one credential reference; never returns the secret. */
-  describeCredential: (instanceId: string | null, homeId: string, reference: string) =>
-    call<CredentialInfo>('describe_credential', { instanceId, homeId, reference }),
   exportModpack: (input: ExportModpackInput) => call<string>('export_modpack', { input }),
   /** Multi-profile (manifest v5 dshhome) export. */
   exportDshhomeModpack: (input: ExportDshhomeInput) =>

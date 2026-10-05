@@ -727,6 +727,23 @@ refs:
     }
 
     #[test]
+    fn rejects_a_flat_prerelease_store_without_touching_it() {
+        // Pre-release homes ship a flat document with no `version`; DSH still
+        // migrates it on read, so writing a `refs:` block into it would come
+        // back as `refs.refs.<KEY>` after DSH's migration and stop DSH from
+        // booting. The launcher must refuse up front and leave the file
+        // byte-for-byte alone.
+        let home = temp_dir("flat-prerelease");
+        let path = store_path(&home);
+        let raw = "DEEPSEEK_API_KEY: sk-legacy\nOTHER_API_KEY: sk-other\n";
+        std::fs::write(&path, raw).unwrap();
+        let err = set(&path, "NEW_API_KEY", "sk-new").unwrap_err();
+        assert!(err.contains("缺少 version: 1"), "{err}");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), raw);
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[test]
     fn rejects_inline_refs_with_entries() {
         let home = temp_dir("inline-refs");
         let path = store_path(&home);
