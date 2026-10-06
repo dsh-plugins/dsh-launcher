@@ -616,10 +616,10 @@ function onAgentsEditorKeydown(event: KeyboardEvent) {
 }
 
 const skillColumns = computed(() => [
-  { title: t('instanceEdit.skillColName'), dataIndex: 'name', width: 180 },
-  { title: t('instanceEdit.skillColDesc'), dataIndex: 'description', ellipsis: true, tooltip: true },
-  { title: t('instanceEdit.skillColOrigin'), slotName: 'origin', width: 220 },
-  { title: t('instances.table.actions'), slotName: 'skillActions', width: 170, align: 'center' as const, fixed: 'right' as const },
+  { title: t('instanceEdit.skillColName'), slotName: 'skillName' },
+  { title: t('instanceEdit.skillColDesc'), slotName: 'skillDesc' },
+  { title: t('instanceEdit.skillColOrigin'), slotName: 'origin' },
+  { title: t('instances.table.actions'), slotName: 'skillActions', width: 170, align: 'center' as const },
 ])
 
 async function loadSkills() {
@@ -813,12 +813,17 @@ const mcpScopePath = computed(() => {
 })
 
 const mcpColumns = computed(() => [
-  { title: t('instanceEdit.mcpColName'), dataIndex: 'serverName', width: 160 },
+  { title: t('instanceEdit.mcpColName'), slotName: 'mcpName' },
   { title: t('instanceEdit.mcpColTransport'), slotName: 'mcpTransport', width: 150 },
-  { title: t('instanceEdit.mcpColTarget'), slotName: 'mcpTarget', ellipsis: true, tooltip: true },
+  { title: t('instanceEdit.mcpColTarget'), slotName: 'mcpTarget' },
   { title: t('instanceEdit.mcpColStatus'), slotName: 'mcpStatus', width: 110 },
-  { title: t('instances.table.actions'), slotName: 'mcpActions', width: 150, align: 'center' as const, fixed: 'right' as const },
+  { title: t('instances.table.actions'), slotName: 'mcpActions', width: 150, align: 'center' as const },
 ])
+
+/** One-line endpoint summary shown in the target column (stdio → command). */
+function mcpTargetText(server: McpServer): string {
+  return server.transport === 'stdio' ? server.command : server.url
+}
 
 async function loadMcpServers() {
   mcpServers.value = []
@@ -1491,11 +1496,14 @@ watch([pluginProfile, homeId], async () => {
 
 // --- Storage redirection tab (issue #51) ---------------------------------------
 
+// Issue #92: text columns have no fixed width — the tables below use auto
+// layout (no scroll.x) so nowrap cells size to their content instead of
+// wrapping; the wrapper scrolls horizontally when the table outgrows the card.
 const storageColumns = [
   { title: t('instanceEdit.storageEntry'), dataIndex: 'entry', width: 180 },
   { title: t('instanceEdit.storageTarget'), slotName: 'storageTarget' },
   { title: t('instanceEdit.storageStatus'), slotName: 'storageStatus', width: 110, align: 'center' as const },
-  { title: t('instances.table.actions'), slotName: 'storageActions', width: 190, align: 'center' as const, fixed: 'right' as const },
+  { title: t('instances.table.actions'), slotName: 'storageActions', width: 190, align: 'center' as const },
 ]
 
 const homeLinks = ref<HomeLinkInfo[]>([])
@@ -2476,19 +2484,27 @@ const terminalRunning = ref(false)
                 </a-button>
               </div>
 
-              <a-table
-                :columns="skillColumns"
-                :data="skills"
-                :loading="skillsLoading"
-                :pagination="false"
-                :row-selection="rowSelection"
-                :scroll="{ x: 860 }"
-                row-key="name"
-                size="small"
-                @selection-change="onSkillSelectionChange"
-              >
+              <div class="table-scroll">
+                <a-table
+                  :columns="skillColumns"
+                  :data="skills"
+                  :loading="skillsLoading"
+                  :pagination="false"
+                  :row-selection="rowSelection"
+                  row-key="name"
+                  size="small"
+                  @selection-change="onSkillSelectionChange"
+                >
+                <template #skillName="{ record }">
+                  <span class="cell-nowrap">{{ record.name }}</span>
+                </template>
+                <template #skillDesc="{ record }">
+                  <a-tooltip :content="record.description" :disabled="!record.description">
+                    <span class="cell-ellipsis">{{ record.description }}</span>
+                  </a-tooltip>
+                </template>
                 <template #origin="{ record }">
-                  <template v-if="record.origin">
+                  <div v-if="record.origin" class="cell-nowrap">
                     <a-tag size="small" color="blue">{{ record.origin.tag ?? record.origin.commit.slice(0, 7) }}</a-tag>
                     <a-tooltip :content="record.origin.repo">
                       <span class="skill-repo-ref">{{ shortRepoName(record.origin.repo) }}</span>
@@ -2496,7 +2512,7 @@ const terminalRunning = ref(false)
                     <a-tag v-if="skillUpdateOf(record.name)" size="small" color="orange">
                       {{ t('instanceEdit.skillHasUpdate', { version: skillUpdateOf(record.name)!.latest }) }}
                     </a-tag>
-                  </template>
+                  </div>
                   <span v-else class="skill-repo-ref">—</span>
                 </template>
                 <template #skillActions="{ record }">
@@ -2523,7 +2539,8 @@ const terminalRunning = ref(false)
                 <template #empty>
                   <a-empty :description="t('instanceEdit.skillsEmpty')" />
                 </template>
-              </a-table>
+                </a-table>
+              </div>
             </template>
 
             <a-alert v-else type="info">
@@ -2606,15 +2623,18 @@ const terminalRunning = ref(false)
               </div>
               <p class="mcp-path">{{ t('instanceEdit.mcpScopePath', { path: mcpScopePath }) }}</p>
 
-              <a-table
-                :columns="mcpColumns"
-                :data="mcpServers"
-                :loading="mcpLoading"
-                :pagination="false"
-                :scroll="{ x: 900 }"
-                row-key="id"
-                size="small"
-              >
+              <div class="table-scroll">
+                <a-table
+                  :columns="mcpColumns"
+                  :data="mcpServers"
+                  :loading="mcpLoading"
+                  :pagination="false"
+                  row-key="id"
+                  size="small"
+                >
+                <template #mcpName="{ record }">
+                  <span class="cell-nowrap">{{ record.serverName }}</span>
+                </template>
                 <template #mcpTransport="{ record }">
                   <a-tag size="small" :color="record.transport === 'stdio' ? 'arcoblue' : 'green'">
                     {{
@@ -2625,9 +2645,9 @@ const terminalRunning = ref(false)
                   </a-tag>
                 </template>
                 <template #mcpTarget="{ record }">
-                  <span class="mcp-target">
-                    {{ record.transport === 'stdio' ? record.command : record.url }}
-                  </span>
+                  <a-tooltip :content="mcpTargetText(record)" :disabled="!mcpTargetText(record)">
+                    <span class="mcp-target cell-ellipsis">{{ mcpTargetText(record) }}</span>
+                  </a-tooltip>
                 </template>
                 <template #mcpStatus="{ record }">
                   <a-switch
@@ -2656,7 +2676,8 @@ const terminalRunning = ref(false)
                 <template #empty>
                   <a-empty :description="t('instanceEdit.mcpEmpty')" />
                 </template>
-              </a-table>
+                </a-table>
+              </div>
             </template>
 
             <a-alert v-else type="info">
@@ -2772,16 +2793,16 @@ const terminalRunning = ref(false)
               <a-alert type="warning" class="storage-caveat">
                 {{ t('instanceEdit.storageCaveat') }}
               </a-alert>
-              <a-table
-                :columns="storageColumns"
-                :data="homeLinks"
-                :loading="homeLinksLoading"
-                :pagination="false"
-                :scroll="{ x: 900 }"
-                size="small"
-              >
+              <div class="table-scroll">
+                <a-table
+                  :columns="storageColumns"
+                  :data="homeLinks"
+                  :loading="homeLinksLoading"
+                  :pagination="false"
+                  size="small"
+                >
                 <template #storageTarget="{ record }">
-                  <span v-if="record.target" class="storage-target">{{ record.target }}</span>
+                  <span v-if="record.target" class="cell-nowrap">{{ record.target }}</span>
                   <span v-else class="storage-default">{{ t('instanceEdit.storageDefault') }}</span>
                 </template>
                 <template #storageStatus="{ record }">
@@ -2807,7 +2828,8 @@ const terminalRunning = ref(false)
                     </a-button>
                   </a-popconfirm>
                 </template>
-              </a-table>
+                </a-table>
+              </div>
             </template>
 
             <a-alert v-else-if="!isWsl" type="info">
@@ -3400,8 +3422,27 @@ const terminalRunning = ref(false)
   margin-bottom: 12px;
 }
 
-.storage-target {
-  word-break: break-all;
+/* Issue #92: content-sized table columns. The tables above use auto layout
+   (no scroll.x, no ellipsis columns), so nowrap cells size to their content
+   instead of wrapping, and this wrapper scrolls horizontally when a table
+   outgrows the card. */
+.table-scroll {
+  overflow-x: auto;
+}
+
+.cell-nowrap {
+  white-space: nowrap;
+}
+
+/* Manual single-line clamp: the built-in column ellipsis would force Arco's
+   fixed table layout and defeat the content-sized columns above. */
+.cell-ellipsis {
+  display: inline-block;
+  max-width: 420px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  vertical-align: bottom;
 }
 
 .storage-default {
