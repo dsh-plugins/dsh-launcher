@@ -527,7 +527,7 @@
     "agentsDesc": "直接编辑/预览该实例 DSH_HOME 下的 AGENTS.md（<HOME>/AGENTS.md，各实例按 HOME 共享）。",
     "agentsPreview": "预览",
     "agentsEdit": "编辑",
-    "agentsSave": "保存（Ctrl+S）",
+    "agentsSave": "保存并返回（Ctrl+S）",
     "agentsEmpty": "暂无内容，输入 AGENTS.md 的 Markdown 文本",
     "agentsSaved": "AGENTS.md 已保存",
     "skillsEmpty": "暂无 SKILL",

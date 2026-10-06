@@ -195,19 +195,26 @@ pub async fn list_home_links(
     if home.wsl.is_some() {
         return Err("WSL 实例的 DSH_HOME 暂不支持存储重定向".to_string());
     }
-    let mut out = Vec::new();
-    for (entry, is_dir) in REDIRECTABLE {
-        let target = home.links.get(*entry).cloned().unwrap_or_default();
-        let active =
-            !target.is_empty() && link_points_to(&home.path.join(entry), Path::new(&target));
-        out.push(HomeLinkInfo {
-            entry: entry.to_string(),
-            is_dir: *is_dir,
-            target,
-            active,
-        });
-    }
-    Ok(out)
+    let home_path = home.path.clone();
+    let links = home.links.clone();
+    // Symlink/canonicalize probes are blocking fs calls: keep them off the
+    // async executor like every other launcher fs walk (wsl::run_blocking).
+    crate::wsl::run_blocking(move || {
+        let mut out = Vec::new();
+        for (entry, is_dir) in REDIRECTABLE {
+            let target = links.get(*entry).cloned().unwrap_or_default();
+            let active =
+                !target.is_empty() && link_points_to(&home_path.join(entry), Path::new(&target));
+            out.push(HomeLinkInfo {
+                entry: entry.to_string(),
+                is_dir: *is_dir,
+                target,
+                active,
+            });
+        }
+        out
+    })
+    .await
 }
 
 /// Validates a redirection target against the HOME. The caller has already
@@ -277,11 +284,32 @@ pub async fn set_home_link(
     ensure_no_running_instance(&state, &home_id).await?;
 
     let target_path = PathBuf::from(target.trim());
+    let home_path = home.path.clone();
+    let entry_fs = entry.clone();
+    let target_fs = target_path.clone();
+    // Validation, the swap and link creation are all blocking fs work; run
+    // them on a blocking thread (wsl::run_blocking) and only leave the config
+    // update below on the async executor.
+    crate::wsl::run_blocking(move || set_home_link_fs(&home_path, &entry_fs, &target_fs, is_dir))
+        .await??;
+    record_link(&state, &home_id, &entry, &target_path)
+}
+
+/// The blocking filesystem half of `set_home_link`: materializes the anchor
+/// the link needs, validates the target, swaps any existing entry out of the
+/// way, and creates the replacement link. Config persistence is the caller's
+/// job.
+fn set_home_link_fs(
+    home_path: &Path,
+    entry: &str,
+    target_path: &Path,
+    is_dir: bool,
+) -> Result<(), String> {
     // Materialize the anchor the link needs before validation runs: directory
     // targets are created outright; a missing AGENTS.md gets its parent
     // directory so the link has a stable location to hang on.
     if is_dir {
-        std::fs::create_dir_all(&target_path).map_err(|e| format!("创建目标目录失败: {e}"))?;
+        std::fs::create_dir_all(target_path).map_err(|e| format!("创建目标目录失败: {e}"))?;
     } else if entry == AGENTS_MD && !target_path.exists() {
         let parent = target_path
             .parent()
@@ -289,33 +317,33 @@ pub async fn set_home_link(
             .ok_or_else(|| "目标路径缺少父目录".to_string())?;
         std::fs::create_dir_all(parent).map_err(|e| format!("创建目标目录失败: {e}"))?;
     }
-    check_target(&home.path, &entry, &target_path, is_dir)?;
+    check_target(home_path, entry, target_path, is_dir)?;
 
     // Swap the existing entry out of the way.
-    let link_path = home.path.join(&entry);
+    let link_path = home_path.join(entry);
     if crate::commands::entry_is_dir_link(&link_path)
         || link_path
             .symlink_metadata()
             .is_ok_and(|m| m.file_type().is_symlink())
     {
-        if !link_points_to(&link_path, &target_path) {
+        if !link_points_to(&link_path, target_path) {
             remove_link(&link_path, is_dir).map_err(|e| format!("移除旧链接失败: {e}"))?;
         } else {
-            // Already pointing at this target: just record it.
-            return record_link(&state, &home_id, &entry, &target_path);
+            // Already pointing at this target: nothing to swap or re-create.
+            return Ok(());
         }
     } else if link_path.exists() {
         if is_dir {
             // Move existing content into the (fresh) target when possible,
             // otherwise keep it as a timestamped backup.
-            let target_empty = std::fs::read_dir(&target_path)
+            let target_empty = std::fs::read_dir(target_path)
                 .map(|mut it| it.next().is_none())
                 .unwrap_or(false);
             if target_empty {
-                std::fs::rename(&link_path, &target_path)
+                std::fs::rename(&link_path, target_path)
                     .map_err(|e| format!("迁移现有目录到目标失败: {e}"))?;
             } else {
-                let bak = home.path.join(format!(
+                let bak = home_path.join(format!(
                     "{entry}.bak-{}",
                     chrono::Local::now().format("%Y%m%d%H%M%S")
                 ));
@@ -323,7 +351,7 @@ pub async fn set_home_link(
                 crate::log_warn!("存储重定向：现有 {entry} 已备份为 {}", bak.display());
             }
         } else {
-            let bak = home.path.join(format!(
+            let bak = home_path.join(format!(
                 "{entry}.bak-{}",
                 chrono::Local::now().format("%Y%m%d%H%M%S")
             ));
@@ -333,12 +361,12 @@ pub async fn set_home_link(
     }
 
     if is_dir {
-        crate::commands::create_dir_link(&target_path, &link_path)
+        crate::commands::create_dir_link(target_path, &link_path)
             .map_err(|e| format!("创建目录链接失败: {e}"))?;
     } else {
-        create_file_link(&target_path, &link_path).map_err(|e| format!("创建文件链接失败: {e}"))?;
+        create_file_link(target_path, &link_path).map_err(|e| format!("创建文件链接失败: {e}"))?;
     }
-    record_link(&state, &home_id, &entry, &target_path)
+    Ok(())
 }
 
 fn record_link(

@@ -1812,10 +1812,12 @@ async function loadLinkPresets(entry: string) {
   }
 }
 
-// A different HOME invalidates every cached candidate set.
+// A different HOME invalidates every cached candidate set, and the batch
+// selection belongs to the previous HOME's entry list.
 watch(homeId, () => {
   linkPresetCache.clear()
   linkPresets.value = []
+  storageSelected.value = []
 })
 
 async function openLinkDialog(link: HomeLinkInfo) {
@@ -3064,6 +3066,7 @@ const terminalRunning = ref(false)
                   :pagination="false"
                   row-key="entry"
                   :row-selection="storageRowSelection"
+                  :selected-keys="storageSelected"
                   size="small"
                   @selection-change="onStorageSelectionChange"
                 >
