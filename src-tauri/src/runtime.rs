@@ -595,6 +595,7 @@ mod tests {
         let mut header = tar::Header::new_gnu();
         header.set_entry_type(tar::EntryType::Directory);
         header.set_path(format!("{top}/bin")).unwrap();
+        header.set_size(0);
         header.set_mode(0o755);
         header.set_cksum();
         builder.append(&header, std::io::empty()).unwrap();

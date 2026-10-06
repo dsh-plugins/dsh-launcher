@@ -10,7 +10,10 @@ import { latestRequest } from '@/utils/latest-request'
 import { renderMarkdown } from '@/utils/markdown'
 import { useLauncherStore } from '@/stores/launcher'
 import type {
-  CredentialRefInfo,
+  CatalogModel,
+  CatalogProvider,
+  CredentialInfo,
+  DiscoverModelsInput,
   DshInstance,
   HomeLinkInfo,
   HomeLinkSuggestion,
@@ -19,14 +22,16 @@ import type {
   McpServer,
   McpTransport,
   PluginUpdateInfo,
+  ProviderCatalog,
+  ProviderModel,
   ProviderRoute,
-  ProviderRouteReport,
   SkillInfo,
   SkillUpdateInfo,
 } from '@/api/types'
 import TerminalEmbed from './TerminalEmbed.vue'
 import SkillRepoDialog from '@/components/SkillRepoDialog.vue'
 import MigratePluginsDialog from '@/components/MigratePluginsDialog.vue'
+import ModelPickerDialog from '@/components/ModelPickerDialog.vue'
 import HintIcon from '@/components/HintIcon.vue'
 import { shortRepoName } from '@/utils/repo'
 
@@ -53,7 +58,7 @@ const homeOptions = computed(() =>
 
 // --- Sidebar tabs ---------------------------------------------------------------
 
-type TabKey = 'basic' | 'env' | 'profiles' | 'plugins' | 'skills' | 'agents' | 'mcp' | 'providers' | 'storage' | 'terminal'
+type TabKey = 'basic' | 'env' | 'profiles' | 'plugins' | 'skills' | 'agents' | 'mcp' | 'models' | 'storage' | 'terminal'
 const activeTab = ref<TabKey>('basic')
 
 // --- Form state ---------------------------------------------------------------
@@ -830,9 +835,6 @@ const MCP_NAME_RE = /^[A-Za-z0-9_-]{1,32}$/
 const HEADER_KEY_RE = /^[A-Za-z0-9!#$%&'*+.^_`|~-]+$/
 
 function isHttpUrl(value: string): boolean {
-  // Mirrors the backend rule: whitespace/control chars anywhere are invalid —
-  // the URL parser would silently percent-encode them instead of failing.
-  if (/[\s\x00-\x1f]/.test(value)) return false
   try {
     const url = new URL(value)
     return (url.protocol === 'http:' || url.protocol === 'https:') && !!url.hostname
@@ -1019,494 +1021,394 @@ async function onDeleteMcpServer(server: McpServer) {
   }
 }
 
-// --- Model providers (issue #76) -----------------------------------------------
+// --- Models tab (issue #89): configure model providers exactly like DSH's
+// "Settings → Models" page. The launcher writes the same `cordis.patch.yml`
+// `llm-pi-ai.config.providers` dict DSH does, plus the key in `.credentials.yaml`.
 
-/** pi-ai built-in catalog routes (mirrors CATALOG_ROUTES in providers.rs):
- *  naming one inherits its endpoint, protocol and model catalog. */
-const PROVIDER_CATALOG_ROUTES = [
-  'amazon-bedrock', 'ant-ling', 'anthropic', 'azure-openai-responses', 'baseten',
-  'cerebras', 'cloudflare-ai-gateway', 'cloudflare-workers-ai', 'deepseek',
-  'fireworks', 'github-copilot', 'google', 'google-vertex', 'groq', 'huggingface',
-  'kimi-coding', 'minimax', 'minimax-cn', 'mistral', 'moonshotai', 'moonshotai-cn',
-  'nvidia', 'openai', 'openai-codex', 'opencode', 'opencode-go', 'openrouter',
-  'qwen-token-plan', 'qwen-token-plan-cn', 'qwen-token-plan-individual', 'radius',
-  'together', 'vercel-ai-gateway', 'xai', 'xiaomi', 'xiaomi-token-plan-ams',
-  'xiaomi-token-plan-cn', 'xiaomi-token-plan-sgp', 'zai', 'zai-coding-cn',
-]
-
-/** Protocols pi-ai ships adapters for (free input is allowed beyond these). */
-const PROVIDER_API_OPTIONS = [
-  'openai-responses',
-  'openai-completions',
-  'anthropic-messages',
-  'azure-openai-responses',
-  'google-generative-ai',
-]
-
-interface ProviderPreset {
-  key: string
-  /** Catalog presets name the built-in route; customs only prefill fields. */
-  catalog: boolean
-  api: string
-  baseUrl: string
-}
-
-const PROVIDER_PRESETS: ProviderPreset[] = [
-  { key: 'deepseek', catalog: true, api: '', baseUrl: '' },
-  { key: 'openai', catalog: true, api: '', baseUrl: '' },
-  { key: 'anthropic', catalog: true, api: '', baseUrl: '' },
-  { key: 'moonshotai', catalog: true, api: '', baseUrl: '' },
-  { key: 'zai', catalog: true, api: '', baseUrl: '' },
-  { key: 'openrouter', catalog: true, api: '', baseUrl: '' },
-  { key: 'custom-openai', catalog: false, api: 'openai-responses', baseUrl: '' },
-  { key: 'custom-anthropic', catalog: false, api: 'anthropic-messages', baseUrl: '' },
-]
-
-const providerProfile = ref<string | undefined>(undefined)
+const MODELS_GLOBAL = '__global__'
+const modelsScope = ref<string>(MODELS_GLOBAL)
 const providerRoutes = ref<ProviderRoute[]>([])
-const providerHash = ref('')
-const providerLoading = ref(false)
-const providerBusy = ref('')
-const providerEditVisible = ref(false)
+const catalog = ref<ProviderCatalog | null>(null)
+const catalogLoading = ref(false)
+const modelsLoading = ref(false)
 const providerSaving = ref(false)
-/** Route key being edited; '' while adding a new route. */
-const providerOriginalRoute = ref('')
+const modelsBusy = ref('')
 
-/** Editable projection of one model row (numbers as text inputs). */
-interface ProviderModelRow {
-  id: string
-  name: string
-  contextWindow: string
-  maxTokens: string
-  vision: boolean
+/** null = the HOME itself, otherwise the selected profile. */
+const modelsScopeProfile = computed(() => (modelsScope.value === MODELS_GLOBAL ? null : modelsScope.value))
+
+const modelsScopePath = computed(() => {
+  const home = store.homes.find((h) => h.id === homeId.value)
+  if (!home) return ''
+  const sep = home.path.includes('\\') ? '\\' : '/'
+  const parts = modelsScopeProfile.value
+    ? [home.path, 'profiles', modelsScopeProfile.value, 'cordis.patch.yml']
+    : [home.path, 'cordis.patch.yml']
+  return parts.join(sep)
+})
+
+const catalogError = ref('')
+/** Guards against a stale scope's response racing in after a scope switch. */
+const modelsRequests = latestRequest()
+
+async function loadModels() {
+  const request = modelsRequests.begin()
+  providerRoutes.value = []
+  catalog.value = null
+  catalogError.value = ''
+  if (!homeId.value || homeId.value === DEDICATED || !editingId.value) return
+  modelsLoading.value = true
+  catalogLoading.value = true
+  try {
+    const [routes, cat] = await Promise.all([
+      api.listProviderRoutes(homeId.value, modelsScopeProfile.value, editingId.value),
+      // A failed catalogue must not silently look like "nothing to add":
+      // surface the error in the add dialog instead (no silent fallbacks).
+      api.listProviderCatalog(editingId.value).then(
+        (value) => ({ ok: true as const, value }),
+        (error) => ({ ok: false as const, error }),
+      ),
+    ])
+    if (!modelsRequests.isCurrent(request)) return
+    providerRoutes.value = routes
+    if (cat.ok) {
+      catalog.value = cat.value
+    } else {
+      catalogError.value = String(cat.error)
+      Message.error(catalogError.value)
+    }
+  } catch (e) {
+    if (modelsRequests.isCurrent(request)) Message.error(String(e))
+  } finally {
+    if (modelsRequests.isCurrent(request)) {
+      modelsLoading.value = false
+      catalogLoading.value = false
+    }
+  }
 }
 
+watch(modelsScope, async () => {
+  // Switching scopes invalidates any in-flight load so an older scope's
+  // response can never overwrite the newer one's list.
+  modelsRequests.invalidate()
+  if (activeTab.value === 'models') await loadModels()
+})
+
+const PROVIDER_ID_RE = /^[a-z][a-z0-9-]*$/
+const PROVIDER_API_OPTIONS = ['openai-completions', 'openai-responses', 'anthropic-messages'] as const
+
+/** Editable projection of one provider route (issue #89). */
 interface ProviderFormState {
-  preset: string
-  route: string
+  /** Catalogue id when adding a built-in provider; '' for custom/official. */
+  catalogProviderId: string
+  /** True for the synthetic DeepSeek card, credential-only. */
+  official: boolean
+  id: string
   displayName: string
-  /** The API key to store under the derived credential ref; empty = keep the
-   * existing credential (editing) / leave unresolved (adding). */
-  apiKey: string
-  /** The route's current credential ref (editing); preserved unless a new
-   * key is stored under the derived name. */
-  existingEnv: string
   api: string
   baseUrl: string
-  models: ProviderModelRow[]
-  /** Profile keys the form does not surface; sent back untouched. */
-  extra: Record<string, unknown>
+  /** Write-only: never read back, only stored in `.credentials.yaml`. */
+  apiKey: string
+  models: ProviderModel[]
 }
 
 function emptyProviderForm(): ProviderFormState {
   return {
-    preset: 'deepseek',
-    route: '',
+    catalogProviderId: '',
+    official: false,
+    id: '',
     displayName: '',
-    apiKey: '',
-    existingEnv: '',
     api: '',
     baseUrl: '',
+    apiKey: '',
     models: [],
-    extra: {},
   }
 }
 
 const providerForm = ref<ProviderFormState>(emptyProviderForm())
+const providerEditVisible = ref(false)
+const providerOriginalId = ref('')
+const addModeVisible = ref(false)
 
-const credentialRefs = ref<CredentialRefInfo[]>([])
-const credentialHash = ref('')
-const credentialLoading = ref(false)
-const credentialBusy = ref('')
-const credentialEditVisible = ref(false)
-const credentialSaving = ref(false)
-const credentialEditing = ref('')
-const credentialForm = ref({ name: '', value: '' })
+/** The route being edited, if any (to reuse its stored credential). */
+const providerEditTarget = ref<ProviderRoute | null>(null)
 
-const providerReports = ref<ProviderRouteReport[] | null>(null)
-const providerChecking = ref(false)
-
-/** The patch file a route save writes to, shown under the profile selector. */
-const providerScopePath = computed(() => {
-  const home = store.homes.find((h) => h.id === homeId.value)
-  if (!home || !providerProfile.value) return ''
-  const sep = home.path.includes('\\') ? '\\' : '/'
-  return [home.path, 'profiles', providerProfile.value, 'cordis.patch.yml'].join(sep)
+const providerTitle = computed(() => {
+  if (providerForm.value.official) return t('instanceEdit.modelsDeepSeekTitle')
+  // The edit check must come first: an existing built-in provider also has a
+  // catalogue id, and its dialog is an edit, not an add.
+  if (providerOriginalId.value) return t('instanceEdit.modelsEditTitle')
+  if (providerForm.value.catalogProviderId) return t('instanceEdit.modelsAddCatalogTitle')
+  return t('instanceEdit.modelsAddCustomTitle')
 })
 
-const providerColumns = computed(() => [
-  { title: t('instanceEdit.providerColRoute'), slotName: 'providerRoute', width: 260 },
-  { title: t('instanceEdit.providerColCredential'), slotName: 'providerCredential', width: 250 },
-  { title: t('instanceEdit.providerColEndpoint'), slotName: 'providerEndpoint', ellipsis: true, tooltip: true },
-  { title: t('instanceEdit.providerColModels'), slotName: 'providerModels', width: 90 },
-  { title: t('instances.table.actions'), slotName: 'providerActions', width: 150, align: 'center' as const, fixed: 'right' as const },
-])
+/** Built-in providers the form may add (OAuth-only ones are excluded). */
+const catalogProviders = computed(() => (catalog.value?.providers ?? []).filter((p) => p.apiKey))
 
-const credentialColumns = computed(() => [
-  { title: t('instanceEdit.credentialColName'), dataIndex: 'name', width: 240 },
-  { title: t('instanceEdit.credentialColValue'), dataIndex: 'masked', width: 200 },
-  { title: t('instanceEdit.credentialColStatus'), slotName: 'credentialStatus', width: 190 },
-  { title: t('instances.table.actions'), slotName: 'credentialActions', width: 170, align: 'center' as const, fixed: 'right' as const },
-])
+/** Catalogue entry for the route currently being added. */
+const catalogEntry = computed(() =>
+  catalog.value?.providers.find((p) => p.id === providerForm.value.catalogProviderId) ?? null,
+)
 
-async function loadProviderRoutes() {
-  providerRoutes.value = []
-  providerReports.value = null
-  if (!homeId.value || homeId.value === DEDICATED || !providerProfile.value) return
-  providerLoading.value = true
-  try {
-    const list = await api.listProviderRoutes(homeId.value, providerProfile.value)
-    providerRoutes.value = list.routes
-    providerHash.value = list.hash
-  } catch (e) {
-    Message.error(String(e))
-  } finally {
-    providerLoading.value = false
+function openAddCatalog() {
+  addModeVisible.value = false
+  const entry = catalogEntry.value
+  if (!entry) return
+  providerOriginalId.value = ''
+  providerEditTarget.value = null
+  providerForm.value = {
+    ...emptyProviderForm(),
+    catalogProviderId: entry.id,
+    id: entry.id,
+    displayName: entry.name,
+    api: entry.api,
+    baseUrl: entry.baseUrl,
+    models: [],
   }
+  providerEditVisible.value = true
 }
 
-async function loadCredentialRefs() {
-  credentialRefs.value = []
-  if (!homeId.value || homeId.value === DEDICATED || !editingId.value) return
-  credentialLoading.value = true
-  try {
-    const list = await api.listCredentialRefs(homeId.value, editingId.value)
-    credentialRefs.value = list.refs
-    credentialHash.value = list.hash
-  } catch (e) {
-    Message.error(String(e))
-  } finally {
-    credentialLoading.value = false
+function onPickCatalog(p: CatalogProvider) {
+  addModeVisible.value = false
+  providerOriginalId.value = ''
+  providerEditTarget.value = null
+  providerForm.value = {
+    ...emptyProviderForm(),
+    catalogProviderId: p.id,
+    id: p.id,
+    displayName: p.name,
+    api: p.api,
+    baseUrl: p.baseUrl,
+    models: [],
   }
+  providerEditVisible.value = true
 }
 
-watch(providerProfile, async () => {
-  if (activeTab.value === 'providers') await loadProviderRoutes()
-})
-
-/** Whether the form's route names a built-in catalog provider. */
-const providerFormCatalog = computed(() => PROVIDER_CATALOG_ROUTES.includes(providerForm.value.route.trim()))
-
-function onProviderPresetChange(value: unknown) {
-  const preset = PROVIDER_PRESETS.find((p) => p.key === String(value))
-  if (!preset) return
-  providerForm.value.api = preset.api
-  providerForm.value.baseUrl = preset.baseUrl
-  if (preset.catalog) {
-    providerForm.value.route = preset.key
-    if (!providerForm.value.displayName) providerForm.value.displayName = preset.key
-  }
+function openAddCustom() {
+  addModeVisible.value = false
+  providerOriginalId.value = ''
+  providerEditTarget.value = null
+  providerForm.value = emptyProviderForm()
+  providerEditVisible.value = true
 }
 
-/** The credential ref derived from a route id: uppercased, sanitized,
- *  suffixed — `my_gw` becomes `MY_GW_API_KEY`. */
-function routeToEnvName(route: string): string {
-  const clean = route
-    .trim()
-    .toUpperCase()
-    .replace(/[^A-Z0-9]+/g, '_')
-    .replace(/^_+|_+$/g, '')
-  return clean ? `${clean}_API_KEY` : ''
+function openEditProvider(route: ProviderRoute) {
+  providerOriginalId.value = route.id
+  providerEditTarget.value = route
+  providerForm.value = {
+    catalogProviderId: route.catalog ? route.id : '',
+    official: route.official,
+    id: route.id,
+    displayName: route.displayName,
+    api: route.api,
+    baseUrl: route.baseUrl,
+    apiKey: '',
+    models: route.models.map((m) => ({ ...m })),
+  }
+  providerEditVisible.value = true
 }
 
-/** The credential ref this form saves under: the stored key wins (editing),
- *  otherwise the derived name; an explicit new API key always lands on the
- *  derived name so a rename re-derives it. */
-const providerEnvName = computed(() => {
-  if (providerForm.value.apiKey.trim()) return routeToEnvName(providerForm.value.route)
-  if (providerOriginalRoute.value && providerForm.value.existingEnv) {
-    return providerForm.value.existingEnv
-  }
-  return routeToEnvName(providerForm.value.route)
-})
-
-/** API key help text: a new instance has no home yet, so the key field is
- *  disabled there (a pasted key would have nowhere to be stored). */
-const providerApiKeyHint = computed(() => {
-  if (isNew.value) return t('instanceEdit.providerApiKeyNewInstanceHint')
-  return providerOriginalRoute.value
-    ? t('instanceEdit.providerApiKeyEditHint')
-    : t('instanceEdit.providerApiKeyHint')
-})
-
-// --- Provider validation (mirrors src-tauri/src/providers.rs; a failure never saves) ---
-
-/** New route ids: lowercase start, only [a-z0-9_], no trailing underscore. */
-const PROVIDER_ROUTE_RE = /^[a-z]([a-z0-9_]*[a-z0-9])?$/
-
-const providerRouteError = computed(() => {
-  const route = providerForm.value.route.trim()
-  if (!route) return t('instanceEdit.providerErrRouteRequired')
-  const clash = providerRoutes.value.some(
-    (r) => r.route === route && r.route !== providerOriginalRoute.value,
-  )
-  if (clash) return t('instanceEdit.providerErrRouteDuplicated')
-  // A route being edited keeps its legacy key (e.g. kebab-case written by the
-  // DSH settings UI); the strict rule only gates new names.
-  if (route === providerOriginalRoute.value) return ''
-  if (route.length > 64 || !PROVIDER_ROUTE_RE.test(route)) {
-    return t('instanceEdit.providerErrRoutePattern')
+const providerIdError = computed(() => {
+  if (!providerForm.value.catalogProviderId) {
+    const id = providerForm.value.id.trim()
+    if (!id) return t('instanceEdit.modelsErrIdRequired')
+    if (!PROVIDER_ID_RE.test(id)) return t('instanceEdit.modelsErrIdPattern')
+    if (providerRoutes.value.some((r) => r.id !== providerOriginalId.value && r.id === id)) {
+      return t('instanceEdit.modelsErrIdDuplicated')
+    }
   }
   return ''
 })
 
 const providerBaseUrlError = computed(() => {
-  const url = providerForm.value.baseUrl.trim()
-  if (!url) {
-    return providerFormCatalog.value ? '' : t('instanceEdit.providerErrBaseUrlRequired')
-  }
-  return isHttpUrl(url) ? '' : t('instanceEdit.providerErrBaseUrlInvalid')
+  if (providerForm.value.catalogProviderId || providerForm.value.official) return ''
+  return providerForm.value.baseUrl.trim() ? '' : t('instanceEdit.modelsErrBaseUrlRequired')
 })
 
 const providerApiError = computed(() => {
-  if (providerFormCatalog.value) return ''
-  return providerForm.value.api.trim() ? '' : t('instanceEdit.providerErrApiRequired')
+  if (providerForm.value.catalogProviderId || providerForm.value.official) return ''
+  return providerForm.value.api ? '' : t('instanceEdit.modelsErrApiRequired')
 })
 
-function providerModelIdError(idx: number): string {
-  const rows = providerForm.value.models
-  const id = rows[idx].id.trim()
-  if (!id) return t('instanceEdit.providerErrModelIdRequired')
-  return rows.findIndex((r) => r.id.trim() === id) < idx
-    ? t('instanceEdit.providerErrModelIdDuplicated')
-    : ''
-}
+/** A key is only mandatory where the route has nothing else to resolve to. */
+const providerApiKeyError = computed(() => {
+  const form = providerForm.value
+  if (!form.official && !form.catalogProviderId) return ''
+  // An existing credential may be kept by leaving the field blank.
+  if (providerEditTarget.value?.credential?.configured) return ''
+  return form.apiKey.trim() ? '' : t('instanceEdit.modelsErrApiKeyRequired')
+})
+
+const providerModelsError = computed(() => {
+  if (providerForm.value.catalogProviderId || providerForm.value.official) return ''
+  return providerForm.value.models.length > 0 ? '' : t('instanceEdit.modelsErrModelsRequired')
+})
 
 const providerFormValid = computed(
   () =>
-    !providerRouteError.value &&
-    !providerBaseUrlError.value &&
+    !providerIdError.value &&
     !providerApiError.value &&
-    providerForm.value.models.every((_, idx) => !providerModelIdError(idx)),
+    !providerBaseUrlError.value &&
+    !providerApiKeyError.value &&
+    !providerModelsError.value,
 )
 
-/** Names listed in the dialog's preserved-config notice. */
-const providerExtraKeys = computed(() => Object.keys(providerForm.value.extra ?? {}))
-
-function openProviderCreate() {
-  providerOriginalRoute.value = ''
-  providerForm.value = emptyProviderForm()
-  onProviderPresetChange('deepseek')
-  providerEditVisible.value = true
-}
-
-function openProviderEdit(route: ProviderRoute) {
-  providerOriginalRoute.value = route.route
-  providerForm.value = {
-    preset: '',
-    route: route.route,
-    displayName: route.displayName,
-    apiKey: '',
-    existingEnv: route.apiKeyEnv,
-    api: route.api,
-    baseUrl: route.baseUrl,
-    models: route.models.map((m) => ({
-      id: m.id,
-      name: m.name,
-      contextWindow: m.contextWindow ? String(m.contextWindow) : '',
-      maxTokens: m.maxTokens ? String(m.maxTokens) : '',
-      vision: m.input.includes('image'),
-    })),
-    extra: { ...(route.extra ?? {}) },
-  }
-  providerEditVisible.value = true
-}
-
-function addProviderModelRow() {
-  providerForm.value.models.push({ id: '', name: '', contextWindow: '', maxTokens: '', vision: false })
-}
-
-function providerPayload(form: ProviderFormState, apiKeyEnv: string): ProviderRoute {
-  const num = (v: string) => {
-    const n = Number(v.trim())
-    return v.trim() && Number.isFinite(n) && n > 0 ? Math.floor(n) : null
-  }
+/** Built-in routes inherit their models from the catalogue; never store them. */
+function formRoutesPayload(): ProviderRoute {
+  const form = providerForm.value
+  const catalog = !!form.catalogProviderId
   return {
-    route: form.route.trim(),
+    id: form.id.trim(),
     displayName: form.displayName.trim(),
-    apiKeyEnv,
-    api: form.api.trim(),
-    baseUrl: form.baseUrl.trim(),
-    models: form.models
-      .filter((m) => m.id.trim())
-      .map((m) => ({
-        id: m.id.trim(),
-        name: m.name.trim(),
-        contextWindow: num(m.contextWindow),
-        maxTokens: num(m.maxTokens),
-        input: m.vision ? ['text', 'image'] : ['text'],
-      })),
-    extra: form.extra,
-    catalog: PROVIDER_CATALOG_ROUTES.includes(form.route.trim()),
+    apiKeyEnv: '',
+    api: catalog ? '' : form.api,
+    baseUrl: catalog ? '' : form.baseUrl.trim(),
+    catalog,
+    official: form.official,
+    models: catalog ? [] : form.models,
+    extraKeys: [],
+    credential: null,
   }
 }
 
-/** External-modification refusals ask for a reload; refresh and tell the user. */
-async function onProviderWriteError(e: unknown) {
-  const msg = String(e)
-  // STALE_HASH is the backend's stable prefix for the expected-hash guard;
-  // the Chinese substring is kept as a fallback for older backends.
-  if (msg.includes('STALE_HASH') || msg.includes('已被外部修改')) {
-    Message.error(t('instanceEdit.providerCheckReload'))
-    await loadProviderRoutes()
-    await loadCredentialRefs()
-  } else {
-    Message.error(msg)
-  }
-}
-
-async function onSaveProviderRoute() {
-  if (!homeId.value || !providerProfile.value) return
+async function onSaveProvider() {
+  if (!homeId.value || !editingId.value) return
   if (!providerFormValid.value) {
-    Message.warning(t('instanceEdit.providerErrForm'))
+    Message.warning(t('instanceEdit.modelsErrForm'))
     return
   }
-  const envName = providerEnvName.value
-  const route = providerPayload(providerForm.value, envName)
+  const route = formRoutesPayload()
   providerSaving.value = true
   try {
-    // A pasted API key is stored first under the derived credential ref; a
-    // shadowed name (provided by the instance's env overrides) aborts the
-    // whole save, so the route never points at a dead ref. The trade-off of
-    // this order: if the route save then fails (e.g. stale hash), the written
-    // credential stays as an orphan — harmless, visible in the credential
-    // table below, and deleted there explicitly.
-    if (providerForm.value.apiKey.trim() && editingId.value) {
-      const creds = await api.setCredentialRef(
-        homeId.value,
-        editingId.value,
-        envName,
-        providerForm.value.apiKey.trim(),
-        credentialHash.value,
-      )
-      credentialRefs.value = creds.refs
-      credentialHash.value = creds.hash
-    }
-    const list = await api.saveProviderRoute(
+    providerRoutes.value = await api.saveProviderRoute(
       homeId.value,
-      providerProfile.value,
+      modelsScopeProfile.value,
+      editingId.value,
       route,
-      providerOriginalRoute.value || null,
-      providerHash.value,
+      providerOriginalId.value || null,
+      providerForm.value.apiKey,
     )
-    providerRoutes.value = list.routes
-    providerHash.value = list.hash
     providerEditVisible.value = false
-    Message.success(t('instanceEdit.providerSaved', { name: route.route }))
+    Message.success(t('instanceEdit.modelsSaved', { name: route.displayName || route.id }))
   } catch (e) {
-    await onProviderWriteError(e)
+    Message.error(String(e))
   } finally {
     providerSaving.value = false
   }
 }
 
-async function onDeleteProviderRoute(route: ProviderRoute) {
-  if (!homeId.value || !providerProfile.value) return
-  providerBusy.value = route.route
-  try {
-    const list = await api.deleteProviderRoute(
-      homeId.value,
-      providerProfile.value,
-      route.route,
-      providerHash.value,
-    )
-    providerRoutes.value = list.routes
-    providerHash.value = list.hash
-    Message.success(t('instanceEdit.providerDeleted', { name: route.route }))
-  } catch (e) {
-    await onProviderWriteError(e)
-  } finally {
-    providerBusy.value = ''
-  }
-}
-
-// --- Credential refs ------------------------------------------------------------
-
-const credentialNameError = computed(() => {
-  const name = credentialForm.value.name.trim()
-  if (!name) return t('instanceEdit.credentialErrNameRequired')
-  return ENV_KEY_RE.test(name) ? '' : t('instanceEdit.credentialErrNamePattern')
-})
-
-const credentialValueError = computed(() =>
-  credentialForm.value.value.trim() ? '' : t('instanceEdit.credentialErrValueRequired'),
-)
-
-const credentialFormValid = computed(() => !credentialNameError.value && !credentialValueError.value)
-
-function openCredentialCreate() {
-  credentialEditing.value = ''
-  credentialForm.value = { name: '', value: '' }
-  credentialEditVisible.value = true
-}
-
-function openCredentialUpdate(ref: CredentialRefInfo) {
-  credentialEditing.value = ref.name
-  credentialForm.value = { name: ref.name, value: '' }
-  credentialEditVisible.value = true
-}
-
-async function onSaveCredentialRef() {
-  if (!homeId.value || !editingId.value || !credentialFormValid.value) return
-  credentialSaving.value = true
-  try {
-    const list = await api.setCredentialRef(
-      homeId.value,
-      editingId.value,
-      credentialForm.value.name.trim(),
-      credentialForm.value.value.trim(),
-      credentialHash.value,
-    )
-    credentialRefs.value = list.refs
-    credentialHash.value = list.hash
-    credentialEditVisible.value = false
-    Message.success(t('instanceEdit.credentialSaved', { name: credentialForm.value.name.trim() }))
-  } catch (e) {
-    await onProviderWriteError(e)
-  } finally {
-    credentialSaving.value = false
-  }
-}
-
-async function onDeleteCredentialRef(ref: CredentialRefInfo) {
+async function onDeleteProvider(route: ProviderRoute) {
   if (!homeId.value || !editingId.value) return
-  credentialBusy.value = ref.name
+  modelsBusy.value = route.id
   try {
-    const list = await api.deleteCredentialRef(homeId.value, editingId.value, ref.name, credentialHash.value)
-    credentialRefs.value = list.refs
-    credentialHash.value = list.hash
-    Message.success(t('instanceEdit.credentialDeleted', { name: ref.name }))
-  } catch (e) {
-    await onProviderWriteError(e)
-  } finally {
-    credentialBusy.value = ''
-  }
-}
-
-// --- Pre-launch readiness check ---------------------------------------------------
-
-async function runProviderCheck() {
-  if (!homeId.value || !editingId.value || !providerProfile.value) return
-  providerChecking.value = true
-  try {
-    providerReports.value = await api.checkProviderRoutes(homeId.value, editingId.value, providerProfile.value)
+    providerRoutes.value = await api.deleteProviderRoute(
+      homeId.value,
+      modelsScopeProfile.value,
+      editingId.value,
+      route.id,
+    )
+    if (route.official) Message.success(t('instanceEdit.modelsDeepSeekCleared'))
+    else Message.success(t('instanceEdit.modelsDeleted', { name: route.displayName || route.id }))
   } catch (e) {
     Message.error(String(e))
   } finally {
-    providerChecking.value = false
+    modelsBusy.value = ''
   }
 }
 
-function providerCheckColor(status: string): 'info' | 'warning' | 'success' {
-  switch (status) {
-    case 'warn':
-      return 'warning'
-    case 'unknown':
-      return 'info'
-    default:
-      return 'success'
+// --- Model discovery ("fetch available models") -----------------------------
+
+const modelsPickerVisible = ref(false)
+const modelsPickerLoading = ref(false)
+const pickerModels = ref<CatalogModel[]>([])
+const pickerSelected = computed(() => providerForm.value.models.map((m) => m.id))
+
+async function openModelPicker() {
+  const form = providerForm.value
+  modelsPickerLoading.value = true
+  modelsPickerVisible.value = true
+  pickerModels.value = []
+  try {
+    // Only the custom form opens the picker: built-in providers inherit
+    // their models from the catalogue and never show a model list here.
+    const input: DiscoverModelsInput = {
+      instanceId: editingId.value ?? '',
+      homeId: homeId.value ?? '',
+      profile: modelsScopeProfile.value,
+      provider: null,
+      baseUrl: form.baseUrl.trim(),
+      api: form.api,
+      apiKey: form.apiKey,
+      routeId: providerOriginalId.value || null,
+    }
+    pickerModels.value = await api.discoverProviderModels(input)
+  } catch (e) {
+    Message.error(String(e))
+  } finally {
+    modelsPickerLoading.value = false
   }
 }
+
+function onAdoptModels(ids: string[]) {
+  const known = new Map(providerForm.value.models.map((m) => [m.id, m]))
+  const next: ProviderModel[] = ids.map((id) => {
+    const existing = known.get(id)
+    if (existing) return existing
+    const catalog = pickerModels.value.find((m) => m.id === id)
+    return {
+      id,
+      name: catalog?.name ?? id,
+      contextWindow: catalog?.contextWindow ?? null,
+      maxTokens: catalog?.maxTokens ?? null,
+    }
+  })
+  providerForm.value.models = next
+}
+
+function removeModel(id: string) {
+  providerForm.value.models = providerForm.value.models.filter((m) => m.id !== id)
+}
+
+// Manual model entry: the picker can fail (offline endpoint, unsupported
+// listing), so a hand-typed row must work exactly the same (issue #89 #3).
+
+/** Model IDs are endpoint-defined, so only whitespace is forbidden. */
+const MODEL_ID_RE = /^\S+$/
+
+const newModel = ref<{ id: string; name: string; contextWindow?: number; maxTokens?: number }>({
+  id: '',
+  name: '',
+})
+
+const newModelError = computed(() => {
+  const id = newModel.value.id.trim()
+  if (!id) return ''
+  if (!MODEL_ID_RE.test(id)) return t('instanceEdit.modelsErrModelIdPattern')
+  if (providerForm.value.models.some((m) => m.id === id)) {
+    return t('instanceEdit.modelsErrModelIdDuplicated')
+  }
+  return ''
+})
+
+function addManualModel() {
+  const id = newModel.value.id.trim()
+  if (!id || newModelError.value) return
+  const cw = newModel.value.contextWindow
+  const mt = newModel.value.maxTokens
+  providerForm.value.models = [
+    ...providerForm.value.models,
+    {
+      id,
+      name: newModel.value.name.trim() || id,
+      contextWindow: cw && cw > 0 ? cw : null,
+      maxTokens: mt && mt > 0 ? mt : null,
+    },
+  ]
+  newModel.value = { id: '', name: '' }
+}
+
+const officialCard = computed(() => providerRoutes.value.find((r) => r.official) ?? null)
+const configuredRoutes = computed(() => providerRoutes.value.filter((r) => !r.official))
 
 // --- Launch shortcut (issue #9) -----------------------------------------------
 
@@ -1877,26 +1779,20 @@ watch(activeTab, async (tab) => {
     await loadMcpServers()
     return
   }
-  if (tab === 'providers') {
-    // Providers are per-profile: the scope defaults to the instance's default
-    // profile (where the DSH settings UI writes too). Changing the profile
-    // loads through the providerProfile watcher, so do not load twice here.
+  if (tab === 'storage') {
+    await loadHomeLinks()
+    return
+  }
+  if (tab === 'models') {
     if (
-      !providerProfile.value &&
+      modelsScope.value === MODELS_GLOBAL &&
       defaultProfile.value &&
       profiles.value.includes(defaultProfile.value)
     ) {
-      providerProfile.value = defaultProfile.value
-    } else if (!providerProfile.value && profiles.value.length > 0) {
-      providerProfile.value = profiles.value[0]
-    } else {
-      await loadProviderRoutes()
+      modelsScope.value = defaultProfile.value
+      return
     }
-    await loadCredentialRefs()
-    return
-  }
-  if (tab === 'storage') {
-    await loadHomeLinks()
+    await loadModels()
     return
   }
   if (tab !== 'plugins') return
@@ -2098,7 +1994,7 @@ const terminalRunning = ref(false)
         <a-menu-item key="skills">{{ t('instanceEdit.tabs.skills') }}</a-menu-item>
         <a-menu-item key="agents">{{ t('instanceEdit.tabs.agents') }}</a-menu-item>
         <a-menu-item key="mcp">{{ t('instanceEdit.tabs.mcp') }}</a-menu-item>
-        <a-menu-item key="providers">{{ t('instanceEdit.tabs.providers') }}</a-menu-item>
+        <a-menu-item key="models">{{ t('instanceEdit.tabs.models') }}</a-menu-item>
         <a-menu-item key="storage">{{ t('instanceEdit.tabs.storage') }}</a-menu-item>
         <a-menu-item key="terminal">{{ t('instanceEdit.tabs.terminal') }}</a-menu-item>
       </a-menu>
@@ -2757,159 +2653,88 @@ const terminalRunning = ref(false)
             </a-alert>
           </div>
 
-          <!-- Model providers (issue #76) -->
-          <div v-else-if="activeTab === 'providers'" class="dl-card edit-card">
+          <!-- Models (issue #89): the same "Settings → Models" flow DSH ships -->
+          <div v-else-if="activeTab === 'models'" class="dl-card edit-card">
             <h4 class="env-title">
-              {{ t('instanceEdit.tabs.providers') }}
-              <HintIcon :content="t('instanceEdit.providerDesc')" />
+              {{ t('instanceEdit.tabs.models') }}
+              <HintIcon :content="t('instanceEdit.modelsDesc')" />
             </h4>
 
-            <template v-if="homeId && homeId !== DEDICATED">
-              <div class="mcp-toolbar">
-                <a-select v-model="providerProfile" style="width: 300px">
+            <template v-if="homeId && homeId !== DEDICATED && editingId">
+              <div class="models-toolbar">
+                <a-select v-model="modelsScope" style="width: 300px">
+                  <a-option :value="MODELS_GLOBAL">{{ t('instanceEdit.modelsScopeGlobal') }}</a-option>
                   <a-option v-for="p in profiles" :key="p" :value="p">
-                    {{ t('instanceEdit.mcpScopeProfile') }} · {{ p }}
+                    {{ t('instanceEdit.modelsScopeProfile') }} · {{ p }}
                   </a-option>
                 </a-select>
-                <a-button type="primary" @click="openProviderCreate">
-                  {{ t('instanceEdit.providerAdd') }}
+                <a-button type="primary" @click="addModeVisible = true">
+                  {{ t('instanceEdit.modelsAdd') }}
                 </a-button>
-                <a-button :loading="providerChecking" @click="runProviderCheck">
-                  {{ t('instanceEdit.providerCheck') }}
-                </a-button>
-                <a-button type="text" :loading="providerLoading" @click="loadProviderRoutes">
-                  ⟳
-                </a-button>
+                <a-button type="text" :loading="modelsLoading" @click="loadModels">⟳</a-button>
               </div>
-              <p class="mcp-path">{{ t('instanceEdit.providerScopePath', { path: providerScopePath }) }}</p>
+              <p class="models-path">{{ t('instanceEdit.modelsScopePath', { path: modelsScopePath }) }}</p>
 
-              <a-table
-                :columns="providerColumns"
-                :data="providerRoutes"
-                :loading="providerLoading"
-                :pagination="false"
-                :scroll="{ x: 900 }"
-                row-key="route"
-                size="small"
-              >
-                <template #providerRoute="{ record }">
-                  <span class="provider-route" :title="record.displayName || record.route">
-                    <strong>{{ record.route }}</strong>
-                    <span v-if="record.displayName && record.displayName !== record.route" class="provider-display">
-                      {{ record.displayName }}
-                    </span>
-                    <a-tag v-if="record.catalog" size="small" color="arcoblue" class="provider-tag">
-                      {{ t('instanceEdit.providerCatalogTag') }}
+              <a-spin :loading="modelsLoading" class="models-body">
+                <!-- DeepSeek official card: credential-only -->
+                <div v-if="officialCard" class="model-card model-card-official">
+                  <div class="model-card-head">
+                    <span class="model-card-id">DeepSeek</span>
+                    <a-tag v-if="officialCard.credential?.configured" color="green">
+                      {{ t('instanceEdit.modelsConfigured') }}
                     </a-tag>
-                  </span>
-                </template>
-                <template #providerCredential="{ record }">
-                  <code v-if="record.apiKeyEnv" class="provider-cred">{{ record.apiKeyEnv }}</code>
-                  <span v-else class="provider-none">{{ t('instanceEdit.providerNoCredential') }}</span>
-                </template>
-                <template #providerEndpoint="{ record }">
-                  <span v-if="record.baseUrl" class="provider-endpoint">{{ record.baseUrl }}</span>
-                  <span v-else class="provider-none">{{ t('instanceEdit.providerCatalogInherit') }}</span>
-                </template>
-                <template #providerModels="{ record }">
-                  {{ t('instanceEdit.providerModelsCount', { count: record.models.length }) }}
-                </template>
-                <template #providerActions="{ record }">
-                  <a-space>
-                    <a-button size="small" :disabled="providerBusy === record.route" @click="openProviderEdit(record)">
-                      {{ t('instanceEdit.providerEdit') }}
+                    <a-tag v-else color="gray">{{ t('instanceEdit.modelsNotConfigured') }}</a-tag>
+                  </div>
+                  <p class="model-card-sub">{{ t('instanceEdit.modelsDeepSeekHint') }}</p>
+                  <div class="model-card-actions">
+                    <a-button size="small" @click="openEditProvider(officialCard)">
+                      {{ t('instanceEdit.modelsConfigure') }}
                     </a-button>
                     <a-popconfirm
-                      :content="t('instanceEdit.providerDeleteConfirm', { name: record.route })"
-                      @ok="onDeleteProviderRoute(record)"
+                      :content="t('instanceEdit.modelsDeepSeekClearConfirm')"
+                      @ok="onDeleteProvider(officialCard)"
                     >
-                      <a-button size="small" status="danger" :loading="providerBusy === record.route">
+                      <a-button size="small" status="danger" :loading="modelsBusy === officialCard.id">
+                        {{ t('instanceEdit.modelsClear') }}
+                      </a-button>
+                    </a-popconfirm>
+                  </div>
+                </div>
+
+                <!-- Configured catalogue / custom routes -->
+                <div v-for="route in configuredRoutes" :key="route.id" class="model-card">
+                  <div class="model-card-head">
+                    <span class="model-card-id">{{ route.displayName || route.id }}</span>
+                    <a-tag v-if="route.catalog" color="arcoblue" size="small">
+                      {{ t('instanceEdit.modelsCatalogTag') }}
+                    </a-tag>
+                    <a-tag v-if="route.credential?.configured" color="green" size="small">
+                      {{ t('instanceEdit.modelsConfigured') }}
+                    </a-tag>
+                    <a-tag v-else color="gray" size="small">{{ t('instanceEdit.modelsNotConfigured') }}</a-tag>
+                  </div>
+                  <p v-if="route.api" class="model-card-sub">{{ route.api }} · {{ route.baseUrl }}</p>
+                  <p v-else class="model-card-sub">{{ route.id }}</p>
+                  <p class="model-card-models">
+                    {{ t('instanceEdit.modelsCount', { count: route.models.length }) }}
+                  </p>
+                  <div class="model-card-actions">
+                    <a-button size="small" :disabled="modelsBusy === route.id" @click="openEditProvider(route)">
+                      {{ t('instanceEdit.modelsEdit') }}
+                    </a-button>
+                    <a-popconfirm
+                      :content="t('instanceEdit.modelsDeleteConfirm', { name: route.displayName || route.id })"
+                      @ok="onDeleteProvider(route)"
+                    >
+                      <a-button size="small" status="danger" :loading="modelsBusy === route.id">
                         {{ t('instances.table.delete') }}
                       </a-button>
                     </a-popconfirm>
-                  </a-space>
-                </template>
-                <template #empty>
-                  <a-empty :description="t('instanceEdit.providerEmpty')" />
-                </template>
-              </a-table>
+                  </div>
+                </div>
 
-              <!-- Pre-launch readiness report -->
-              <div v-if="providerReports" class="provider-reports">
-                <a-empty v-if="providerReports.length === 0" :description="t('instanceEdit.providerCheckEmpty')" />
-                <a-alert
-                  v-for="report in providerReports"
-                  :key="report.route"
-                  :type="providerCheckColor(report.status)"
-                  class="provider-report"
-                >
-                  <template #title>
-                    {{ report.route }} · {{ t(`instanceEdit.providerCheckStatus${report.status === 'warn' ? 'Warn' : report.status === 'unknown' ? 'Unknown' : 'Ok'}`) }}
-                  </template>
-                  <ul class="provider-check-list">
-                    <li v-for="(check, idx) in report.checks" :key="idx">
-                      {{ te(`instanceEdit.providerChecks.${check.code}`) ? t(`instanceEdit.providerChecks.${check.code}`, check.params) : check.code }}
-                    </li>
-                  </ul>
-                </a-alert>
-              </div>
-
-              <!-- Credential store -->
-              <h4 class="env-title provider-credential-title">
-                {{ t('instanceEdit.credentialTitle') }}
-                <HintIcon :content="t('instanceEdit.credentialDesc')" />
-              </h4>
-              <div class="mcp-toolbar">
-                <a-button type="primary" outline @click="openCredentialCreate">
-                  {{ t('instanceEdit.credentialAdd') }}
-                </a-button>
-                <a-button type="text" :loading="credentialLoading" @click="loadCredentialRefs">
-                  ⟳
-                </a-button>
-              </div>
-              <a-table
-                :columns="credentialColumns"
-                :data="credentialRefs"
-                :loading="credentialLoading"
-                :pagination="false"
-                :scroll="{ x: 800 }"
-                row-key="name"
-                size="small"
-              >
-                <template #credentialStatus="{ record }">
-                  <a-tooltip v-if="record.shadowedByEnv" :content="t('instanceEdit.credentialShadowedHint')">
-                    <a-tag size="small" color="orange">{{ t('instanceEdit.credentialShadowed') }}</a-tag>
-                  </a-tooltip>
-                  <span v-else>-</span>
-                </template>
-                <template #credentialActions="{ record }">
-                  <a-space>
-                    <a-button
-                      size="small"
-                      :disabled="record.shadowedByEnv || credentialBusy === record.name"
-                      @click="openCredentialUpdate(record)"
-                    >
-                      {{ t('instanceEdit.credentialUpdate') }}
-                    </a-button>
-                    <a-popconfirm
-                      :content="t('instanceEdit.credentialDeleteConfirm', { name: record.name })"
-                      @ok="onDeleteCredentialRef(record)"
-                    >
-                      <a-button
-                        size="small"
-                        status="danger"
-                        :disabled="record.shadowedByEnv"
-                        :loading="credentialBusy === record.name"
-                      >
-                        {{ t('instances.table.delete') }}
-                      </a-button>
-                    </a-popconfirm>
-                  </a-space>
-                </template>
-                <template #empty>
-                  <a-empty :description="t('instanceEdit.credentialEmpty')" />
-                </template>
-              </a-table>
+                <a-empty v-if="!modelsLoading && !officialCard && configuredRoutes.length === 0" :description="t('instanceEdit.modelsEmpty')" />
+              </a-spin>
             </template>
 
             <a-alert v-else type="info">
@@ -3162,151 +2987,201 @@ const terminalRunning = ref(false)
       </a-form>
     </a-modal>
 
-    <!-- Provider route create / edit (issue #76) -->
+    <!-- Model provider editor (issue #89) -->
     <a-modal
       v-model:visible="providerEditVisible"
-      :title="
-        providerOriginalRoute
-          ? t('instanceEdit.providerEditTitle', { name: providerOriginalRoute })
-          : t('instanceEdit.providerCreateTitle')
-      "
-      :width="720"
+      :title="providerTitle"
+      :width="680"
       :ok-loading="providerSaving"
       :ok-button-props="{ disabled: !providerFormValid }"
-      @ok="onSaveProviderRoute"
+      @ok="onSaveProvider"
     >
-      <a-form :model="providerForm" layout="vertical" class="provider-form-scroll">
-        <a-form-item v-if="!providerOriginalRoute" :label="t('instanceEdit.providerPreset')">
-          <a-select v-model="providerForm.preset" @change="onProviderPresetChange">
-            <a-option v-for="preset in PROVIDER_PRESETS" :key="preset.key" :value="preset.key">
-              {{
-                preset.key === 'custom-openai'
-                  ? t('instanceEdit.providerPresetCustom')
-                  : preset.key === 'custom-anthropic'
-                    ? t('instanceEdit.providerPresetCustomAnthropic')
-                    : preset.key
-              }}
-            </a-option>
-          </a-select>
-        </a-form-item>
-
+      <a-form :model="providerForm" layout="vertical">
+        <!-- API key: write-only, never read back -->
         <a-form-item
-          :label="t('instanceEdit.providerRouteName')"
-          required
-          :validate-status="providerRouteError ? 'error' : undefined"
-          :help="providerRouteError || t('instanceEdit.providerRouteNameHint')"
-        >
-          <a-input v-model="providerForm.route" placeholder="my-gateway" />
-        </a-form-item>
-
-        <a-form-item :label="t('instanceEdit.providerDisplayName')">
-          <a-input v-model="providerForm.displayName" />
-        </a-form-item>
-
-        <a-form-item
-          :label="t('instanceEdit.providerApiKeyEnv')"
-          :help="t('instanceEdit.providerApiKeyEnvHint')"
-        >
-          <a-input :model-value="providerEnvName" readonly />
-        </a-form-item>
-
-        <a-form-item
-          :label="t('instanceEdit.providerApiKey')"
-          :help="providerApiKeyHint"
+          :label="t('instanceEdit.modelsApiKey')"
+          :required="!!providerApiKeyError"
+          :validate-status="providerApiKeyError ? 'error' : providerEditTarget?.credential?.overriddenByInstance ? 'warning' : undefined"
+          :help="
+            providerApiKeyError ||
+            (providerEditTarget?.credential?.overriddenByInstance
+              ? t('instanceEdit.modelsKeyOverridden')
+              : providerEditTarget?.credential?.configured
+                ? t('instanceEdit.modelsKeyConfigured')
+                : t('instanceEdit.modelsApiKeyHint'))
+          "
         >
           <a-input-password
             v-model="providerForm.apiKey"
-            :placeholder="t('instanceEdit.credentialValuePlaceholder')"
-            :disabled="isNew"
+            :placeholder="providerEditTarget?.credential?.configured ? t('instanceEdit.modelsApiKeyKeep') : t('instanceEdit.modelsApiKeyPlaceholder')"
           />
         </a-form-item>
 
-        <a-form-item
-          :label="t('instanceEdit.providerApi')"
-          :required="!providerFormCatalog"
-          :validate-status="providerApiError ? 'error' : undefined"
-          :help="providerApiError || t('instanceEdit.providerApiCustomRequired')"
-        >
-          <a-select v-model="providerForm.api" allow-create allow-clear :options="PROVIDER_API_OPTIONS" />
-        </a-form-item>
+        <!-- Official DeepSeek card: only the key above is shown -->
+        <template v-if="providerForm.official">
+          <p class="model-form-note">{{ t('instanceEdit.modelsDeepSeekFormNote') }}</p>
+        </template>
 
-        <a-form-item
-          :label="t('instanceEdit.providerBaseUrl')"
-          :required="!providerFormCatalog"
-          :validate-status="providerBaseUrlError ? 'error' : undefined"
-          :help="providerBaseUrlError || t('instanceEdit.providerBaseUrlCustomRequired')"
-        >
-          <a-input v-model="providerForm.baseUrl" placeholder="https://gateway.example.com/v1" />
-        </a-form-item>
+        <!-- Built-in provider: id/endpoint/models come from the catalogue -->
+        <template v-else-if="providerForm.catalogProviderId">
+          <a-form-item :label="t('instanceEdit.modelsProviderId')">
+            <a-input :model-value="providerForm.id" disabled />
+          </a-form-item>
+          <a-form-item :label="t('instanceEdit.modelsDisplayName')">
+            <a-input v-model="providerForm.displayName" :placeholder="catalogEntry?.name ?? ''" />
+          </a-form-item>
+          <a-alert type="info">
+            {{ t('instanceEdit.modelsCatalogInherited', { api: providerForm.api, baseUrl: providerForm.baseUrl }) }}
+          </a-alert>
+        </template>
 
-        <a-form-item :label="t('instanceEdit.providerModels')">
-          <div class="mcp-rows">
-            <div v-for="(row, idx) in providerForm.models" :key="idx" class="provider-model-row">
-              <a-input
-                v-model="row.id"
-                :placeholder="t('instanceEdit.providerModelId')"
-                :status="providerModelIdError(idx) ? 'error' : undefined"
-                class="provider-model-id"
-              />
-              <a-input v-model="row.name" :placeholder="t('instanceEdit.providerModelName')" class="provider-model-name" />
-              <a-input
-                v-model="row.contextWindow"
-                :placeholder="t('instanceEdit.providerModelContext')"
-                class="provider-model-num"
-              />
-              <a-input
-                v-model="row.maxTokens"
-                :placeholder="t('instanceEdit.providerModelMaxTokens')"
-                class="provider-model-num"
-              />
-              <a-checkbox v-model="row.vision">{{ t('instanceEdit.providerModelVision') }}</a-checkbox>
-              <a-button size="mini" type="text" status="danger" @click="providerForm.models.splice(idx, 1)">
-                ✕
+        <!-- Custom provider: every field is user-owned -->
+        <template v-else>
+          <a-form-item
+            :label="t('instanceEdit.modelsProviderId')"
+            required
+            :validate-status="providerIdError ? 'error' : undefined"
+            :help="providerIdError || t('instanceEdit.modelsProviderIdHint')"
+          >
+            <a-input v-model="providerForm.id" :disabled="!!providerOriginalId" placeholder="my-gateway" />
+          </a-form-item>
+          <a-form-item :label="t('instanceEdit.modelsDisplayName')">
+            <a-input v-model="providerForm.displayName" :placeholder="providerForm.id" />
+          </a-form-item>
+          <a-form-item
+            :label="t('instanceEdit.modelsBaseUrl')"
+            required
+            :validate-status="providerBaseUrlError ? 'error' : undefined"
+            :help="providerBaseUrlError || undefined"
+          >
+            <a-input v-model="providerForm.baseUrl" placeholder="https://gateway.example/v1" />
+          </a-form-item>
+          <a-form-item
+            :label="t('instanceEdit.modelsApi')"
+            required
+            :validate-status="providerApiError ? 'error' : undefined"
+            :help="providerApiError || undefined"
+          >
+            <a-select
+              v-model="providerForm.api"
+              :placeholder="t('instanceEdit.modelsErrApiRequired')"
+              style="width: 320px"
+            >
+              <a-option v-for="opt in PROVIDER_API_OPTIONS" :key="opt" :value="opt">{{ opt }}</a-option>
+            </a-select>
+          </a-form-item>
+
+          <a-form-item
+            :label="t('instanceEdit.modelsModels')"
+            :validate-status="providerModelsError ? 'error' : undefined"
+            :help="providerModelsError || t('instanceEdit.modelsModelsHint')"
+          >
+            <div class="model-rows">
+              <div v-for="model in providerForm.models" :key="model.id" class="model-row">
+                <span class="model-id">{{ model.id }}</span>
+                <a-input v-model="model.name" :placeholder="model.id" class="model-name" />
+                <a-input-number
+                  :model-value="model.contextWindow ?? undefined"
+                  :placeholder="t('instanceEdit.modelsContextWindow')"
+                  hide-button
+                  class="model-num"
+                  @update:model-value="(v) => (model.contextWindow = typeof v === 'number' && v > 0 ? v : null)"
+                />
+                <a-input-number
+                  :model-value="model.maxTokens ?? undefined"
+                  :placeholder="t('instanceEdit.modelsMaxTokens')"
+                  hide-button
+                  class="model-num"
+                  @update:model-value="(v) => (model.maxTokens = typeof v === 'number' && v > 0 ? v : null)"
+                />
+                <a-button status="danger" type="text" @click="removeModel(model.id)">
+                  {{ t('instances.table.delete') }}
+                </a-button>
+              </div>
+              <!-- Manual entry row: works exactly like the picker (issue #89 #3) -->
+              <div class="model-row model-row-new">
+                <a-input
+                  v-model="newModel.id"
+                  :placeholder="t('instanceEdit.modelsModelId')"
+                  class="model-id-input"
+                />
+                <a-input v-model="newModel.name" :placeholder="t('instanceEdit.modelsDisplayName')" class="model-name" />
+                <a-input-number
+                  v-model="newModel.contextWindow"
+                  :placeholder="t('instanceEdit.modelsContextWindow')"
+                  hide-button
+                  class="model-num"
+                />
+                <a-input-number
+                  v-model="newModel.maxTokens"
+                  :placeholder="t('instanceEdit.modelsMaxTokens')"
+                  hide-button
+                  class="model-num"
+                />
+                <a-button
+                  size="small"
+                  type="text"
+                  :disabled="!newModel.id.trim() || !!newModelError"
+                  @click="addManualModel"
+                >
+                  {{ t('instanceEdit.modelsAddModel') }}
+                </a-button>
+              </div>
+              <p v-if="newModelError" class="model-row-error">{{ newModelError }}</p>
+              <a-button size="small" class="model-fetch-btn" :loading="modelsPickerLoading" @click="openModelPicker">
+                {{ t('instanceEdit.modelsFetch') }}
               </a-button>
             </div>
-            <a-button size="small" @click="addProviderModelRow">
-              {{ t('instanceEdit.providerModelAdd') }}
-            </a-button>
-          </div>
-        </a-form-item>
+          </a-form-item>
+        </template>
 
-        <a-alert v-if="providerExtraKeys.length" type="info">
-          {{ t('instanceEdit.providerExtraKept', { keys: providerExtraKeys.join(', ') }) }}
-        </a-alert>
       </a-form>
     </a-modal>
 
-    <!-- Credential ref create / update (issue #76) -->
+    <!-- Add provider: choose built-in catalogue or custom (issue #89) -->
     <a-modal
-      v-model:visible="credentialEditVisible"
-      :title="
-        credentialEditing
-          ? t('instanceEdit.credentialUpdateTitle', { name: credentialEditing })
-          : t('instanceEdit.credentialCreateTitle')
-      "
-      :ok-loading="credentialSaving"
-      :ok-button-props="{ disabled: !credentialFormValid }"
-      @ok="onSaveCredentialRef"
+      v-model:visible="addModeVisible"
+      :title="t('instanceEdit.modelsAddTitle')"
+      :footer="false"
+      :width="560"
     >
-      <a-form :model="credentialForm" layout="vertical">
-        <a-form-item
-          :label="t('instanceEdit.credentialName')"
-          required
-          :validate-status="credentialNameError ? 'error' : undefined"
-          :help="credentialNameError || undefined"
-        >
-          <a-input v-model="credentialForm.name" :disabled="!!credentialEditing" placeholder="DEEPSEEK_API_KEY" />
-        </a-form-item>
-        <a-form-item
-          :label="t('instanceEdit.credentialValue')"
-          required
-          :validate-status="credentialValueError ? 'error' : undefined"
-          :help="credentialValueError || undefined"
-        >
-          <a-input-password v-model="credentialForm.value" :placeholder="t('instanceEdit.credentialValuePlaceholder')" />
-        </a-form-item>
-      </a-form>
+      <a-spin :loading="catalogLoading">
+        <div class="add-mode-grid">
+          <button class="add-mode-card" type="button" @click="openAddCustom">
+            <span class="add-mode-title">{{ t('instanceEdit.modelsAddCustom') }}</span>
+            <span class="add-mode-sub">{{ t('instanceEdit.modelsAddCustomSub') }}</span>
+          </button>
+          <button
+            v-for="p in catalogProviders"
+            :key="p.id"
+            class="add-mode-card"
+            type="button"
+            :disabled="providerRoutes.some((r) => r.id === p.id)"
+            @click="onPickCatalog(p)"
+          >
+            <span class="add-mode-title">{{ p.name }}</span>
+            <span class="add-mode-sub">{{ p.api }} · {{ p.baseUrl }}</span>
+          </button>
+        </div>
+        <!-- A failed catalogue must say so, not masquerade as an empty one. -->
+        <a-alert v-if="catalogError" type="error">
+          {{ t('instanceEdit.modelsCatalogError', { error: catalogError }) }}
+        </a-alert>
+        <a-empty
+          v-else-if="!catalogLoading && catalogProviders.length === 0"
+          :description="t('instanceEdit.modelsCatalogEmpty')"
+        />
+      </a-spin>
     </a-modal>
+
+    <ModelPickerDialog
+      :visible="modelsPickerVisible"
+      :loading="modelsPickerLoading"
+      :models="pickerModels"
+      :selected="pickerSelected"
+      @update:visible="(v: boolean) => (modelsPickerVisible = v)"
+      @adopt="onAdoptModels"
+    />
 
     <!-- Storage redirection target picker (issue #51) -->
     <a-modal
@@ -3408,84 +3283,6 @@ const terminalRunning = ref(false)
 
 .mcp-rows {
   width: 100%;
-}
-
-.provider-route {
-  display: block;
-  max-width: 100%;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.provider-route strong {
-  margin-right: 8px;
-}
-
-.provider-display {
-  color: var(--color-text-2);
-  font-size: 12px;
-  margin-right: 8px;
-}
-
-.provider-tag {
-  vertical-align: baseline;
-}
-
-.provider-cred {
-  white-space: nowrap;
-  font-size: 12px;
-}
-
-.provider-form-scroll {
-  max-height: 62vh;
-  overflow-y: auto;
-  padding-right: 8px;
-}
-
-.provider-endpoint {
-  font-family: monospace;
-  font-size: 13px;
-}
-
-.provider-none {
-  color: var(--color-text-3);
-}
-
-.provider-reports {
-  margin-top: 12px;
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-
-.provider-check-list {
-  margin: 4px 0 0;
-  padding-left: 18px;
-}
-
-.provider-credential-title {
-  margin-top: 20px;
-}
-
-.provider-model-row {
-  display: flex;
-  gap: 8px;
-  align-items: center;
-  margin-bottom: 8px;
-}
-
-.provider-model-id {
-  flex: 2;
-}
-
-.provider-model-name {
-  flex: 2;
-}
-
-.provider-model-num {
-  flex: 1;
-  min-width: 90px;
 }
 
 .switch-label {
@@ -3810,5 +3607,160 @@ const terminalRunning = ref(false)
   .agents-empty {
     color: var(--color-text-3);
   }
+}
+
+// --- Models tab (issue #89) ---------------------------------------------------
+
+.models-toolbar {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  margin-bottom: 8px;
+}
+
+.models-path {
+  font-family: var(--font-family-code, monospace);
+  font-size: 12px;
+  color: var(--color-text-3);
+  margin: 0 0 16px;
+  word-break: break-all;
+}
+
+.models-body {
+  width: 100%;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  align-content: flex-start;
+}
+
+.model-card {
+  width: 280px;
+  border: 1px solid var(--color-border-2);
+  border-radius: 8px;
+  padding: 14px;
+  background: var(--color-bg-2);
+}
+
+.model-card-official {
+  border-color: var(--color-primary-light-3);
+}
+
+.model-card-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.model-card-id {
+  font-weight: 600;
+  font-size: 15px;
+}
+
+.model-card-sub {
+  margin: 8px 0 4px;
+  color: var(--color-text-3);
+  font-size: 12px;
+  word-break: break-all;
+}
+
+.model-card-models {
+  margin: 0 0 10px;
+  color: var(--color-text-2);
+  font-size: 12px;
+}
+
+.model-card-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.model-form-note {
+  color: var(--color-text-3);
+  font-size: 13px;
+}
+
+.model-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.model-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.model-id {
+  min-width: 0;
+  max-width: 40%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-family-code, monospace);
+  font-size: 12px;
+  color: var(--color-text-2);
+}
+
+.model-id-input {
+  flex: 1;
+}
+
+.model-name {
+  flex: 1;
+}
+
+.model-num {
+  width: 120px;
+  flex-shrink: 0;
+}
+
+.model-row-error {
+  margin: 0;
+  font-size: 12px;
+  color: rgb(var(--danger-6));
+}
+
+.model-fetch-btn {
+  align-self: flex-start;
+}
+
+.add-mode-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+}
+
+.add-mode-card {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  text-align: left;
+  padding: 14px;
+  border: 1px solid var(--color-border-2);
+  border-radius: 8px;
+  background: var(--color-bg-2);
+  cursor: pointer;
+
+  &:hover:not(:disabled) {
+    border-color: var(--color-primary-light-3);
+  }
+
+  &:disabled {
+    opacity: 0.45;
+    cursor: not-allowed;
+  }
+}
+
+.add-mode-title {
+  font-weight: 600;
+}
+
+.add-mode-sub {
+  font-size: 12px;
+  color: var(--color-text-3);
+  word-break: break-all;
 }
 </style>
