@@ -3776,6 +3776,26 @@ const terminalRunning = ref(false)
   white-space: nowrap;
 }
 
+/* Issue #96: pin the trailing action column with sticky cells riding the
+   wrapper's horizontal scroll, so the buttons never scroll away. Arco's
+   native fixed columns would force table-layout: fixed and undo the
+   content-sized columns above. Colors mirror Arco's own: header cells use
+   --color-neutral-2, body cells sit on --color-bg-2, and Arco's row-hover
+   rule (higher specificity) still tints the pinned cell with --color-fill-1. */
+.table-scroll :deep(.arco-table-th:last-child),
+.table-scroll :deep(.arco-table-td:last-child) {
+  position: sticky;
+  right: 0;
+}
+
+.table-scroll :deep(.arco-table-th:last-child) {
+  background-color: var(--color-neutral-2);
+}
+
+.table-scroll :deep(.arco-table-td:last-child) {
+  background-color: var(--color-bg-2);
+}
+
 /* Manual single-line clamp: the built-in column ellipsis would force Arco's
    fixed table layout and defeat the content-sized columns above. */
 .cell-ellipsis {

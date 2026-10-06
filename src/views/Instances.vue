@@ -31,10 +31,13 @@ const columns = computed(() => [
   { title: t('instances.table.version'), slotName: 'version', width: 140 },
   { title: t('instances.table.home'), slotName: 'home', width: 180 },
   { title: t('instances.table.profile'), slotName: 'profile', width: 120 },
-  { title: t('instances.table.status'), slotName: 'status', width: 140 },
-  // Action column pinned right: the table scrolls horizontally when narrow,
-  // but the actions never scroll away (issue #13).
-  { title: t('instances.table.actions'), slotName: 'actions', width: 200, align: 'center' as const, fixed: 'right' as const },
+  // No width: the status cell (state tag + external port + URL) sizes to its
+  // content and stays on one line (issue #96).
+  { title: t('instances.table.status'), slotName: 'status' },
+  // The action column is pinned right via sticky CSS (see the style block):
+  // it never scrolls away (issue #13) and sizes to its buttons (issue #96),
+  // without forcing Arco's fixed table layout onto the columns above.
+  { title: t('instances.table.actions'), slotName: 'actions', align: 'center' as const },
 ])
 
 // --- Instance icons (issue #8): resolved lazily per instance -------------------
@@ -176,7 +179,8 @@ async function onOpenWindow(id: string) {
         </div>
       </div>
 
-      <a-table :columns="columns" :data="store.instances" :pagination="false" :scroll="{ x: 1000 }" row-key="id">
+      <div class="table-scroll">
+        <a-table :columns="columns" :data="store.instances" :pagination="false" row-key="id">
         <template #name="{ record }">
           <span class="inst-name">
             <img v-if="iconMap[record.id]" :src="iconMap[record.id]!" class="inst-icon" alt="" />
@@ -199,6 +203,7 @@ async function onOpenWindow(id: string) {
           {{ record.last_profile ?? record.default_profile ?? '—' }}
         </template>
         <template #status="{ record }">
+          <span class="cell-nowrap">
           <a-tag :color="stateColor(store.statusOf(record.id).state)">
             {{ t(`home.status.${store.statusOf(record.id).state}`) }}
           </a-tag>
@@ -222,6 +227,7 @@ async function onOpenWindow(id: string) {
               {{ t('common.copy') }}
             </a-button>
           </template>
+          </span>
         </template>
         <template #actions="{ record }">
           <a-space>
@@ -252,7 +258,8 @@ async function onOpenWindow(id: string) {
             </a-button>
           </a-empty>
         </template>
-      </a-table>
+        </a-table>
+      </div>
 
       <div v-if="homesWithoutInstances.length > 0" class="homes-without-instances">
         <span class="homes-without-instances-title">{{ t('instances.homesWithoutInstancesTitle') }}</span>
@@ -300,6 +307,37 @@ async function onOpenWindow(id: string) {
 </template>
 
 <style lang="scss" scoped>
+// Horizontal-scroll wrapper: the table keeps auto layout so every column
+// sizes to its content; when the total width overflows, this wrapper
+// scrolls instead of squeezing columns.
+.table-scroll {
+  overflow-x: auto;
+}
+
+.cell-nowrap {
+  white-space: nowrap;
+}
+
+// Pin the trailing action column with sticky cells riding the wrapper's
+// horizontal scroll, so the buttons never scroll away. Arco's native fixed
+// columns would force table-layout: fixed and undo the content sizing.
+// Colors mirror Arco's own: header cells use --color-neutral-2, body cells
+// sit on --color-bg-2, and Arco's row-hover rule (higher specificity) still
+// tints the pinned cell with --color-fill-1.
+.table-scroll :deep(.arco-table-th:last-child),
+.table-scroll :deep(.arco-table-td:last-child) {
+  position: sticky;
+  right: 0;
+}
+
+.table-scroll :deep(.arco-table-th:last-child) {
+  background-color: var(--color-neutral-2);
+}
+
+.table-scroll :deep(.arco-table-td:last-child) {
+  background-color: var(--color-bg-2);
+}
+
 .inst-name {
   display: inline-flex;
   align-items: center;
