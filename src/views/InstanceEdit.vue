@@ -1004,6 +1004,140 @@ async function onSaveMcpServer() {
   }
 }
 
+// --- mcpServers JSON paste import (issue #93) --------------------------------
+// The page accepts a pasted `{"mcpServers": {"name": {…}}}` document and adds
+// every entry; the create/edit dialog fills its form from the first entry.
+// Anything that does not parse into that shape is ignored so ordinary paste
+// into inputs keeps working.
+
+interface McpPastedServer {
+  name: string
+  form: McpFormState
+}
+
+/** Object-valued key/value config (`env`, `headers`) → editable rows. */
+function objToKvRows(value: unknown): EnvRow[] {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return []
+  return Object.entries(value as Record<string, unknown>).map(([key, v]) => ({
+    key,
+    value: typeof v === 'string' ? v : String(v),
+  }))
+}
+
+/** null when the text is not an mcpServers document with at least one entry. */
+function parseMcpServersJson(text: string): McpPastedServer[] | null {
+  let raw: unknown
+  try {
+    raw = JSON.parse(text)
+  } catch {
+    return null
+  }
+  if (!raw || typeof raw !== 'object') return null
+  const servers = (raw as Record<string, unknown>).mcpServers
+  if (!servers || typeof servers !== 'object' || Array.isArray(servers)) return null
+  const out: McpPastedServer[] = []
+  for (const [name, cfgRaw] of Object.entries(servers as Record<string, unknown>)) {
+    if (!cfgRaw || typeof cfgRaw !== 'object') continue
+    const cfg = cfgRaw as Record<string, unknown>
+    const form = emptyMcpForm()
+    form.serverName = name
+    if (typeof cfg.url === 'string' && cfg.url.trim()) {
+      form.transport = 'streamable-http'
+      form.url = cfg.url
+      form.headers = objToKvRows(cfg.headers)
+    } else {
+      form.transport = 'stdio'
+      form.command = typeof cfg.command === 'string' ? cfg.command : ''
+      form.args = Array.isArray(cfg.args) ? cfg.args.filter((a): a is string => typeof a === 'string') : []
+      form.env = objToKvRows(cfg.env)
+      form.cwd = typeof cfg.cwd === 'string' ? cfg.cwd : ''
+    }
+    out.push({ name, form })
+  }
+  return out.length > 0 ? out : null
+}
+
+/** The same field rules the dialog enforces; returns the first problem found. */
+function pastedMcpProblem(form: McpFormState, taken: Set<string>): string {
+  const name = form.serverName.trim()
+  if (!MCP_NAME_RE.test(name)) return t('instanceEdit.mcpErrNamePattern')
+  if (mcpServers.value.some((s) => s.serverName === name) || taken.has(name)) {
+    return t('instanceEdit.mcpErrNameDuplicated')
+  }
+  if (form.transport === 'streamable-http') {
+    if (!form.url.trim()) return t('instanceEdit.mcpErrUrlRequired')
+    if (!isHttpUrl(form.url.trim())) return t('instanceEdit.mcpErrUrlInvalid')
+  } else if (!form.command.trim()) {
+    return t('instanceEdit.mcpErrCommandRequired')
+  }
+  return ''
+}
+
+const mcpImporting = ref(false)
+
+async function importMcpServers(entries: McpPastedServer[]) {
+  if (!homeId.value || mcpImporting.value) return
+  mcpImporting.value = true
+  const taken = new Set<string>()
+  const failures: string[] = []
+  let ok = 0
+  try {
+    for (const entry of entries) {
+      const problem = pastedMcpProblem(entry.form, taken)
+      if (problem) {
+        failures.push(`${entry.name}: ${problem}`)
+        continue
+      }
+      try {
+        mcpServers.value = await api.saveMcpServer(
+          homeId.value,
+          mcpScopeProfile.value,
+          mcpPayload(entry.form, ''),
+          null,
+        )
+        taken.add(entry.form.serverName.trim())
+        ok++
+      } catch (e) {
+        failures.push(`${entry.name}: ${String(e)}`)
+      }
+    }
+  } finally {
+    mcpImporting.value = false
+  }
+  if (failures.length === 0) {
+    Message.success(t('instanceEdit.mcpPasteImported', { count: ok }))
+  } else {
+    const summary = t('instanceEdit.mcpPastePartial', {
+      ok,
+      total: entries.length,
+      errors: failures.join('；'),
+    })
+    if (ok > 0) Message.warning(summary)
+    else Message.error(summary)
+  }
+}
+
+function onMcpPagePaste(event: ClipboardEvent) {
+  // The dialog fills its own form; do not double-handle its paste events.
+  if (mcpEditVisible.value) return
+  const target = event.target as HTMLElement | null
+  if (target?.closest('input, textarea, [contenteditable="true"]')) return
+  const entries = parseMcpServersJson(event.clipboardData?.getData('text/plain') ?? '')
+  if (!entries) return
+  event.preventDefault()
+  void importMcpServers(entries)
+}
+
+function onMcpDialogPaste(event: ClipboardEvent) {
+  const entries = parseMcpServersJson(event.clipboardData?.getData('text/plain') ?? '')
+  if (!entries) return
+  event.preventDefault()
+  // `extra` holds keys of the server being edited that the form cannot show;
+  // the pasted document knows nothing about them, so keep them attached.
+  mcpForm.value = { ...entries[0].form, extra: mcpForm.value.extra }
+  Message.success(t('instanceEdit.mcpPasteFilled', { name: entries[0].name }))
+}
+
 /** Enable / disable in place: the row keeps its config, only `disabled` moves. */
 async function onToggleMcpServer(server: McpServer, enabled: boolean) {
   if (!homeId.value) return
@@ -2600,7 +2734,8 @@ const terminalRunning = ref(false)
           </div>
 
           <!-- MCP -->
-          <div v-else-if="activeTab === 'mcp'" class="dl-card edit-card">
+          <!-- MCP servers (issue #93: the card accepts a pasted mcpServers JSON) -->
+          <div v-else-if="activeTab === 'mcp'" class="dl-card edit-card" @paste="onMcpPagePaste">
             <h4 class="env-title">
               {{ t('instanceEdit.tabs.mcp') }}
               <HintIcon :content="t('instanceEdit.mcpDesc')" />
@@ -2622,6 +2757,7 @@ const terminalRunning = ref(false)
                 </a-button>
               </div>
               <p class="mcp-path">{{ t('instanceEdit.mcpScopePath', { path: mcpScopePath }) }}</p>
+              <p class="mcp-path">{{ t('instanceEdit.mcpPasteTip') }}</p>
 
               <div class="table-scroll">
                 <a-table
@@ -2908,6 +3044,9 @@ const terminalRunning = ref(false)
       :ok-button-props="{ disabled: !mcpFormValid }"
       @ok="onSaveMcpServer"
     >
+      <!-- Issue #93: the dialog grew tall with rows; cap the body and scroll.
+           A pasted mcpServers JSON anywhere in the form fills the first entry. -->
+      <div class="mcp-dialog-body" @paste="onMcpDialogPaste">
       <a-form :model="mcpForm" layout="vertical">
         <a-form-item
           :label="t('instanceEdit.mcpServerName')"
@@ -3018,6 +3157,7 @@ const terminalRunning = ref(false)
           {{ t('instanceEdit.mcpExtraKept', { keys: mcpExtraKeys.join(', ') }) }}
         </a-alert>
       </a-form>
+      </div>
     </a-modal>
 
     <!-- Model provider editor (issue #89) -->
@@ -3307,6 +3447,13 @@ const terminalRunning = ref(false)
   font-size: 12px;
   color: var(--color-text-3);
   word-break: break-all;
+}
+
+/* Issue #93: keep the create/edit dialog compact; long header/arg/env row
+   lists scroll inside the body instead of stretching the modal. */
+.mcp-dialog-body {
+  max-height: 56vh;
+  overflow-y: auto;
 }
 
 .mcp-target {
