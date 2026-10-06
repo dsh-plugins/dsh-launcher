@@ -592,16 +592,26 @@ async function loadAgentsMd() {
   }
 }
 
-async function saveAgentsMd() {
+// Issue #94: the toolbar button switches back to the rendered preview after a
+// successful save; Ctrl+S saves in place so an editing flow is not disrupted.
+async function saveAgentsMd(backToPreview: boolean) {
   if (!homeId.value || !editingId.value) return
   agentsSaving.value = true
   try {
     await api.writeAgentsMd(homeId.value, agentsContent.value)
     Message.success(t('instanceEdit.agentsSaved'))
+    if (backToPreview) agentsPreview.value = true
   } catch (e) {
     Message.error(String(e))
   } finally {
     agentsSaving.value = false
+  }
+}
+
+function onAgentsEditorKeydown(event: KeyboardEvent) {
+  if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 's') {
+    event.preventDefault()
+    void saveAgentsMd(false)
   }
 }
 
@@ -2544,9 +2554,9 @@ const terminalRunning = ref(false)
                   type="primary"
                   class="agents-save"
                   :loading="agentsSaving"
-                  @click="saveAgentsMd"
+                  @click="saveAgentsMd(true)"
                 >
-                  {{ t('common.save') }}
+                  {{ t('instanceEdit.agentsSave') }}
                 </a-button>
               </div>
               <a-scrollbar outer-style="height: 480px" style="height: 480px; overflow-y: auto">
@@ -2556,6 +2566,7 @@ const terminalRunning = ref(false)
                   class="agents-editor"
                   :auto-size="{ minRows: 20 }"
                   :placeholder="t('instanceEdit.agentsEmpty')"
+                  @keydown="onAgentsEditorKeydown"
                 />
                 <!-- eslint-disable-next-line vue/no-v-html -- sanitized by renderMarkdown -->
                 <div

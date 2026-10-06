@@ -1,4 +1,4 @@
-{
+﻿{
   "importScan": {
     "title": "Import local DSH environments",
     "hint": "Scan the machine for DSH environments the launcher did not install (~/.dsh*, the DSH_HOME env var and WSL distros), pick the profiles to import; local DSH version directories can be imported too.",
@@ -521,6 +521,7 @@
     "agentsDesc": "Edit and preview this instance's DSH_HOME AGENTS.md (<HOME>/AGENTS.md, shared per HOME).",
     "agentsPreview": "Preview",
     "agentsEdit": "Edit",
+    "agentsSave": "Save (Ctrl+S)",
     "agentsEmpty": "Nothing yet — write the AGENTS.md markdown here",
     "agentsSaved": "AGENTS.md saved",
     "skillsEmpty": "No skills yet",

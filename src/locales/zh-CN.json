@@ -1,4 +1,4 @@
-{
+﻿{
   "importScan": {
     "title": "导入本机 DSH 环境",
     "hint": "扫描本机已有的 DSH 环境（~/.dsh*、DSH_HOME 环境变量与 WSL 发行版），勾选要导入的 profile；也可添加本地已有的 DSH 版本目录。",
@@ -521,6 +521,7 @@
     "agentsDesc": "直接编辑/预览该实例 DSH_HOME 下的 AGENTS.md（<HOME>/AGENTS.md，各实例按 HOME 共享）。",
     "agentsPreview": "预览",
     "agentsEdit": "编辑",
+    "agentsSave": "保存（Ctrl+S）",
     "agentsEmpty": "暂无内容，输入 AGENTS.md 的 Markdown 文本",
     "agentsSaved": "AGENTS.md 已保存",
     "skillsEmpty": "暂无 SKILL",
