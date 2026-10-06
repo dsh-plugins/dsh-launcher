@@ -28,6 +28,10 @@ function applyTheme(mode: ThemeMode) {
   } else {
     document.body.removeAttribute('arco-theme')
   }
+  // Native scrollbars and UA widgets follow the browser color-scheme, not
+  // Arco's CSS variables: declare it on the root so dark mode stops
+  // rendering light scrollbar tracks inside dialogs and scroll wrappers.
+  document.documentElement.style.colorScheme = dark ? 'dark' : 'light'
 }
 
 function onSystemThemeChange() {
