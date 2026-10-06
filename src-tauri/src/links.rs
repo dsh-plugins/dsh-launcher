@@ -15,10 +15,16 @@ const REDIRECTABLE: &[(&str, bool)] = &[
     ("skills", true),
     ("attachments", true),
     ("storages", true),
+    ("AGENTS.md", false),
     ("settings.yaml", false),
     (".credentials.yaml", false),
     ("cordis.patch.yml", false),
 ];
+
+/// Issue #95: the AGENTS.md entry may be redirected to a file that does not
+/// exist yet (dotfiles-repo workflow — the file appears on the next clone).
+/// DSH treats a missing AGENTS.md as absent, so a dangling link is safe.
+const AGENTS_MD: &str = "AGENTS.md";
 
 fn entry_kind(entry: &str) -> Option<bool> {
     REDIRECTABLE
@@ -91,13 +97,38 @@ fn link_points_to(path: &Path, target: &Path) -> bool {
     if !crate::commands::entry_is_dir_link(path) {
         return false;
     }
-    let Ok(resolved) = std::fs::canonicalize(path) else {
+    if let (Ok(resolved), Ok(want)) = (std::fs::canonicalize(path), std::fs::canonicalize(target)) {
+        return crate::config::paths_equal(&resolved, &want);
+    }
+    // Issue #95: canonicalize follows the link, so it fails while the target
+    // is still missing (AGENTS.md before the first dotfiles clone). Compare
+    // the raw link target instead — links are created from absolute paths, so
+    // the stored value is the config target string itself.
+    let Ok(raw) = std::fs::read_link(path) else {
         return false;
     };
-    let Ok(want) = std::fs::canonicalize(target) else {
-        return false;
+    let raw = if raw.is_absolute() {
+        raw
+    } else {
+        match path.parent() {
+            Some(parent) => parent.join(raw),
+            None => return false,
+        }
     };
-    crate::config::paths_equal(&resolved, &want)
+    crate::config::paths_equal(&strip_verbatim(&raw), &strip_verbatim(target))
+}
+
+/// Drops the Windows `\\?\` (and `\\?\UNC\`) verbatim prefix so a
+/// canonicalized path compares equal to the hand-written config value.
+fn strip_verbatim(p: &Path) -> PathBuf {
+    let s = p.to_string_lossy();
+    if let Some(rest) = s.strip_prefix(r"\\?\UNC\") {
+        return PathBuf::from(format!(r"\\{rest}"));
+    }
+    match s.strip_prefix(r"\\?\") {
+        Some(rest) => PathBuf::from(rest),
+        None => p.to_path_buf(),
+    }
 }
 
 /// Creates a file link (symlink, hard-link fallback on Windows where file
@@ -110,11 +141,23 @@ fn create_file_link(target: &Path, link: &Path) -> std::io::Result<()> {
     }
     #[cfg(windows)]
     {
-        if std::os::windows::fs::symlink_file(target, link).is_ok() {
-            Ok(())
-        } else {
-            // Fallback: hard link (same volume only).
-            std::fs::hard_link(target, link)
+        match std::os::windows::fs::symlink_file(target, link) {
+            Ok(()) => Ok(()),
+            Err(err) => {
+                if !target.exists() {
+                    // Issue #95: a hard link cannot anchor to a file that does
+                    // not exist yet, so the dangling symlink is the only
+                    // option — surface its error directly.
+                    crate::log_warn!("文件链接：目标尚不存在且符号链接创建失败: {err}");
+                    Err(err)
+                } else {
+                    crate::log_warn!(
+                        "文件符号链接创建失败，退化为硬链接（DSH 原子替换写入可能使其失效）: {err}"
+                    );
+                    // Fallback: hard link (same volume only).
+                    std::fs::hard_link(target, link)
+                }
+            }
         }
     }
     #[cfg(not(any(unix, windows)))]
@@ -167,6 +210,56 @@ pub async fn list_home_links(
     Ok(out)
 }
 
+/// Validates a redirection target against the HOME. The caller has already
+/// created the target (directories) or its parent directory (AGENTS.md), so
+/// canonicalization has something concrete to work with.
+fn check_target(home: &Path, entry: &str, target_path: &Path, is_dir: bool) -> Result<(), String> {
+    // The target must exist with the right shape before we swap — except
+    // AGENTS.md (issue #95), which may legitimately not exist yet.
+    if is_dir {
+        if target_path.exists() && !target_path.is_dir() {
+            return Err("目标已存在且不是目录".to_string());
+        }
+    } else if !target_path.is_file() && entry != AGENTS_MD {
+        return Err("目标文件不存在".to_string());
+    }
+    // Redirecting an entry onto itself is meaningless.
+    if let (Ok(a), Some(Ok(parent))) = (
+        std::fs::canonicalize(home),
+        target_path.parent().map(std::fs::canonicalize),
+    ) {
+        if crate::config::paths_equal(&a, &parent)
+            && target_path
+                .file_name()
+                .map(|n| n.to_string_lossy().to_string())
+                == Some(entry.to_string())
+        {
+            return Err("目标不能就是 HOME 内的原条目".to_string());
+        }
+    }
+    // Never let a redirected tree contain its own link (recursion trap). A
+    // missing AGENTS.md target cannot be canonicalized, so fall back to its
+    // (existing) parent directory plus the file name.
+    if let Ok(h) = std::fs::canonicalize(home) {
+        let canon = match std::fs::canonicalize(target_path) {
+            Ok(t) => Some(t),
+            Err(_) => match (
+                target_path.parent().map(std::fs::canonicalize),
+                target_path.file_name(),
+            ) {
+                (Some(Ok(p)), Some(name)) => Some(p.join(name)),
+                _ => None,
+            },
+        };
+        if let Some(t) = canon {
+            if crate::config::paths_equal(&t, &h) || t.starts_with(&h) {
+                return Err("目标不能位于该 DSH_HOME 内部".to_string());
+            }
+        }
+    }
+    Ok(())
+}
+
 #[tauri::command]
 pub async fn set_home_link(
     state: State<'_, AppState>,
@@ -184,38 +277,22 @@ pub async fn set_home_link(
     ensure_no_running_instance(&state, &home_id).await?;
 
     let target_path = PathBuf::from(target.trim());
-    // The target must exist with the right shape before we swap.
+    // Materialize the anchor the link needs before validation runs: directory
+    // targets are created outright; a missing AGENTS.md gets its parent
+    // directory so the link has a stable location to hang on.
     if is_dir {
         std::fs::create_dir_all(&target_path).map_err(|e| format!("创建目标目录失败: {e}"))?;
-    } else if !target_path.is_file() {
-        return Err("目标文件不存在".to_string());
+    } else if entry == AGENTS_MD && !target_path.exists() {
+        let parent = target_path
+            .parent()
+            .filter(|p| !p.as_os_str().is_empty())
+            .ok_or_else(|| "目标路径缺少父目录".to_string())?;
+        std::fs::create_dir_all(parent).map_err(|e| format!("创建目标目录失败: {e}"))?;
     }
-    // Redirecting an entry onto itself is meaningless.
-    let link_path = home.path.join(&entry);
-    if let (Ok(a), Some(Ok(parent))) = (
-        std::fs::canonicalize(&home.path),
-        target_path.parent().map(std::fs::canonicalize),
-    ) {
-        if crate::config::paths_equal(&a, &parent)
-            && target_path
-                .file_name()
-                .map(|n| n.to_string_lossy().to_string())
-                == Some(entry.clone())
-        {
-            return Err("目标不能就是 HOME 内的原条目".to_string());
-        }
-    }
-    // Never let a redirected tree contain its own link (recursion trap).
-    if let (Ok(t), Ok(h)) = (
-        std::fs::canonicalize(&target_path),
-        std::fs::canonicalize(&home.path),
-    ) {
-        if crate::config::paths_equal(&t, &h) || t.starts_with(&h) {
-            return Err("目标不能位于该 DSH_HOME 内部".to_string());
-        }
-    }
+    check_target(&home.path, &entry, &target_path, is_dir)?;
 
     // Swap the existing entry out of the way.
+    let link_path = home.path.join(&entry);
     if crate::commands::entry_is_dir_link(&link_path)
         || link_path
             .symlink_metadata()
@@ -427,8 +504,85 @@ mod tests {
     fn whitelist_rejects_unknown_entries() {
         assert_eq!(entry_kind("sessions"), Some(true));
         assert_eq!(entry_kind("settings.yaml"), Some(false));
+        assert_eq!(entry_kind("AGENTS.md"), Some(false));
         assert_eq!(entry_kind("profiles"), None);
         assert_eq!(entry_kind("node_modules"), None);
+    }
+
+    #[test]
+    fn check_target_rejects_missing_target_for_other_files() {
+        let root = unique_temp("check-missing");
+        let home = root.join("home");
+        std::fs::create_dir_all(&home).unwrap();
+        let target = root.join("missing").join("settings.yaml");
+        let err = check_target(&home, "settings.yaml", &target, false).unwrap_err();
+        assert!(err.contains("目标文件不存在"), "unexpected: {err}");
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn check_target_allows_missing_agents_md_target() {
+        // Issue #95: redirecting AGENTS.md into a dotfiles repo before the
+        // file exists must pass validation once the parent directory is there.
+        let root = unique_temp("check-agents");
+        let home = root.join("home");
+        let repo = root.join("dotfiles");
+        std::fs::create_dir_all(&home).unwrap();
+        std::fs::create_dir_all(&repo).unwrap();
+        let target = repo.join("AGENTS.md");
+        check_target(&home, AGENTS_MD, &target, false).unwrap();
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn check_target_rejects_agents_md_inside_home_via_parent_fallback() {
+        // The file does not exist, so plain canonicalize cannot catch this;
+        // the parent fallback must.
+        let root = unique_temp("check-inside");
+        let home = root.join("home");
+        let sub = home.join("notes");
+        std::fs::create_dir_all(&sub).unwrap();
+        let target = sub.join("AGENTS.md");
+        let err = check_target(&home, AGENTS_MD, &target, false).unwrap_err();
+        assert!(
+            err.contains("目标不能位于该 DSH_HOME 内部"),
+            "unexpected: {err}"
+        );
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn check_target_rejects_redirecting_entry_onto_itself() {
+        let root = unique_temp("check-self");
+        let home = root.join("home");
+        std::fs::create_dir_all(&home).unwrap();
+        // HOME/AGENTS.md as the target of AGENTS.md — the file may not even
+        // exist yet; the parent comparison must still catch it.
+        let target = home.join("AGENTS.md");
+        let err = check_target(&home, AGENTS_MD, &target, false).unwrap_err();
+        assert!(
+            err.contains("目标不能就是 HOME 内的原条目"),
+            "unexpected: {err}"
+        );
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn link_points_to_recognizes_dangling_file_symlink() {
+        // Issue #95: an AGENTS.md link whose target does not exist yet must
+        // still show as active; the read_link fallback verifies it.
+        let root = unique_temp("dangling");
+        std::fs::create_dir_all(&root).unwrap();
+        let target = root.join("dotfiles").join("AGENTS.md"); // never created
+        let link = root.join("AGENTS.md");
+        if create_file_link(&target, &link).is_err() {
+            eprintln!("skipping: cannot create file symlinks on this platform");
+            std::fs::remove_dir_all(&root).ok();
+            return;
+        }
+        assert!(link_points_to(&link, &target));
+        assert!(!link_points_to(&link, &root.join("other.md")));
+        std::fs::remove_dir_all(&root).ok();
     }
 
     #[test]

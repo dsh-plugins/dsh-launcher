@@ -76,6 +76,7 @@ const MOCK_LINK_KINDS: Record<string, boolean> = {
   skills: true,
   attachments: true,
   storages: true,
+  'AGENTS.md': false,
   'settings.yaml': false,
   '.credentials.yaml': false,
   'cordis.patch.yml': false,
