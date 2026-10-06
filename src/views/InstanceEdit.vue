@@ -3780,12 +3780,12 @@ const terminalRunning = ref(false)
    wrapper's horizontal scroll, so the buttons never scroll away. Arco's
    native fixed columns would force table-layout: fixed and undo the
    content-sized columns above. Colors mirror Arco's own: header cells use
-   --color-neutral-2, body cells sit on --color-bg-2, and Arco's row-hover
-   rule (higher specificity) still tints the pinned cell with --color-fill-1. */
+   --color-neutral-2, body cells sit on --color-bg-2. */
 .table-scroll :deep(.arco-table-th:last-child),
 .table-scroll :deep(.arco-table-td:last-child) {
   position: sticky;
   right: 0;
+  z-index: 1;
 }
 
 .table-scroll :deep(.arco-table-th:last-child) {
@@ -3794,6 +3794,28 @@ const terminalRunning = ref(false)
 
 .table-scroll :deep(.arco-table-td:last-child) {
   background-color: var(--color-bg-2);
+}
+
+/* Arco's row hover recolors every td with the translucent --color-fill-1;
+   on the pinned cell that lets the content scrolled underneath show
+   through. Mirror Arco's native fixed-column treatment instead: keep the
+   opaque base and paint the hover tint as a ::before overlay (its negative
+   z-index sits above the cell background, below the buttons). */
+.table-scroll
+  :deep(.arco-table-hover:not(.arco-table-dragging) .arco-table-tr:not(.arco-table-tr-empty):not(.arco-table-tr-summary):hover .arco-table-td:last-child) {
+  background-color: var(--color-bg-2);
+}
+
+.table-scroll
+  :deep(.arco-table-hover:not(.arco-table-dragging) .arco-table-tr:not(.arco-table-tr-empty):not(.arco-table-tr-summary):hover .arco-table-td:last-child)::before {
+  position: absolute;
+  top: 0;
+  left: 0;
+  z-index: -1;
+  width: 100%;
+  height: 100%;
+  background-color: var(--color-fill-1);
+  content: '';
 }
 
 /* Manual single-line clamp: the built-in column ellipsis would force Arco's
@@ -4145,6 +4167,10 @@ const terminalRunning = ref(false)
   display: grid;
   grid-template-columns: 1fr 1fr;
   gap: 12px;
+  /* The provider catalogue is long: cap the grid and scroll inside the
+     modal instead of letting the dialog outgrow the window. */
+  max-height: 60vh;
+  overflow-y: auto;
 }
 
 .add-mode-card {
@@ -4156,6 +4182,9 @@ const terminalRunning = ref(false)
   border: 1px solid var(--color-border-2);
   border-radius: 8px;
   background: var(--color-bg-2);
+  /* Native buttons take the OS color scheme (CanvasText), which ignores
+     the app theme: set the themed text color explicitly. */
+  color: var(--color-text-1);
   cursor: pointer;
 
   &:hover:not(:disabled) {

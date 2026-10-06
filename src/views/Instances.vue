@@ -322,12 +322,12 @@ async function onOpenWindow(id: string) {
 // horizontal scroll, so the buttons never scroll away. Arco's native fixed
 // columns would force table-layout: fixed and undo the content sizing.
 // Colors mirror Arco's own: header cells use --color-neutral-2, body cells
-// sit on --color-bg-2, and Arco's row-hover rule (higher specificity) still
-// tints the pinned cell with --color-fill-1.
+// sit on --color-bg-2.
 .table-scroll :deep(.arco-table-th:last-child),
 .table-scroll :deep(.arco-table-td:last-child) {
   position: sticky;
   right: 0;
+  z-index: 1;
 }
 
 .table-scroll :deep(.arco-table-th:last-child) {
@@ -336,6 +336,28 @@ async function onOpenWindow(id: string) {
 
 .table-scroll :deep(.arco-table-td:last-child) {
   background-color: var(--color-bg-2);
+}
+
+// Arco's row hover recolors every td with the translucent --color-fill-1;
+// on the pinned cell that lets the content scrolled underneath show
+// through. Mirror Arco's native fixed-column treatment instead: keep the
+// opaque base and paint the hover tint as a ::before overlay (its negative
+// z-index sits above the cell background, below the buttons).
+.table-scroll
+  :deep(.arco-table-hover:not(.arco-table-dragging) .arco-table-tr:not(.arco-table-tr-empty):not(.arco-table-tr-summary):hover .arco-table-td:last-child) {
+  background-color: var(--color-bg-2);
+}
+
+.table-scroll
+  :deep(.arco-table-hover:not(.arco-table-dragging) .arco-table-tr:not(.arco-table-tr-empty):not(.arco-table-tr-summary):hover .arco-table-td:last-child)::before {
+  position: absolute;
+  top: 0;
+  left: 0;
+  z-index: -1;
+  width: 100%;
+  height: 100%;
+  background-color: var(--color-fill-1);
+  content: '';
 }
 
 .inst-name {
