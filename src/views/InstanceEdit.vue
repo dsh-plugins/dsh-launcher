@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch, type Ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { Message, Modal } from '@arco-design/web-vue'
@@ -1642,19 +1642,36 @@ const storageColumns = [
 
 const homeLinks = ref<HomeLinkInfo[]>([])
 const homeLinksLoading = ref(false)
+// Issue #91: rows are selectable so several entries can be redirected into one
+// directory in a single batch operation.
+const storageRowSelection = { type: 'checkbox' as const, showCheckedAll: true }
+const storageSelected = ref<string[]>([])
+
+function onStorageSelectionChange(keys: (string | number)[]) {
+  storageSelected.value = keys.map(String)
+}
+
 const linkDialogVisible = ref(false)
 const linkEntry = ref('')
-const linkTarget = ref('')
+// Issue #91: the target is split into a directory (picked via a directory
+// dialog) plus an entry name alias — no more hand-typing of full paths.
+const linkDir = ref('')
+const linkAlias = ref('')
 const linkBusy = ref(false)
 /** Preset root candidates for the open dialog (issue #65), from the backend. */
 const linkPresets = ref<HomeLinkSuggestion[]>([])
 const linkPresetsLoading = ref(false)
-/** Picked preset id ('' = no preset; the path stays hand-editable). */
+/** Picked preset id in the single-entry dialog ('' = no preset). */
 const linkPresetId = ref('')
-/** The open entry is a directory (decides the browse dialog mode). */
+/** The open entry is a directory (controls the file-entry hint). */
 const linkIsDir = ref(true)
 /** A browse/file dialog is currently open. */
 const linkPicking = ref(false)
+/** Batch redirection dialog (issue #91): directory only, the per-entry name
+ * is kept from the existing target or defaults to the entry name. */
+const batchDialogVisible = ref(false)
+const batchDir = ref('')
+const batchPresetId = ref('')
 
 /** Preset cache per `<homeId>::<entry>` so reopening a dialog is instant. */
 const linkPresetCache = new Map<string, HomeLinkSuggestion[]>()
@@ -1693,12 +1710,26 @@ async function loadHomeLinks() {
   }
 }
 
-/** Joins a preset root and an entry name using the root's own separator, so a
- * Windows root stays `D:\dsh-data\sessions` and a POSIX one `.../sessions`. */
-function joinLinkPath(root: string, entry: string): string {
-  const sep = root.includes('\\') ? '\\' : '/'
-  const trimmed = root.replace(/[\\/]+$/, '')
-  return `${trimmed}${sep}${entry}`
+/** Joins a directory and a name using the directory's own separator, so a
+ * Windows directory stays `D:\dsh-data\sessions` and a POSIX one `.../sessions`. */
+function joinLinkPath(dir: string, name: string): string {
+  const sep = dir.includes('\\') ? '\\' : '/'
+  const trimmed = dir.replace(/[\\/]+$/, '')
+  return `${trimmed}${sep}${name}`
+}
+
+/**
+ * Splits a full target path into its directory and final name (issue #91).
+ * A drive root keeps its separator (`D:\foo` → dir `D:\`), and a name-only
+ * value (no separator at all) yields an empty directory.
+ */
+function splitLinkPath(p: string): { dir: string; name: string } {
+  const norm = normalizeLinkPath(p)
+  const idx = Math.max(norm.lastIndexOf('\\'), norm.lastIndexOf('/'))
+  if (idx < 0) return { dir: '', name: norm }
+  let dir = norm.slice(0, idx)
+  if (/^[A-Za-z]:$/.test(dir)) dir += '\\'
+  return { dir, name: norm.slice(idx + 1) }
 }
 
 /**
@@ -1790,7 +1821,11 @@ watch(homeId, () => {
 async function openLinkDialog(link: HomeLinkInfo) {
   linkEntry.value = link.entry
   linkIsDir.value = link.is_dir
-  linkTarget.value = link.target
+  // An existing redirect prefills its own directory and name (issue #91);
+  // a fresh entry starts blank and the alias defaults to the entry name.
+  const { dir, name } = splitLinkPath(link.target)
+  linkDir.value = dir
+  linkAlias.value = link.target ? name : ''
   linkPresetId.value = ''
   linkPresets.value = []
   linkDialogVisible.value = true
@@ -1798,35 +1833,53 @@ async function openLinkDialog(link: HomeLinkInfo) {
   await loadLinkPresets(link.entry)
 }
 
+/** Alias validation (issue #91): the name becomes the last path segment, so
+ * it must not contain separators or Windows-reserved characters, and `.`/`..`
+ * would escape the picked directory. Empty means "use the entry name". */
+const linkAliasError = computed(() => {
+  const alias = linkAlias.value.trim()
+  if (!alias) return ''
+  if (alias === '.' || alias === '..' || /[\\/:*?"<>|]/.test(alias)) {
+    return t('instanceEdit.storageAliasInvalid')
+  }
+  return ''
+})
+
 /**
- * Fills the path input from a preset; the value stays editable (D3).
- *
- * Directory entries only: the candidates are **roots**, so joining the entry
- * name onto one yields an existing file path for `settings.yaml`-style entries
- * only by coincidence — the backend requires such a target to already exist
- * (links.rs), making a preset click almost always fail (issue #65 F1). File
- * entries pick their target through the browse dialog instead.
+ * Fills a directory input from a preset root (issue #91): presets are plain
+ * directories now — the entry name comes from the alias field — so they serve
+ * file and directory entries alike. The directory stays editable (D3).
  */
-function applyLinkPreset(id: unknown) {
+function applyLinkPreset(id: unknown, dirRef: Ref<string>, presetIdRef: Ref<string>) {
   const presetId = typeof id === 'string' ? id : ''
-  linkPresetId.value = presetId
-  if (!presetId || !linkIsDir.value) return
+  presetIdRef.value = presetId
+  if (!presetId) return
   const preset = linkPresets.value.find((p) => p.id === presetId)
   if (!preset?.path) return
-  linkTarget.value = joinLinkPath(preset.path, linkEntry.value)
+  dirRef.value = normalizeLinkPath(preset.path)
 }
 
-/** The directory a file-entry browse dialog should open in: the first preset
- * root when it exists, else the HOME itself. */
+/** Template handlers: refs unwrap in templates, so the pickers go through
+ * these script-level wrappers. */
+function applyLinkPresetSingle(id: unknown) {
+  applyLinkPreset(id, linkDir, linkPresetId)
+}
+
+function applyLinkPresetBatch(id: unknown) {
+  applyLinkPreset(id, batchDir, batchPresetId)
+}
+
+/** The directory a browse dialog should open in: the first preset root when
+ * it exists, else the HOME itself. */
 function browseStartDir(): string {
   const existing = linkPresets.value.find((p) => p.exists) ?? linkPresets.value[0]
   const home = store.homes.find((h) => h.id === homeId.value)?.path ?? ''
   return normalizeLinkPath(existing?.path ?? '') || normalizeLinkPath(home)
 }
 
-/** Browse button: a directory picker for directory entries, a filtered file
- * picker for file entries (the whitelist mixes both). */
-async function pickLinkTarget() {
+/** Browse button: always a directory picker (issue #91) — the target file or
+ * folder name lives in the alias field, not in a hand-typed full path. */
+async function pickLinkDir(which: 'single' | 'batch') {
   if (linkPicking.value) return
   if (!api.isTauri) {
     // Browser preview: there is no native dialog, so guide the user instead of
@@ -1837,26 +1890,25 @@ async function pickLinkTarget() {
   linkPicking.value = true
   try {
     const { open } = await import('@tauri-apps/plugin-dialog')
-    // An already-typed path wins (it is what the user is editing); otherwise
-    // fall back to a candidate root so the dialog opens somewhere meaningful
-    // instead of the HOME — which is rejected as a target anyway.
-    const defaultPath = normalizeLinkPath(linkTarget.value) || browseStartDir()
-    const picked = linkIsDir.value
-      ? await open({
-          directory: true,
-          multiple: false,
-          title: t('instanceEdit.storageBrowseDirTitle'),
-          defaultPath,
-        })
-      : await open({
-          multiple: false,
-          title: t('instanceEdit.storageBrowseFileTitle'),
-          defaultPath,
-          filters: [{ name: 'YAML', extensions: ['yaml', 'yml'] }],
-        })
+    // An already-typed directory wins (it is what the user is editing);
+    // otherwise fall back to a candidate root so the dialog opens somewhere
+    // meaningful instead of the HOME — which is rejected as a target anyway.
+    const current = which === 'single' ? linkDir.value : batchDir.value
+    const defaultPath = normalizeLinkPath(current) || browseStartDir()
+    const picked = await open({
+      directory: true,
+      multiple: false,
+      title: t('instanceEdit.storageBrowseDirTitle'),
+      defaultPath,
+    })
     if (typeof picked !== 'string') return
-    linkTarget.value = normalizeLinkPath(picked)
-    linkPresetId.value = ''
+    if (which === 'single') {
+      linkDir.value = normalizeLinkPath(picked)
+      linkPresetId.value = ''
+    } else {
+      batchDir.value = normalizeLinkPath(picked)
+      batchPresetId.value = ''
+    }
   } catch (e) {
     Message.error(String(e))
   } finally {
@@ -1865,8 +1917,9 @@ async function pickLinkTarget() {
 }
 
 async function confirmSetLink() {
-  const target = normalizeLinkPath(linkTarget.value)
-  if (!target) return
+  const dir = normalizeLinkPath(linkDir.value)
+  if (!dir || linkAliasError.value) return
+  const target = joinLinkPath(dir, linkAlias.value.trim() || linkEntry.value)
   // Frontend pre-check (the deterministic half only): a target inside the HOME
   // is always rejected by the backend, so catch it before the request.
   // Existence and UNC/relative-path subtleties stay the backend's call.
@@ -1889,6 +1942,68 @@ async function confirmSetLink() {
   } finally {
     linkBusy.value = false
   }
+}
+
+function openBatchDialog() {
+  batchDir.value = ''
+  batchPresetId.value = ''
+  linkPresets.value = []
+  batchDialogVisible.value = true
+  linkPresetReqSeq += 1
+  // Preset roots are entry-independent (links.rs::suggest_targets), so the
+  // first selected entry is as good a cache key as any.
+  void loadLinkPresets(storageSelected.value[0] ?? 'sessions')
+}
+
+/**
+ * Batch redirection (issue #91): every selected entry lands in the picked
+ * directory under its own name — the basename of its existing target when it
+ * already redirects somewhere, else the entry name. Entries are applied
+ * sequentially; one failure does not stop the rest, and every failure is
+ * surfaced in the summary instead of being swallowed.
+ */
+async function confirmBatchLink() {
+  const dir = normalizeLinkPath(batchDir.value)
+  if (!dir) return
+  const home = store.homes.find((h) => h.id === homeId.value)?.path
+  linkBusy.value = true
+  let ok = 0
+  const failures: string[] = []
+  try {
+    for (const entry of storageSelected.value) {
+      const existing = homeLinks.value.find((l) => l.entry === entry)
+      const alias = existing?.target ? splitLinkPath(existing.target).name : entry
+      const target = joinLinkPath(dir, alias)
+      if (home && isInsideHome(target, home)) {
+        failures.push(`${entry}: ${t('instanceEdit.storageTargetInsideHome')}`)
+        continue
+      }
+      try {
+        await api.setHomeLink(homeId.value!, entry, target)
+        ok += 1
+      } catch (e) {
+        failures.push(`${entry}: ${String(e)}`)
+      }
+    }
+  } finally {
+    linkBusy.value = false
+  }
+  if (failures.length === 0) {
+    Message.success(t('instanceEdit.storageBatchDone', { count: ok }))
+    batchDialogVisible.value = false
+    storageSelected.value = []
+  } else {
+    const summary = t('instanceEdit.storageBatchPartial', {
+      ok,
+      total: storageSelected.value.length,
+      errors: failures.join('；'),
+    })
+    if (ok > 0) Message.warning(summary)
+    else Message.error(summary)
+  }
+  await store.refreshHomes()
+  await loadHomeLinks()
+  linkPresetCache.clear()
 }
 
 async function clearLink(link: HomeLinkInfo) {
@@ -2929,13 +3044,28 @@ const terminalRunning = ref(false)
               <a-alert type="warning" class="storage-caveat">
                 {{ t('instanceEdit.storageCaveat') }}
               </a-alert>
+              <!-- Issue #91: check a set of entries and redirect them all into
+                   one directory, keeping each entry's current name. -->
+              <div class="storage-toolbar">
+                <a-button
+                  size="small"
+                  :disabled="storageSelected.length === 0 || linkBusy"
+                  @click="openBatchDialog"
+                >
+                  {{ t('instanceEdit.storageBatchSet') }}
+                  <template v-if="storageSelected.length">({{ storageSelected.length }})</template>
+                </a-button>
+              </div>
               <div class="table-scroll">
                 <a-table
                   :columns="storageColumns"
                   :data="homeLinks"
                   :loading="homeLinksLoading"
                   :pagination="false"
+                  row-key="entry"
+                  :row-selection="storageRowSelection"
                   size="small"
+                  @selection-change="onStorageSelectionChange"
                 >
                 <template #storageTarget="{ record }">
                   <span v-if="record.target" class="cell-nowrap">{{ record.target }}</span>
@@ -3356,29 +3486,27 @@ const terminalRunning = ref(false)
       @adopt="onAdoptModels"
     />
 
-    <!-- Storage redirection target picker (issue #51) -->
+    <!-- Storage redirection target picker (issue #51; directory + alias form
+         since issue #91) -->
     <a-modal
       :visible="linkDialogVisible"
       :title="t('instanceEdit.storageSetTitle', { entry: linkEntry })"
       :ok-text="t('common.confirm')"
       :cancel-text="t('instanceEdit.cancel')"
-      :ok-button-props="{ disabled: !linkTarget.trim(), loading: linkBusy || linkPicking }"
+      :ok-button-props="{ disabled: !linkDir.trim() || !!linkAliasError, loading: linkBusy || linkPicking }"
       width="620px"
       @ok="confirmSetLink"
       @cancel="linkDialogVisible = false"
     >
       <a-form layout="vertical" :model="{}">
-        <!-- Directory entries only: the candidates are roots, and joining the
-             entry name onto one cannot produce the *existing file* the backend
-             demands for file entries (issue #65 F1). Those use Browse instead. -->
-        <a-form-item v-if="linkIsDir" :label="t('instanceEdit.storagePreset')">
+        <a-form-item :label="t('instanceEdit.storagePreset')">
           <a-select
             :model-value="linkPresetId"
             :placeholder="t('instanceEdit.storagePresetNone')"
             :loading="linkPresetsLoading"
             allow-clear
             style="width: 100%"
-            @change="applyLinkPreset"
+            @change="applyLinkPresetSingle"
           >
             <a-option v-for="preset in linkPresetOptions" :key="preset.id" :value="preset.id">
               {{ preset.label }}
@@ -3393,23 +3521,81 @@ const terminalRunning = ref(false)
             </a-option>
           </a-select>
         </a-form-item>
-        <a-alert v-else type="info" class="storage-file-hint">
+        <a-alert v-if="!linkIsDir" type="info" class="storage-file-hint">
           {{ t('instanceEdit.storageFileEntryHint') }}
         </a-alert>
-        <a-form-item :label="t('instanceEdit.storageTargetPath')">
+        <a-form-item :label="t('instanceEdit.storageTargetDir')">
           <a-input-group>
             <a-input
-              v-model="linkTarget"
+              v-model="linkDir"
               :placeholder="t('instanceEdit.storageTargetPlaceholder')"
               allow-clear
             />
-            <a-button :loading="linkPicking" @click="pickLinkTarget">
+            <a-button :loading="linkPicking" @click="pickLinkDir('single')">
+              {{ t('instanceEdit.storageBrowse') }}
+            </a-button>
+          </a-input-group>
+        </a-form-item>
+        <a-form-item
+          :label="t('instanceEdit.storageAlias')"
+          :validate-status="linkAliasError ? 'error' : undefined"
+          :help="linkAliasError || undefined"
+        >
+          <a-input v-model="linkAlias" :placeholder="linkEntry" allow-clear />
+        </a-form-item>
+        <a-alert type="info">
+          {{ t('instanceEdit.storageSetHint') }}
+        </a-alert>
+      </a-form>
+    </a-modal>
+
+    <!-- Batch storage redirection (issue #91): one directory for every
+         selected entry; each entry keeps its current name. -->
+    <a-modal
+      :visible="batchDialogVisible"
+      :title="t('instanceEdit.storageBatchTitle', { count: storageSelected.length })"
+      :ok-text="t('common.confirm')"
+      :cancel-text="t('instanceEdit.cancel')"
+      :ok-button-props="{ disabled: !batchDir.trim(), loading: linkBusy || linkPicking }"
+      width="620px"
+      @ok="confirmBatchLink"
+      @cancel="batchDialogVisible = false"
+    >
+      <a-form layout="vertical" :model="{}">
+        <a-form-item :label="t('instanceEdit.storagePreset')">
+          <a-select
+            :model-value="batchPresetId"
+            :placeholder="t('instanceEdit.storagePresetNone')"
+            :loading="linkPresetsLoading"
+            allow-clear
+            style="width: 100%"
+            @change="applyLinkPresetBatch"
+          >
+            <a-option v-for="preset in linkPresetOptions" :key="preset.id" :value="preset.id">
+              {{ preset.label }}
+              <span class="storage-preset-path">
+                {{ preset.path }}
+                <template v-if="!preset.exists">
+                  · {{ t('instanceEdit.storagePresetWillCreate') }}
+                </template>
+              </span>
+            </a-option>
+          </a-select>
+        </a-form-item>
+        <a-form-item :label="t('instanceEdit.storageTargetDir')">
+          <a-input-group>
+            <a-input
+              v-model="batchDir"
+              :placeholder="t('instanceEdit.storageTargetPlaceholder')"
+              allow-clear
+            />
+            <a-button :loading="linkPicking" @click="pickLinkDir('batch')">
               {{ t('instanceEdit.storageBrowse') }}
             </a-button>
           </a-input-group>
         </a-form-item>
         <a-alert type="info">
-          {{ t('instanceEdit.storageSetHint') }}
+          {{ t('instanceEdit.storageBatchHint') }}
         </a-alert>
       </a-form>
     </a-modal>
@@ -3567,6 +3753,12 @@ const terminalRunning = ref(false)
 
 .storage-caveat {
   margin-bottom: 12px;
+}
+
+.storage-toolbar {
+  display: flex;
+  justify-content: flex-end;
+  margin-bottom: 8px;
 }
 
 /* Issue #92: content-sized table columns. The tables above use auto layout
