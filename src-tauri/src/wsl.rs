@@ -411,6 +411,19 @@ pub fn env_exports(env: &[(String, String)]) -> String {
         .collect::<Vec<_>>()
         .join("; ")
 }
+
+/// Converts a Windows path to a WSL path using `wslpath -u` (issue #97).
+///
+/// Returns the Linux-style path (e.g., `C:\Users\foo` → `/mnt/c/Users/foo`).
+/// Requires the distro to be running.
+pub async fn to_wsl_path(distro: &str, win_path: &str) -> Result<String, String> {
+    wsl_output(
+        distro,
+        &["wslpath".to_string(), "-u".to_string(), win_path.to_string()],
+    )
+    .await
+}
+
 /// The bash wrapper used to run an instance inside WSL: prints the inner PID
 /// marker, then execs node with the DSH CLI. Everything is single-quoted so
 /// env values and paths with spaces are safe.

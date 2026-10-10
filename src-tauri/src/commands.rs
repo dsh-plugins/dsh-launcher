@@ -299,8 +299,8 @@ pub fn create_instance(
         default_profile: input.default_profile,
         last_profile: None,
         icon: None,
-
         port: None,
+        tui_cwd: None,
     };
     cfg.instances.push(inst.clone());
     save_state(&state, &cfg)?;
@@ -367,6 +367,44 @@ pub fn set_instance_port(
     save_state(&state, &cfg)?;
     Ok(updated)
 }
+
+/// Sets an instance's TUI working directory (issue #97). Empty / whitespace-only
+/// input means "use DSH_HOME" — stored as `None`. Non-empty input is validated
+/// (existence, is directory) and canonicalized to absolute path.
+#[tauri::command(rename_all = "snake_case")]
+pub fn set_instance_tui_cwd(
+    state: State<'_, AppState>,
+    instance_id: String,
+    path: Option<String>,
+) -> Result<crate::config::DshInstance, String> {
+    let path = match path {
+        Some(p) if !p.trim().is_empty() => {
+            let p = std::path::Path::new(p.trim());
+            if !p.exists() {
+                return Err(format!("目录不存在: {}", p.display()));
+            }
+            if !p.is_dir() {
+                return Err(format!("不是目录: {}", p.display()));
+            }
+            Some(
+                p.canonicalize()
+                    .map_err(|e| format!("无法解析路径: {e}"))?
+                    .to_string_lossy()
+                    .to_string(),
+            )
+        }
+        _ => None,
+    };
+    let mut cfg = state.config.lock().unwrap();
+    let Some(inst) = cfg.instances.iter_mut().find(|i| i.id == instance_id) else {
+        return Err("实例不存在".to_string());
+    };
+    inst.tui_cwd = path;
+    let updated = inst.clone();
+    save_state(&state, &cfg)?;
+    Ok(updated)
+}
+
 
 #[tauri::command]
 pub async fn delete_instance(
@@ -482,6 +520,7 @@ pub fn copy_instance(
         last_profile: None,
         icon: source.icon.clone(),
         port: source.port,
+        tui_cwd: source.tui_cwd.clone(),
     };
     // A local icon is stored per instance id; copy the file for the clone,
     // falling back to the launcher default when it cannot be carried over.

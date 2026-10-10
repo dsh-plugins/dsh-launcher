@@ -111,6 +111,45 @@ async function applyPort() {
   }
 }
 
+// --- TUI working directory (issue #97) ----------------------------------------
+
+const tuiCwdInput = ref('')
+const tuiCwdBusy = ref(false)
+
+async function browseTuiCwd() {
+  if (!editingId.value) return
+  try {
+    const selected = await api.showDirectoryPicker()
+    if (selected) {
+      tuiCwdInput.value = selected
+    }
+  } catch (e) {
+    Message.error(String(e))
+  }
+}
+
+async function applyTuiCwd() {
+  if (!editingId.value) return
+  tuiCwdBusy.value = true
+  try {
+    const path = tuiCwdInput.value.trim() || null
+    const updated = await api.setInstanceTuiCwd(editingId.value, path)
+    const inst = store.instanceById(editingId.value)
+    if (inst) inst.tui_cwd = updated.tui_cwd ?? null
+    tuiCwdInput.value = updated.tui_cwd ?? ''
+    Message.success(
+      updated.tui_cwd
+        ? t('instanceEdit.tuiCwdSaved', { path: updated.tui_cwd })
+        : t('instanceEdit.tuiCwdSavedDefault'),
+    )
+  } catch (e) {
+    Message.error(String(e))
+  } finally {
+    tuiCwdBusy.value = false
+  }
+}
+
+
 interface EnvRow {
   key: string
   value: string
@@ -142,6 +181,7 @@ onMounted(async () => {
   homeId.value = inst.home_id
   defaultProfile.value = inst.default_profile ?? undefined
   portInput.value = inst.port ? String(inst.port) : ''
+  tuiCwdInput.value = inst.tui_cwd ?? ''
   envRows.value = Object.entries(inst.env_overrides).map(([key, value]) => ({ key, value }))
   await loadIcon()
 })
@@ -2092,6 +2132,28 @@ const terminalRunning = ref(false)
                   />
                   <a-button :loading="portBusy" @click="applyPort">
                     {{ t('instanceEdit.portApply') }}
+                  </a-button>
+                </a-space>
+              </a-form-item>
+
+              <a-form-item v-if="editingId">
+                <template #label>
+                  {{ t('instanceEdit.tuiCwd') }}
+                  <HintIcon :content="t('instanceEdit.tuiCwdHint')" />
+                </template>
+                <a-space>
+                  <a-input
+                    v-model="tuiCwdInput"
+                    :placeholder="t('instanceEdit.tuiCwdPlaceholder')"
+                    allow-clear
+                    style="width: 400px"
+                    @press-enter="applyTuiCwd"
+                  />
+                  <a-button :loading="tuiCwdBusy" @click="browseTuiCwd">
+                    {{ t('instanceEdit.tuiCwdBrowse') }}
+                  </a-button>
+                  <a-button :loading="tuiCwdBusy" @click="applyTuiCwd">
+                    {{ t('instanceEdit.tuiCwdApply') }}
                   </a-button>
                 </a-space>
               </a-form-item>

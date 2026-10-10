@@ -234,6 +234,29 @@ async fn start_tui_session_inner(
 
     let env = crate::process::build_env(&cfg, instance_id)?;
 
+    // Resolve target working directory (issue #97): user-configured path or
+    // DSH_HOME as fallback.
+    let target_cwd_path;
+    let target_cwd_linux;
+    if let Some(ref custom_path) = inst.tui_cwd {
+        target_cwd_path = std::path::PathBuf::from(custom_path);
+        if let Some(distro) = &wsl_distro {
+            // WSL: convert Windows path to Linux path
+            target_cwd_linux = crate::wsl::to_wsl_path(distro, custom_path)
+                .await
+                .unwrap_or_else(|e| {
+                    eprintln!("警告: TUI 工作目录路径转换失败: {e}, 回退到 DSH_HOME");
+                    linux_home.to_string_lossy().to_string()
+                });
+        } else {
+            target_cwd_linux = String::new(); // Not used for local instances
+        }
+    } else {
+        // Fallback to DSH_HOME
+        target_cwd_path = home_path.clone();
+        target_cwd_linux = linux_home.to_string_lossy().to_string();
+    }
+
     let pty_system = native_pty_system();
     let pair = pty_system
         .openpty(PtySize {
@@ -259,22 +282,27 @@ async fn start_tui_session_inner(
         // on wsl.exe, and WSL does not forward the Windows environment into the
         // distro (that needs WSLENV), so DSH_HOME would never reach the CLI
         // (issue #49 S2). `launch_script` already does the same.
+        // Issue #97: cd into the target working directory and pass it as
+        // positional argument to dsh-tui.
         let script = format!(
-            "{env}; export PATH={0}:\"$PATH\"; cd {1} && exec {2} {3} --profile {4}",
+            "{env}; export PATH={0}:\"$PATH\"; cd {1} && exec {2} {3} --profile {4} {5}",
             crate::wsl::sh_quote(&root.node_bin_dir()),
-            crate::wsl::sh_quote(&linux_home.to_string_lossy()),
+            crate::wsl::sh_quote(&target_cwd_linux),
             crate::wsl::sh_quote(&root.node_exe()),
             crate::wsl::sh_quote(&bin.to_string_lossy()),
             crate::wsl::sh_quote(&profile),
+            crate::wsl::sh_quote(&target_cwd_linux),
             env = crate::wsl::env_exports(&env),
         );
         cmd.args(["-d", distro, "--", "bash", "-lc", &script]);
         cmd.cwd(std::env::temp_dir().as_os_str());
     } else {
+        // Local Windows: set cwd and pass as positional argument (issue #97)
         cmd.arg(crate::process::version_bin(&version_dir));
         cmd.arg("--profile");
         cmd.arg(&profile);
-        cmd.cwd(home_path.as_os_str());
+        cmd.arg(target_cwd_path.as_os_str());
+        cmd.cwd(target_cwd_path.as_os_str());
         for (k, v) in &env {
             cmd.env(k, v);
         }

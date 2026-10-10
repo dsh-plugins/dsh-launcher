@@ -389,8 +389,8 @@ async fn do_create_instance(
             default_profile: None,
             last_profile: None,
             icon: None,
-
             port: None,
+            tui_cwd: None,
         };
         cfg.instances.push(inst.clone());
         crate::commands::save_state(state, &cfg)?;
@@ -902,6 +902,7 @@ async fn do_create_wsl_instance(
             last_profile: None,
             icon: None,
             port: None,
+            tui_cwd: None,
         };
         cfg.instances.push(inst.clone());
         crate::commands::save_state(state, &cfg)?;
@@ -2001,6 +2002,7 @@ async fn do_copy_instance(
             last_profile: None,
             icon: source.icon.clone(),
             port: source.port,
+            tui_cwd: source.tui_cwd.clone(),
         };
         cfg.instances.push(inst.clone());
         if let Err(e) = crate::commands::save_state(state, &cfg) {

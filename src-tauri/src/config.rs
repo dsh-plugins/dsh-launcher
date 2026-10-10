@@ -55,6 +55,10 @@ pub struct DshInstance {
     /// a random free port (`--port 0`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub port: Option<u16>,
+    /// TUI instance working directory (issue #97): absolute path; `None` uses
+    /// DSH_HOME (default). Passed as positional arg & spawn cwd.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tui_cwd: Option<String>,
 }
 
 // ---------------------------------------------------------------------------

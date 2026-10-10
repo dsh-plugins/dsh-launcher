@@ -53,6 +53,8 @@ export interface DshInstance {
   icon?: string | null
   /** Preferred web port (1-65535); null/undefined = random free port. */
   port?: number | null
+  /** TUI instance working directory; null/undefined = DSH_HOME (default behavior). */
+  tui_cwd?: string | null
 }
 
 export interface LauncherSettings {

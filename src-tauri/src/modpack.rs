@@ -2177,6 +2177,7 @@ async fn do_import_modpack(
             last_profile: None,
             icon: None,
             port: None,
+            tui_cwd: None,
         };
         cfg.instances.push(inst.clone());
         crate::commands::save_state(state, &cfg)?;
@@ -2440,6 +2441,7 @@ async fn do_import_dshhome(
             last_profile: None,
             icon: None,
             port: None,
+            tui_cwd: None,
         };
         cfg.instances.push(inst.clone());
         crate::commands::save_state(state, &cfg)?;
