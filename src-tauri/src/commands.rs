@@ -301,6 +301,7 @@ pub fn create_instance(
         icon: None,
 
         port: None,
+        tui_cwd: None,
     };
     cfg.instances.push(inst.clone());
     save_state(&state, &cfg)?;
@@ -335,11 +336,13 @@ pub fn update_instance(
     let Some(pos) = cfg.instances.iter().position(|i| i.id == updated.id) else {
         return Err("实例不存在".to_string());
     };
-    // The icon is managed by set/clear_instance_icon and the port by
-    // set_instance_port, not by this form payload; preserve whatever is
+    // The icon is managed by set/clear_instance_icon, the port by
+    // set_instance_port and the TUI working directory by
+    // set_instance_tui_cwd, not by this form payload; preserve whatever is
     // currently stored (the frontend spreads a possibly stale instance).
     updated.icon = cfg.instances[pos].icon.clone();
     updated.port = cfg.instances[pos].port;
+    updated.tui_cwd = cfg.instances[pos].tui_cwd.clone();
     cfg.instances[pos] = updated.clone();
     save_state(&state, &cfg)?;
     Ok(updated)
@@ -363,6 +366,67 @@ pub fn set_instance_port(
         return Err("实例不存在".to_string());
     };
     inst.port = port;
+    let updated = inst.clone();
+    save_state(&state, &cfg)?;
+    Ok(updated)
+}
+
+/// Normalizes the TUI working-directory input (issue #97) into the value
+/// stored in the instance config.
+///
+/// Empty / whitespace-only input means "use DSH_HOME" and yields `None`.
+/// Anything else must exist and be a directory; the stored value is that
+/// path as given, trimmed.
+///
+/// Deliberately NOT `canonicalize()`d: on Windows that yields a verbatim
+/// path carrying the `\\?\` prefix, and this value is handed to dsh-tui as
+/// its workspace target (spawn cwd + positional argument). `\\?\C:\Users\yuki`
+/// and `C:\Users\yuki` encode different session buckets, so the prefix
+/// would defeat the point of the feature (session grouping and
+/// project-config discovery keyed by cwd) and would leak into the success
+/// toast. The directory picker already returns an absolute path; a
+/// hand-typed relative one is resolved against the launcher cwd so what we
+/// store is always absolute.
+fn normalize_tui_cwd(raw: Option<String>) -> Result<Option<String>, String> {
+    let Some(raw) = raw else { return Ok(None) };
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Ok(None);
+    }
+    let path = std::path::Path::new(trimmed);
+    if !path.exists() {
+        return Err(format!("目录不存在: {}", path.display()));
+    }
+    if !path.is_dir() {
+        return Err(format!("不是目录: {}", path.display()));
+    }
+    let absolute = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        match std::env::current_dir() {
+            Ok(cwd) => cwd.join(path),
+            Err(_) => path.to_path_buf(),
+        }
+    };
+    Ok(Some(absolute.to_string_lossy().to_string()))
+}
+
+/// Sets an instance's TUI working directory (issue #97). Empty / whitespace-only
+/// input means "use DSH_HOME" (stored as `None`); see `normalize_tui_cwd`.
+#[tauri::command(rename_all = "snake_case")]
+pub async fn set_instance_tui_cwd(
+    state: State<'_, AppState>,
+    instance_id: String,
+    path: Option<String>,
+) -> Result<crate::config::DshInstance, String> {
+    // exists()/is_dir() are blocking fs calls: keep them off the UI thread,
+    // the same discipline wsl::run_blocking enforces elsewhere.
+    let path = crate::wsl::run_blocking(move || normalize_tui_cwd(path)).await??;
+    let mut cfg = state.config.lock().unwrap();
+    let Some(inst) = cfg.instances.iter_mut().find(|i| i.id == instance_id) else {
+        return Err("实例不存在".to_string());
+    };
+    inst.tui_cwd = path;
     let updated = inst.clone();
     save_state(&state, &cfg)?;
     Ok(updated)
@@ -482,6 +546,7 @@ pub fn copy_instance(
         last_profile: None,
         icon: source.icon.clone(),
         port: source.port,
+        tui_cwd: source.tui_cwd.clone(),
     };
     // A local icon is stored per instance id; copy the file for the clone,
     // falling back to the launcher default when it cannot be carried over.
@@ -2305,6 +2370,73 @@ mod tests {
             tail.first().unwrap().starts_with("line-2997"),
             "tail: {tail:?}"
         );
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    // --- issue #97: TUI working directory normalization ---------------------
+
+    #[test]
+    fn normalize_tui_cwd_empty_means_dsh_home() {
+        assert_eq!(normalize_tui_cwd(None).unwrap(), None);
+        assert_eq!(normalize_tui_cwd(Some(String::new())).unwrap(), None);
+        assert_eq!(normalize_tui_cwd(Some("   ".to_string())).unwrap(), None);
+        assert_eq!(normalize_tui_cwd(Some("\t\n ".to_string())).unwrap(), None);
+    }
+
+    #[test]
+    fn normalize_tui_cwd_rejects_missing_and_non_directory() {
+        let root = unique_temp("tui-cwd");
+        std::fs::create_dir_all(&root).unwrap();
+
+        let missing = root.join("nope");
+        let err = normalize_tui_cwd(Some(missing.to_string_lossy().to_string())).unwrap_err();
+        assert!(err.contains("目录不存在"), "unexpected error: {err}");
+
+        let file = root.join("file.txt");
+        std::fs::write(&file, "x").unwrap();
+        let err = normalize_tui_cwd(Some(file.to_string_lossy().to_string())).unwrap_err();
+        assert!(err.contains("不是目录"), "unexpected error: {err}");
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn normalize_tui_cwd_stores_absolute_path_without_verbatim_prefix() {
+        let root = unique_temp("tui-cwd-abs");
+        std::fs::create_dir_all(&root).unwrap();
+
+        let stored = normalize_tui_cwd(Some(format!("  {}  ", root.display())))
+            .unwrap()
+            .expect("a real directory must be stored");
+        assert!(
+            std::path::Path::new(&stored).is_absolute(),
+            "stored path must be absolute: {stored}"
+        );
+        assert_eq!(stored, root.to_string_lossy());
+        // Issue #97 review: the Windows verbatim prefix must never be stored.
+        // It would put the TUI session in a different workspace bucket than
+        // the plain path, and would show up in the success toast.
+        assert!(
+            !stored.contains(r#"\\?\"#),
+            "stored path must not carry a verbatim prefix: {stored}"
+        );
+
+        // A relative path hand-typed by the user is made absolute.
+        let rel_dir = unique_temp("tui-cwd-rel");
+        std::fs::create_dir_all(&rel_dir).unwrap();
+        let rel = rel_dir
+            .strip_prefix(std::env::current_dir().unwrap_or_default())
+            .map(|p| p.to_path_buf());
+        if let Ok(rel) = rel {
+            if !rel.as_os_str().is_empty() {
+                let stored_rel = normalize_tui_cwd(Some(rel.to_string_lossy().to_string()))
+                    .unwrap()
+                    .expect("the relative temp dir exists");
+                assert!(std::path::Path::new(&stored_rel).is_absolute());
+            }
+        }
+        std::fs::remove_dir_all(&rel_dir).ok();
+
         std::fs::remove_dir_all(&root).ok();
     }
 }

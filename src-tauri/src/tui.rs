@@ -234,6 +234,37 @@ async fn start_tui_session_inner(
 
     let env = crate::process::build_env(&cfg, instance_id)?;
 
+    // Resolve the target working directory (issue #97): the instance's
+    // configured `tui_cwd`, or DSH_HOME as the unchanged default.
+    //
+    // `tui_cwd` is stored as the plain absolute path (never the Windows
+    // `\\?\` verbatim form — see `commands::normalize_tui_cwd`) because it
+    // doubles as dsh-tui's workspace target: that exact string is what groups
+    // sessions under the project directory. Local spawns use it as the PTY
+    // cwd; WSL spawns map it through `wslpath` and `cd` into the result.
+    let custom_cwd = inst
+        .tui_cwd
+        .as_deref()
+        .map(str::trim)
+        .filter(|c| !c.is_empty());
+    let target_cwd_path = match custom_cwd {
+        Some(custom) => std::path::PathBuf::from(custom),
+        None => home_path.clone(),
+    };
+    let target_cwd_linux = match (&wsl_distro, custom_cwd) {
+        (Some(distro), Some(custom)) => match crate::wsl::to_wsl_path(distro, custom).await {
+            Ok(p) => p,
+            Err(e) => {
+                // A failed mapping must not start the session in an unrelated
+                // directory: fall back to DSH_HOME and say so, exactly like
+                // the unconfigured case.
+                eprintln!("警告: TUI 工作目录路径转换失败: {e}，回退到 DSH_HOME");
+                linux_home.to_string_lossy().to_string()
+            }
+        },
+        _ => linux_home.to_string_lossy().to_string(),
+    };
+
     let pty_system = native_pty_system();
     let pair = pty_system
         .openpty(PtySize {
@@ -259,22 +290,38 @@ async fn start_tui_session_inner(
         // on wsl.exe, and WSL does not forward the Windows environment into the
         // distro (that needs WSLENV), so DSH_HOME would never reach the CLI
         // (issue #49 S2). `launch_script` already does the same.
+        // Issue #97: cd into the configured working directory. The workspace
+        // target is handed to dsh-tui as a positional argument only when the
+        // user configured one — an unconfigured instance must keep the old
+        // behavior (spawn cwd decides the session root) untouched.
+        let workspace_arg = match custom_cwd {
+            Some(_) => format!(" {}", crate::wsl::sh_quote(&target_cwd_linux)),
+            None => String::new(),
+        };
         let script = format!(
-            "{env}; export PATH={0}:\"$PATH\"; cd {1} && exec {2} {3} --profile {4}",
+            "{env}; export PATH={0}:\"$PATH\"; cd {1} && exec {2} {3} --profile {4}{5}",
             crate::wsl::sh_quote(&root.node_bin_dir()),
-            crate::wsl::sh_quote(&linux_home.to_string_lossy()),
+            crate::wsl::sh_quote(&target_cwd_linux),
             crate::wsl::sh_quote(&root.node_exe()),
             crate::wsl::sh_quote(&bin.to_string_lossy()),
             crate::wsl::sh_quote(&profile),
+            workspace_arg,
             env = crate::wsl::env_exports(&env),
         );
         cmd.args(["-d", distro, "--", "bash", "-lc", &script]);
         cmd.cwd(std::env::temp_dir().as_os_str());
     } else {
+        // Local: the PTY starts in the target working directory. Only a
+        // configured path is also passed as dsh-tui's positional workspace
+        // target; passing it unconditionally would change how an unconfigured
+        // instance resolves its session root (issue #97).
         cmd.arg(crate::process::version_bin(&version_dir));
         cmd.arg("--profile");
         cmd.arg(&profile);
-        cmd.cwd(home_path.as_os_str());
+        if custom_cwd.is_some() {
+            cmd.arg(target_cwd_path.as_os_str());
+        }
+        cmd.cwd(target_cwd_path.as_os_str());
         for (k, v) in &env {
             cmd.env(k, v);
         }

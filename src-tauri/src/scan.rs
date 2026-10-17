@@ -566,6 +566,7 @@ fn apply_import(cfg: &mut crate::config::Config, input: &ImportScannedInput) -> 
                         last_profile: None,
                         icon: None,
                         port: None,
+                        tui_cwd: None,
                     });
                     report.instances_added += 1;
                     continue;
@@ -581,6 +582,7 @@ fn apply_import(cfg: &mut crate::config::Config, input: &ImportScannedInput) -> 
                 last_profile: None,
                 icon: None,
                 port: None,
+                tui_cwd: None,
             });
             report.instances_added += 1;
             report.items.push(ImportItem {

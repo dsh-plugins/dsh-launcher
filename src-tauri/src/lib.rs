@@ -306,6 +306,7 @@ pub fn run() {
             commands::create_instance,
             commands::update_instance,
             commands::set_instance_port,
+            commands::set_instance_tui_cwd,
             commands::delete_instance,
             commands::copy_instance,
             commands::list_profiles,

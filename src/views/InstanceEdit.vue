@@ -111,6 +111,81 @@ async function applyPort() {
   }
 }
 
+// --- TUI working directory (issue #97) ----------------------------------------
+
+const tuiCwdInput = ref('')
+const tuiCwdBusy = ref(false)
+
+/**
+ * Kinds of the profiles in the currently selected HOME (issue #31), so the TUI
+ * working-directory control hides for a HOME that has no TUI profile at all.
+ * Empty until the probe answers — and empty also on a failed probe, so the
+ * control stays visible whenever we do not positively know better.
+ */
+const profileKinds = ref<Record<string, string> | null>(null)
+const hasTuiProfile = computed(
+  () => profileKinds.value === null || Object.values(profileKinds.value).includes('tui'),
+)
+
+async function loadProfileKinds(homeIdValue: string | null) {
+  profileKinds.value = null
+  if (!homeIdValue || homeIdValue === DEDICATED) return
+  try {
+    const infos = await api.listProfileInfos(homeIdValue)
+    const out: Record<string, string> = {}
+    for (const p of infos) out[p.name] = p.kind
+    profileKinds.value = out
+  } catch {
+    // A failed probe must not hide an optional control — keep it visible.
+    profileKinds.value = null
+  }
+}
+
+async function browseTuiCwd() {
+  if (!editingId.value) return
+  // Same pattern as the other pickers in this view (and Settings.vue): the
+  // Tauri dialog plugin. There is no native dialog in browser preview.
+  if (!api.isTauri) {
+    Message.info(t('settings.browserPickHint'))
+    return
+  }
+  try {
+    const { open } = await import('@tauri-apps/plugin-dialog')
+    const selected = await open({
+      directory: true,
+      multiple: false,
+      title: t('instanceEdit.tuiCwdBrowseTitle'),
+      defaultPath: tuiCwdInput.value.trim() || undefined,
+    })
+    if (typeof selected !== 'string') return
+    tuiCwdInput.value = selected
+    await applyTuiCwd()
+  } catch (e) {
+    Message.error(String(e))
+  }
+}
+
+async function applyTuiCwd() {
+  if (!editingId.value) return
+  tuiCwdBusy.value = true
+  try {
+    const path = tuiCwdInput.value.trim() || null
+    const updated = await api.setInstanceTuiCwd(editingId.value, path)
+    const inst = store.instanceById(editingId.value)
+    if (inst) inst.tui_cwd = updated.tui_cwd ?? null
+    tuiCwdInput.value = updated.tui_cwd ?? ''
+    Message.success(
+      updated.tui_cwd
+        ? t('instanceEdit.tuiCwdSaved', { path: updated.tui_cwd })
+        : t('instanceEdit.tuiCwdSavedDefault'),
+    )
+  } catch (e) {
+    Message.error(String(e))
+  } finally {
+    tuiCwdBusy.value = false
+  }
+}
+
 interface EnvRow {
   key: string
   value: string
@@ -142,8 +217,10 @@ onMounted(async () => {
   homeId.value = inst.home_id
   defaultProfile.value = inst.default_profile ?? undefined
   portInput.value = inst.port ? String(inst.port) : ''
+  tuiCwdInput.value = inst.tui_cwd ?? ''
   envRows.value = Object.entries(inst.env_overrides).map(([key, value]) => ({ key, value }))
   await loadIcon()
+  void loadProfileKinds(inst.home_id)
 })
 
 // --- Instance icon (issue #8) --------------------------------------------------
@@ -219,6 +296,9 @@ watch(homeId, async (v) => {
     return
   }
   if (!v) return
+  // Issue #97: the TUI working-directory control is offered only when the
+  // selected HOME has a TUI profile to launch.
+  void loadProfileKinds(v)
   try {
     profiles.value = await api.listProfiles(v)
     if (defaultProfile.value && !profiles.value.includes(defaultProfile.value)) {
@@ -2361,6 +2441,28 @@ const terminalRunning = ref(false)
                   />
                   <a-button :loading="portBusy" @click="applyPort">
                     {{ t('instanceEdit.portApply') }}
+                  </a-button>
+                </a-space>
+              </a-form-item>
+
+              <a-form-item v-if="editingId && hasTuiProfile">
+                <template #label>
+                  {{ t('instanceEdit.tuiCwd') }}
+                  <HintIcon :content="t('instanceEdit.tuiCwdHint')" />
+                </template>
+                <a-space>
+                  <a-input
+                    v-model="tuiCwdInput"
+                    :placeholder="t('instanceEdit.tuiCwdPlaceholder')"
+                    allow-clear
+                    style="width: 400px"
+                    @press-enter="applyTuiCwd"
+                  />
+                  <a-button :loading="tuiCwdBusy" @click="browseTuiCwd">
+                    {{ t('instanceEdit.tuiCwdBrowse') }}
+                  </a-button>
+                  <a-button :loading="tuiCwdBusy" @click="applyTuiCwd">
+                    {{ t('instanceEdit.tuiCwdApply') }}
                   </a-button>
                 </a-space>
               </a-form-item>
