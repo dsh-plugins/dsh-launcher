@@ -179,7 +179,10 @@ fn parse_local(raw: &str, cwd: &Path) -> Result<TuiCwdTarget, String> {
         ));
     }
     let path = Path::new(raw);
-    let absolute = if path.is_absolute() {
+    // A Windows absolute path is absolute for this function's contract even
+    // when the tests (or a non-Windows build) run on another host: joining it
+    // would silently turn `C:\proj` into `<cwd>/C:\proj`.
+    let absolute = if is_windows_absolute(raw) || path.is_absolute() {
         path.to_path_buf()
     } else {
         // Also covers a drive-relative root such as \project.
@@ -226,8 +229,11 @@ fn is_windows_absolute(raw: &str) -> bool {
 mod tests {
     use super::*;
 
+    /// A host-neutral launcher cwd: the Windows-path cases below are
+    /// drive-prefixed on purpose, so the cwd only has to be a real path on
+    /// whichever host runs the tests.
     fn cwd() -> PathBuf {
-        PathBuf::from(r"D:\work\launcher")
+        std::env::temp_dir().join("dsh-tui-cwd-fixture")
     }
 
     #[test]
@@ -253,7 +259,7 @@ mod tests {
         // A hand-typed relative path is resolved against the launcher cwd.
         assert_eq!(
             parse_tui_cwd(Some("proj"), None, &cwd()).unwrap(),
-            TuiCwdTarget::Local(PathBuf::from(r"D:\work\launcher\proj"))
+            TuiCwdTarget::Local(cwd().join("proj"))
         );
         // A pasted verbatim path loses the prefix: it must be stored as the
         // plain path dsh-tui keys its workspace by.
