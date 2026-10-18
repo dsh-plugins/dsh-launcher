@@ -131,7 +131,7 @@ function seedDb(): MockDb {
       minimize_to_tray: true,
       autostart: false,
       last_instance_id: 'i-main',
-      news_source: 'https://gist.githubusercontent.com/Gu-ZT/f08daa33afb82f4b375e604039b92742/raw/DSH_NEWS.md',
+      news_source: 'https://dsh-plug.in/api/news.md',
       theme: 'system',
       log_level: 'info',
       skill_repos: ['https://github.com/Gu-ZT/skills'],
