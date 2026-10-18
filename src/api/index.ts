@@ -619,6 +619,7 @@ async function mockCall<T>(cmd: string, args?: Record<string, unknown>): Promise
       const mockRuntime: RuntimeStatus = {
         node: { installed: true, version: 'v22.14.0', path: null },
         pnpm: { installed: true, version: '9.15.4', path: null },
+        managed_node_broken: false,
       }
       return mockRuntime as T
     }
@@ -1773,6 +1774,11 @@ export const api = {
 
   /** Starts the one-click Node.js install background task (issue #23). */
   startInstallNodeTask: () => call<string>('start_install_node_task'),
+  /**
+   * Reinstalls over a managed runtime that exists but is incomplete (issue
+   * #101). Refused by the backend when the runtime is already complete.
+   */
+  repairManagedNode: () => call<string>('start_install_node_task', { repair: true }),
   /** Checks GitHub for a newer launcher release on the given channel. */
   checkLauncherUpdate: (channel: 'dev' | 'release' = 'dev') =>
     call<LauncherUpdateInfo>('check_launcher_update', { channel }),
