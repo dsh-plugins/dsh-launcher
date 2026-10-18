@@ -209,6 +209,54 @@ async function onPerInstanceTrayChange(value: string | number | boolean | Record
   await patchSettings({ per_instance_tray: Boolean(value) })
 }
 
+// --- Silent autostart & auto-launch (issue #100) ------------------------------
+
+/** Instances started in the background after an OS autostart launch. */
+const autostartInstances = computed(() => store.settings.autostart_instances ?? [])
+/** Instance choices for the picker: id -> display name (missing ones excluded). */
+const autostartCandidates = computed(() =>
+  store.instances.map((i) => ({ value: i.id, label: i.name })),
+)
+const newAutostartInstance = ref<string | undefined>(undefined)
+const newAutostartProfile = ref('')
+
+async function onSilentAutostartChange(value: string | number | boolean | Record<string, unknown> | (string | number | boolean | Record<string, unknown>)[]) {
+  await patchSettings({ silent_autostart: Boolean(value) })
+}
+
+async function onAutostartOpenWindowsChange(value: string | number | boolean | Record<string, unknown> | (string | number | boolean | Record<string, unknown>)[]) {
+  await patchSettings({ autostart_open_windows: Boolean(value) })
+}
+
+async function onAddAutostartInstance() {
+  const id = newAutostartInstance.value
+  if (!id) return
+  if (autostartInstances.value.some((a) => a.instance_id === id)) {
+    Message.warning(t('settings.autostart.duplicated'))
+    return
+  }
+  const profile = newAutostartProfile.value.trim()
+  await patchSettings({
+    autostart_instances: [
+      ...autostartInstances.value,
+      { instance_id: id, ...(profile ? { profile } : {}) },
+    ],
+  })
+  newAutostartInstance.value = undefined
+  newAutostartProfile.value = ''
+}
+
+async function onRemoveAutostartInstance(instanceId: string) {
+  await patchSettings({
+    autostart_instances: autostartInstances.value.filter((a) => a.instance_id !== instanceId),
+  })
+}
+
+/** Display name of an autostart entry's instance; falls back to the id. */
+function autostartInstanceName(instanceId: string): string {
+  return store.instances.find((i) => i.id === instanceId)?.name ?? instanceId
+}
+
 // News source: saved on blur / Enter so typing is not interrupted.
 const newsSource = ref(store.settings.news_source ?? '')
 watch(
@@ -635,6 +683,91 @@ const pluginSourceColumns = computed(() => [
           </span>
         </a-form-item>
       </a-form>
+    </div>
+
+    <!-- Silent autostart + instance auto-launch (issue #100). Only meaningful
+         together with the OS autostart entry; shown regardless so the intent
+         is discoverable, with a nudge when autostart itself is off. -->
+    <div class="dl-card">
+      <div class="dl-card-title">
+        <h3>
+          {{ t('settings.autostart.title') }}
+          <HintIcon :content="t('settings.autostart.hint')" />
+        </h3>
+      </div>
+      <a-alert v-if="!store.settings.autostart" type="info" class="autostart-note">
+        {{ t('settings.autostart.needsAutostart') }}
+      </a-alert>
+      <a-form :model="store.settings" layout="vertical" class="settings-form">
+        <a-form-item>
+          <a-switch
+            :model-value="store.settings.silent_autostart"
+            :disabled="!store.settings.autostart"
+            @change="onSilentAutostartChange"
+          />
+          <span class="switch-label">
+            {{ t('settings.autostart.silent') }}
+            <HintIcon :content="t('settings.autostart.silentHint')" />
+          </span>
+        </a-form-item>
+        <a-form-item>
+          <a-switch
+            :model-value="store.settings.autostart_open_windows"
+            :disabled="!store.settings.autostart"
+            @change="onAutostartOpenWindowsChange"
+          />
+          <span class="switch-label">
+            {{ t('settings.autostart.openWindows') }}
+            <HintIcon :content="t('settings.autostart.openWindowsHint')" />
+          </span>
+        </a-form-item>
+      </a-form>
+
+      <div class="autostart-instances">
+        <h4>{{ t('settings.autostart.instances') }}</h4>
+        <p class="autostart-desc">{{ t('settings.autostart.instancesHint') }}</p>
+        <div v-if="autostartInstances.length === 0" class="autostart-empty">
+          {{ t('settings.autostart.empty') }}
+        </div>
+        <div v-for="entry in autostartInstances" :key="entry.instance_id" class="autostart-row">
+          <span class="autostart-name">{{ autostartInstanceName(entry.instance_id) }}</span>
+          <a-tag v-if="entry.profile" size="small">{{ entry.profile }}</a-tag>
+          <a-tag v-else size="small" color="gray">{{ t('settings.autostart.defaultProfile') }}</a-tag>
+          <a-button
+            size="mini"
+            type="text"
+            status="danger"
+            :disabled="!store.settings.autostart"
+            @click="onRemoveAutostartInstance(entry.instance_id)"
+          >
+            {{ t('settings.autostart.remove') }}
+          </a-button>
+        </div>
+        <div class="autostart-add">
+          <a-select
+            v-model="newAutostartInstance"
+            :placeholder="t('settings.autostart.pickInstance')"
+            :options="autostartCandidates"
+            allow-clear
+            :disabled="!store.settings.autostart"
+            class="autostart-pick"
+          />
+          <a-input
+            v-model="newAutostartProfile"
+            :placeholder="t('settings.autostart.profilePlaceholder')"
+            allow-clear
+            :disabled="!store.settings.autostart"
+            class="autostart-profile"
+          />
+          <a-button
+            type="primary"
+            :disabled="!store.settings.autostart || !newAutostartInstance"
+            @click="onAddAutostartInstance"
+          >
+            {{ t('settings.autostart.add') }}
+          </a-button>
+        </div>
+      </div>
     </div>
 
     <div class="dl-card">
@@ -1120,5 +1253,52 @@ const pluginSourceColumns = computed(() => [
   border-radius: 6px;
   border: 1px solid var(--color-border-2);
   object-fit: contain;
+}
+
+/* Silent autostart / instance auto-launch (issue #100) */
+.autostart-note {
+  margin-bottom: 12px;
+}
+
+.autostart-instances {
+  margin-top: 4px;
+}
+
+.autostart-desc {
+  color: var(--color-text-3);
+  font-size: 13px;
+  margin: 4px 0 12px;
+}
+
+.autostart-empty {
+  color: var(--color-text-3);
+  font-size: 13px;
+  padding: 8px 0;
+}
+
+.autostart-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 0;
+  border-bottom: 1px solid var(--color-border-1);
+}
+
+.autostart-name {
+  font-weight: 500;
+}
+
+.autostart-add {
+  display: flex;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.autostart-pick {
+  width: 220px;
+}
+
+.autostart-profile {
+  width: 160px;
 }
 </style>

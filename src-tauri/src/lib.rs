@@ -1,4 +1,5 @@
 mod applog;
+mod autostart;
 mod commands;
 mod compatibility;
 mod config;
@@ -148,9 +149,12 @@ pub fn run() {
         }))
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_deep_link::init())
+        // Issue #100: the OS autostart entry passes `--autostart`, which lets
+        // startup distinguish an automatic launch from a manual one (silent
+        // start + auto-launching instances only apply to the former).
         .plugin(tauri_plugin_autostart::init(
             tauri_plugin_autostart::MacosLauncher::LaunchAgent,
-            None,
+            Some(vec![autostart::AUTOSTART_ARG]),
         ))
         .setup(|app| {
             // Register the dsh-launcher:// scheme at runtime (Windows/Linux)
@@ -252,6 +256,13 @@ pub fn run() {
             // Custom launcher icons (issue #59) re-apply over the defaults
             // once the window and tray both exist.
             icons::apply_launcher_icons(app.handle(), &data_dir);
+
+            // Issue #100: an OS autostart launch honours the silent-start
+            // setting (hide the window, stay in the tray) and then starts the
+            // configured instances in the background. A manual launch ignores
+            // both, so the window always appears when the user opened it.
+            autostart::hide_main_for_silent_autostart(app.handle());
+            autostart::spawn_autostart_launches(app.handle());
 
             // Close-to-tray for the main window.
             if let Some(win) = app.get_webview_window("main") {

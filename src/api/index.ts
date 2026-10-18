@@ -152,6 +152,9 @@ function seedDb(): MockDb {
       last_link_root: null,
       update_channel: 'dev',
       update_suppressed: [],
+      silent_autostart: false,
+      autostart_instances: [],
+      autostart_open_windows: true,
     },
     running: {},
     mcp: {},
@@ -178,6 +181,9 @@ function loadDb(): MockDb {
       db.settings.plugin_sources = db.settings.plugin_sources ?? seedDb().settings.plugin_sources
       db.settings.update_channel = db.settings.update_channel ?? 'dev'
       db.settings.update_suppressed = db.settings.update_suppressed ?? []
+      db.settings.silent_autostart = db.settings.silent_autostart ?? false
+      db.settings.autostart_instances = db.settings.autostart_instances ?? []
+      db.settings.autostart_open_windows = db.settings.autostart_open_windows ?? true
       db.mcp = db.mcp ?? {}
       db.providers = db.providers ?? {}
       db.credentials = db.credentials ?? {}
