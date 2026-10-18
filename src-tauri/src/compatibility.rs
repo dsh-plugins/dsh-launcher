@@ -96,21 +96,160 @@ fn read_patch(path: &Path, optional: bool) -> Result<Vec<Yaml>, String> {
     }
 }
 
-fn installed_package(profile: &Path, version: &Path, name: &str, bundle: bool) -> Option<PathBuf> {
-    if name.is_empty()
-        || name
-            .split('/')
-            .any(|part| part.is_empty() || part == "." || part == ".." || part.contains('\\'))
-    {
+/// Splits a package reference into its package root and an optional subpath
+/// (`dsh-ptc-plus/execution-provider` → `dsh-ptc-plus` + `execution-provider`).
+///
+/// Scoped names keep their scope: `@scope/name/sub` → `@scope/name` +
+/// `sub`. A bare `@scope` is not a package root and yields `None`.
+fn split_package_ref(name: &str) -> Option<(&str, Option<&str>)> {
+    let mut parts = name.split('/');
+    let first = parts.next()?;
+    if first.is_empty() || first.contains('\\') {
         return None;
     }
-    let sub = Path::new("node_modules").join(name);
-    let paths = if bundle {
-        [version.join(&sub), profile.join(&sub)]
+    let root_end = if first.starts_with('@') {
+        // Scope owner plus package name; the remainder is the subpath.
+        let second = parts.next()?;
+        if second.is_empty() || second == "." || second == ".." {
+            return None;
+        }
+        first.len() + 1 + second.len()
     } else {
-        [profile.join(&sub), version.join(&sub)]
+        first.len()
     };
-    paths.into_iter().find(|p| p.join("package.json").exists())
+    let root = &name[..root_end];
+    let rest = name[root_end..].strip_prefix('/');
+    Some((root, rest))
+}
+
+/// Roots a package may be installed under, most specific first: the profile's
+/// own `node_modules` (explicit installs, user `insert` entries) and the
+/// version tree — both hoisted and the pnpm virtual store.
+///
+/// The store matters: under pnpm's isolated layout only direct dependencies
+/// are hoisted to `<version>/node_modules`, while every bundle and transitive
+/// package lives in `<version>/node_modules/.pnpm/node_modules` (see
+/// `doctor::cli_tree_versions`, which scans the same store). Checking the
+/// hoisted paths alone reports every official bundle as missing.
+fn package_roots(profile: &Path, version: &Path, bundle: bool) -> [PathBuf; 4] {
+    let hoisted = Path::new("node_modules");
+    let store = Path::new("node_modules").join(".pnpm").join("node_modules");
+    let profile_hoisted = profile.join(hoisted);
+    let profile_store = profile.join(&store);
+    let version_hoisted = version.join(hoisted);
+    let version_store = version.join(&store);
+    if bundle {
+        [
+            version_hoisted,
+            version_store,
+            profile_hoisted,
+            profile_store,
+        ]
+    } else {
+        [
+            profile_hoisted,
+            profile_store,
+            version_hoisted,
+            version_store,
+        ]
+    }
+}
+
+/// Picks the resolution target out of an `exports` value: a plain string, a
+/// conditions object (`node`/`import`/`require` before `default`, first match
+/// wins like Node), or an array of candidates.
+fn export_target(value: &Json) -> Option<&str> {
+    match value {
+        Json::String(target) => Some(target),
+        Json::Object(conditions) => ["node", "import", "require", "default"]
+            .iter()
+            .find_map(|key| conditions.get(*key).and_then(export_target))
+            .or_else(|| conditions.values().find_map(export_target)),
+        Json::Array(candidates) => candidates.iter().find_map(export_target),
+        _ => None,
+    }
+}
+
+/// Resolves a package subpath through the package's `exports` map, the way
+/// Node does: an exact `./sub` key first, then the longest wildcard pattern
+/// (`./sub/*`), with `*` substituted into the target.
+///
+/// `Some(Some(path))` = exported to that path, `Some(None)` = the package has
+/// an `exports` map that does not expose this subpath (Node would refuse it),
+/// `None` = no `exports` map, so the caller falls back to a literal path.
+fn exported_subpath(pkg: &Json, subpath: &str) -> Option<Option<PathBuf>> {
+    let map = pkg.get("exports")?.as_object()?;
+    let wanted = format!("./{subpath}");
+    if let Some(target) = map.get(&wanted).and_then(export_target) {
+        return Some(Some(PathBuf::from(target)));
+    }
+    // Wildcard patterns: the longest prefix wins, as in Node.
+    let mut best: Option<(usize, &str, &str, &str)> = None; // (prefix len, prefix, suffix, target)
+    for (key, value) in map {
+        let Some((prefix, suffix)) = key.split_once('*') else {
+            continue;
+        };
+        let Some(captured) = wanted
+            .strip_prefix(prefix)
+            .and_then(|rest| rest.strip_suffix(suffix))
+        else {
+            continue;
+        };
+        let _ = captured;
+        let Some(target) = export_target(value) else {
+            continue;
+        };
+        if best.is_none_or(|(len, ..)| prefix.len() > len) {
+            best = Some((prefix.len(), prefix, suffix, target));
+        }
+    }
+    match best {
+        Some((len, _, suffix, target)) => {
+            let captured = &wanted[len..wanted.len() - suffix.len()];
+            Some(Some(PathBuf::from(target.replace('*', captured))))
+        }
+        None => Some(None),
+    }
+}
+
+/// Resolves a package reference to its installed directory.
+///
+/// `Some(dir)` is the package root — callers read `dir/package.json` from it.
+/// A subpath (`name/sub`) resolves only when the package root exists and the
+/// subpath is exported and present; the subpath itself is never a package
+/// root and has no `package.json` of its own.
+fn installed_package(profile: &Path, version: &Path, name: &str, bundle: bool) -> Option<PathBuf> {
+    let (root, subpath) = split_package_ref(name)?;
+    if subpath.is_some_and(|rest| {
+        rest.split('/')
+            .any(|part| part.is_empty() || part == "." || part == "..")
+    }) {
+        return None;
+    }
+    let dir = package_roots(profile, version, bundle)
+        .into_iter()
+        .map(|base| base.join(root))
+        .find(|candidate| candidate.join("package.json").is_file())?;
+    let Some(rest) = subpath else {
+        return Some(dir);
+    };
+    let pkg = read_json(&dir.join("package.json")).ok()?;
+    match exported_subpath(&pkg, rest) {
+        // Exported: the target must exist inside the package.
+        Some(Some(target)) => {
+            let resolved = dir.join(target);
+            resolved
+                .starts_with(&dir)
+                .then(|| resolved.exists().then_some(dir))
+                .flatten()
+        }
+        // An exports map that does not expose this subpath is not resolvable.
+        Some(None) => None,
+        // No exports map: legacy subpath resolution, a literal path inside
+        // the package directory. `.`/`..`/empty parts were rejected above, so
+        // the join cannot escape the package root.
+        None => dir.join(rest).exists().then_some(dir),
+    }
 }
 
 fn finding(
@@ -492,10 +631,13 @@ pub fn inspect(
         InstanceKind::Tui => "tui",
         InstanceKind::Other => "other",
     };
+    // Keyed by package *root*: peers are declared by root name, so a subpath
+    // entry (`dsh-ptc-plus/execution-provider`) still satisfies a
+    // `dsh-ptc-plus` peer.
     let active_packages: std::collections::BTreeSet<&str> = entries
         .iter()
         .filter(|e| e.enabled)
-        .map(|e| e.package.as_str())
+        .filter_map(|e| split_package_ref(&e.package).map(|(root, _)| root))
         .collect();
     for entry in entries.iter().filter(|e| e.enabled) {
         let owners = entries
@@ -550,7 +692,12 @@ pub fn inspect(
             ));
             continue;
         };
-        if pkg.get("name").and_then(Json::as_str) != Some(&entry.package) {
+        // The identity must match the package *root*: a subpath entry
+        // (`dsh-ptc-plus/execution-provider`) reports the root's manifest.
+        let package_root = split_package_ref(&entry.package)
+            .map(|(root, _)| root)
+            .unwrap_or(entry.package.as_str());
+        if pkg.get("name").and_then(Json::as_str) != Some(package_root) {
             report.findings.push(finding(
                 "package-identity",
                 "unknown",
@@ -805,6 +952,49 @@ mod tests {
             doc["name"] = Json::String(name.into());
             std::fs::write(dir.join("package.json"), doc.to_string()).unwrap();
         }
+        /// An official bundle as pnpm lays it out: only in the version tree's
+        /// virtual store, never hoisted to `node_modules`.
+        fn store_bundle(&self, name: &str, patch: &str) {
+            let dir = self
+                .version
+                .join("node_modules/.pnpm/node_modules")
+                .join(name);
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(
+                dir.join("package.json"),
+                serde_json::json!({
+                    "name": name,
+                    "version": "1.0.0",
+                    "dsh": {"bundle": {"patch": "./cordis.patch.yml"}},
+                })
+                .to_string(),
+            )
+            .unwrap();
+            std::fs::write(dir.join("cordis.patch.yml"), patch).unwrap();
+        }
+        /// A package exposing a subpath entry point through its `exports` map
+        /// (what `dsh-ptc-plus` does): `./<subpath>` maps to a file inside the
+        /// package, so the literal subpath path need not exist.
+        fn store_package_with_subpath(&self, name: &str, subpath: &str, target: &str) {
+            let dir = self
+                .version
+                .join("node_modules/.pnpm/node_modules")
+                .join(name);
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(
+                dir.join("package.json"),
+                serde_json::json!({
+                    "name": name,
+                    "version": "1.0.0",
+                    "exports": { format!("./{subpath}"): format!("./{target}") },
+                })
+                .to_string(),
+            )
+            .unwrap();
+            let file = dir.join(target);
+            std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+            std::fs::write(file, "module.exports = {};\n").unwrap();
+        }
         fn patch(&self, patch: &str) {
             std::fs::write(self.profile.join("cordis.patch.yml"), patch).unwrap();
         }
@@ -946,18 +1136,12 @@ mod tests {
     #[test]
     fn bundle_layers_and_user_override_follow_order() {
         let fx = Fixture::new();
-        let bundle = fx.version.join("node_modules/@deepseek-ai/dsh-base");
-        std::fs::create_dir_all(&bundle).unwrap();
-        std::fs::write(
-            bundle.join("package.json"),
-            r#"{"name":"@deepseek-ai/dsh-base","dsh":{"bundle":{"patch":"./cordis.patch.yml"}}}"#,
-        )
-        .unwrap();
-        std::fs::write(
-            bundle.join("cordis.patch.yml"),
-            "- insert:\n    - id: bundled\n      name: @deepseek-ai/dsh-base\n",
-        )
-        .unwrap();
+        // Issue #99: installed exactly as pnpm lays it out — in the version
+        // tree's virtual store, never hoisted to `node_modules`.
+        fx.store_bundle(
+            "@deepseek-ai/dsh-base",
+            "- insert:\n    - id: bundled\n      name: '@deepseek-ai/dsh-base'\n",
+        );
         std::fs::write(
             fx.profile.join("package.json"),
             r#"{"dsh":{"profile":{"bundles":["@deepseek-ai/dsh-base"]}}}"#,
@@ -965,8 +1149,156 @@ mod tests {
         .unwrap();
         fx.patch("- id: bundled\n  disabled: true\n");
         let report = fx.inspect();
-        assert!(!report.findings.iter().any(|f| f.code == "missing-package"));
+        assert!(
+            !report.findings.iter().any(|f| f.code == "missing-package"),
+            "findings: {:?}",
+            report.findings
+        );
         assert!(disable_candidates(&report).is_empty());
+    }
+
+    #[test]
+    fn store_only_bundles_resolve_and_report_completes() {
+        // Issue #99: a healthy pnpm tree used to report every official bundle
+        // as missing-bundle (status partial, launchable false) and, because
+        // the bundle's patch layer was never read, misreport overrides of its
+        // entries as unmatched.
+        let fx = Fixture::new();
+        fx.store_bundle(
+            "@deepseek-ai/dsh-base",
+            "- insert:\n    - id: base-entry\n      name: '@deepseek-ai/dsh-base'\n",
+        );
+        std::fs::write(
+            fx.profile.join("package.json"),
+            r#"{"dsh":{"profile":{"bundles":["@deepseek-ai/dsh-base"]}}}"#,
+        )
+        .unwrap();
+        // An override targeting the bundle's own entry: it is only matched
+        // when the bundle layer above was actually read.
+        fx.patch("- id: base-entry\n  disabled: true\n");
+        let report = fx.inspect();
+        assert_eq!(
+            report
+                .findings
+                .iter()
+                .filter(|f| f.code == "missing-bundle")
+                .count(),
+            0,
+            "findings: {:?}",
+            report.findings
+        );
+        assert!(
+            !report
+                .findings
+                .iter()
+                .any(|f| f.code == "unmatched-override"),
+            "findings: {:?}",
+            report.findings
+        );
+        assert_eq!(report.status, "complete");
+        assert!(report.launchable());
+    }
+
+    #[test]
+    fn subpath_entry_resolves_through_its_package_root() {
+        // Issue #99: `dsh-ptc-plus/execution-provider` is a subpath export
+        // mapped by `exports` to a file inside the package — the literal
+        // `dsh-ptc-plus/execution-provider` path does not exist at all.
+        let fx = Fixture::new();
+        fx.store_package_with_subpath(
+            "dsh-ptc-plus",
+            "execution-provider",
+            "internal/execution-provider-owner.js",
+        );
+        fx.patch("- insert:\n    - id: ptc\n      name: dsh-ptc-plus/execution-provider\n");
+        let report = fx.inspect();
+        assert!(
+            !report
+                .findings
+                .iter()
+                .any(|f| f.code == "missing-package" || f.code == "package-identity"),
+            "findings: {:?}",
+            report.findings
+        );
+    }
+
+    #[test]
+    fn subpath_exports_wildcards_and_conditions_are_honoured() {
+        let fx = Fixture::new();
+        let dir = fx.version.join("node_modules/.pnpm/node_modules/wild");
+        std::fs::create_dir_all(dir.join("dist")).unwrap();
+        std::fs::write(dir.join("dist/a.js"), "").unwrap();
+        std::fs::write(dir.join("dist/b.js"), "").unwrap();
+        std::fs::write(
+            dir.join("package.json"),
+            serde_json::json!({
+                "name": "wild",
+                "version": "1.0.0",
+                "exports": {
+                    "./feat/*": {"node": "./dist/*", "default": "./dist/*"},
+                    "./single": {"require": "./dist/a.js"},
+                },
+            })
+            .to_string(),
+        )
+        .unwrap();
+        // Wildcard + conditions both resolve.
+        assert!(installed_package(&fx.profile, &fx.version, "wild/feat/a.js", false).is_some());
+        assert!(installed_package(&fx.profile, &fx.version, "wild/single", false).is_some());
+        // Not exported at all: Node would refuse, so must the launcher.
+        assert!(installed_package(&fx.profile, &fx.version, "wild/dist/a.js", false).is_none());
+        // Exported but the target file is missing.
+        assert!(installed_package(&fx.profile, &fx.version, "wild/feat/gone.js", false).is_none());
+    }
+
+    #[test]
+    fn subpath_of_a_missing_package_is_still_missing() {
+        let fx = Fixture::new();
+        fx.patch("- insert:\n    - id: gone\n      name: not-installed/entry\n");
+        let report = fx.inspect();
+        assert!(report.findings.iter().any(|f| f.code == "missing-package"));
+    }
+
+    #[test]
+    fn package_ref_splitting_and_traversal_guards() {
+        assert_eq!(split_package_ref("plain"), Some(("plain", None)));
+        assert_eq!(
+            split_package_ref("@scope/name/sub/entry"),
+            Some(("@scope/name", Some("sub/entry")))
+        );
+        assert_eq!(
+            split_package_ref("@scope/name"),
+            Some(("@scope/name", None))
+        );
+        assert_eq!(split_package_ref("@scope"), None);
+        assert_eq!(split_package_ref(""), None);
+        assert_eq!(split_package_ref("/leading"), None);
+
+        // A crafted reference must not resolve just because the package root
+        // exists.
+        let fx = Fixture::new();
+        fx.store_package_with_subpath("dsh-ptc-plus", "entry", "internal/entry.js");
+        assert!(
+            installed_package(&fx.profile, &fx.version, "dsh-ptc-plus/../escape", false).is_none()
+        );
+        assert!(installed_package(
+            &fx.profile,
+            &fx.version,
+            "dsh-ptc-plus/internal/missing",
+            false
+        )
+        .is_none());
+    }
+
+    #[test]
+    fn profile_local_package_wins_over_the_store() {
+        // Both roots may hold the package; the documented precedence must not
+        // regress now that a fourth candidate exists.
+        let fx = Fixture::new();
+        fx.package("third-party", r#"{"version":"1.0.0"}"#);
+        fx.store_package_with_subpath("third-party", "entry", "unused.txt");
+        let resolved = installed_package(&fx.profile, &fx.version, "third-party", false).unwrap();
+        assert_eq!(resolved, fx.profile.join("node_modules/third-party"));
     }
 
     #[test]
