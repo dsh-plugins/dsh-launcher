@@ -272,6 +272,27 @@ pub struct LauncherSettings {
     /// suppressed — a newer release still prompts.
     #[serde(default)]
     pub update_suppressed: Vec<String>,
+    /// Start the launcher hidden in the tray when the OS autostart entry
+    /// launched it (issue #100). A manual launch always shows the window.
+    #[serde(default)]
+    pub silent_autostart: bool,
+    /// Instances started in the background right after an autostart launch
+    /// (issue #100).
+    #[serde(default)]
+    pub autostart_instances: Vec<AutostartInstance>,
+    /// Whether an autostart launch also opens each auto-started instance's
+    /// window (issue #100). Off = fully silent startup.
+    #[serde(default = "default_true")]
+    pub autostart_open_windows: bool,
+}
+
+/// One instance started automatically after an OS autostart launch (issue
+/// #100). `profile` pins the profile; `None` uses the instance default.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub struct AutostartInstance {
+    pub instance_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub profile: Option<String>,
 }
 
 fn default_locale() -> String {
@@ -345,6 +366,9 @@ impl Default for LauncherSettings {
             last_link_root: None,
             update_channel: default_update_channel(),
             update_suppressed: Vec::new(),
+            silent_autostart: false,
+            autostart_instances: Vec::new(),
+            autostart_open_windows: true,
         }
     }
 }
@@ -429,6 +453,12 @@ pub struct SettingsPatch {
     pub plugin_sources: Option<Vec<PluginSourceConfig>>,
     #[serde(default)]
     pub update_channel: Option<String>,
+    #[serde(default)]
+    pub silent_autostart: Option<bool>,
+    #[serde(default)]
+    pub autostart_instances: Option<Vec<AutostartInstance>>,
+    #[serde(default)]
+    pub autostart_open_windows: Option<bool>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
