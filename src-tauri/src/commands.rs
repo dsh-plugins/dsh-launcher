@@ -2546,7 +2546,12 @@ mod tests {
         );
         // A Linux path on a *local* instance is a mistake, not a relative
         // path: report it instead of silently resolving it under the cwd.
-        let err = normalize_tui_cwd(Some("/home/u/proj".to_string()), None).unwrap_err();
-        assert!(err.contains("Windows 路径"), "unexpected error: {err}");
+        // POSIX hosts are excluded: there "/home/u/proj" is an ordinary
+        // absolute path (that is the CI Linux runner's own layout).
+        #[cfg(windows)]
+        {
+            let err = normalize_tui_cwd(Some("/home/u/proj".to_string()), None).unwrap_err();
+            assert!(err.contains("Windows 路径"), "unexpected error: {err}");
+        }
     }
 }

@@ -170,10 +170,12 @@ pub fn strip_verbatim_prefix(raw: &str) -> Cow<'_, str> {
 /// Local instance: a Windows path, made absolute against cwd when the user
 /// typed a relative one.
 fn parse_local(raw: &str, cwd: &Path) -> Result<TuiCwdTarget, String> {
-    // A Linux-looking path here is almost always a WSL value pasted into the
-    // wrong instance. Path::join would silently reinterpret /home/u as
-    // <current drive>:\home\u, and "目录不存在" would hide the real mistake.
-    if raw.starts_with('/') && !is_windows_absolute(raw) {
+    // On a Windows host a Linux-looking path here is almost always a WSL value
+    // pasted into the wrong instance: Path::join would reinterpret /home/u as
+    // <current drive>:\home\u and the "目录不存在" error would hide the real
+    // mistake. On POSIX hosts a leading / is just a normal absolute path, so
+    // the rule must stay Windows-only.
+    if cfg!(windows) && raw.starts_with('/') && !is_windows_absolute(raw) {
         return Err(format!(
             "本实例使用 Windows 路径，不能填写 Linux 路径: {raw}（WSL 实例请改为填写发行版内路径）"
         ));
@@ -271,6 +273,9 @@ mod tests {
         assert_eq!(strip_verbatim_prefix(r"C:\plain"), r"C:\plain");
     }
 
+    /// Windows only: a POSIX host's own local paths legitimately start with
+    /// "/", so the "that is a WSL path" guard must not fire there.
+    #[cfg(windows)]
     #[test]
     fn local_instance_rejects_a_linux_path() {
         let err = parse_tui_cwd(Some("/home/u/proj"), None, &cwd()).unwrap_err();
