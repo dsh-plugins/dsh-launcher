@@ -205,6 +205,11 @@ export interface ToolStatus {
 export interface RuntimeStatus {
   node: ToolStatus
   pnpm: ToolStatus
+  /**
+   * The managed runtime exists but is incomplete (pre-0.2.7 extraction dropped
+   * exec bits and npm symlinks, issue #101): offer a repair reinstall.
+   */
+  managed_node_broken: boolean
 }
 
 /** `queued`: waiting for another operation on the same profile to finish. */
