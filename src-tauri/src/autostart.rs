@@ -22,9 +22,44 @@ use crate::AppState;
 /// `tauri-plugin-autostart` is initialized with it.
 pub const AUTOSTART_ARG: &str = "--autostart";
 
+/// Whether one command-line argument marks an autostart launch.
+///
+/// Exact match only: a future `--autostart-silent` style flag must not be
+/// mistaken for the marker.
+fn is_autostart_arg(arg: &str) -> bool {
+    arg == AUTOSTART_ARG
+}
+
 /// Whether this process was started by the OS autostart entry.
 pub fn launched_by_autostart() -> bool {
-    std::env::args().any(|a| a == AUTOSTART_ARG)
+    std::env::args().any(|a| is_autostart_arg(&a))
+}
+
+/// Rewrites the OS autostart entry so it carries the current marker argument.
+///
+/// The entry is only (re)written by `enable()`, which `update_settings` calls
+/// when the toggle flips. A user who enabled autostart on an older launcher
+/// therefore keeps an entry without `--autostart`, and since the stored flag
+/// is already `true` the toggle never flips again — silent startup and
+/// instance auto-launch would never work for exactly the users upgrading into
+/// this feature. Re-registering on every start is idempotent on all three
+/// platforms (Run value overwrite / .desktop rewrite / plist rewrite), so the
+/// entry always matches the running version.
+pub fn refresh_autostart_entry(app: &AppHandle) {
+    let enabled = app
+        .state::<AppState>()
+        .config
+        .lock()
+        .unwrap()
+        .settings
+        .autostart;
+    if !enabled {
+        return;
+    }
+    use tauri_plugin_autostart::ManagerExt;
+    if let Err(e) = app.autolaunch().enable() {
+        crate::log_warn!("刷新开机自启注册项失败: {e}");
+    }
 }
 
 /// Applies the silent-startup half of issue #100: hides the main window when
@@ -79,13 +114,15 @@ fn resolve_launches(cfg: &crate::config::Config) -> Vec<PendingLaunch> {
         .iter()
         .filter_map(|entry| {
             let inst = cfg.instances.iter().find(|i| i.id == entry.instance_id)?;
-            // An explicitly pinned profile wins; otherwise fall back the same
-            // way a Home-page launch does (default, then last used).
+            // An explicitly pinned profile wins; otherwise follow the Home
+            // page's choice order (`last_profile`, then `default_profile`) so
+            // an auto-launched instance lands on the same profile the user
+            // would get by pressing start there.
             let profile = entry
                 .profile
                 .clone()
-                .or_else(|| inst.default_profile.clone())
-                .or_else(|| inst.last_profile.clone())?;
+                .or_else(|| inst.last_profile.clone())
+                .or_else(|| inst.default_profile.clone())?;
             Some(PendingLaunch {
                 instance_id: inst.id.clone(),
                 name: inst.name.clone(),
@@ -141,11 +178,31 @@ pub fn spawn_autostart_launches(app: &AppHandle) {
     });
 }
 
+/// Starts one configured instance and, when asked, brings its window up.
+///
+/// The two instance kinds need different handling:
+///
+/// - Web/other profiles spawn a piped process and only publish a URL once the
+///   web UI is listening, so the window is opened after polling for it.
+/// - TUI profiles run in a PTY whose terminal window `start_instance` opens
+///   itself, and they never enter `state.running`. Polling for a URL would
+///   block for the full timeout (and, in the serial loop below, delay every
+///   later instance), so they are handed off directly. A silent start closes
+///   that window again, keeping the "no windows" promise for TUI too.
 async fn start_one(
     app: &AppHandle,
     launch: &PendingLaunch,
     open_window: bool,
 ) -> Result<(), String> {
+    let is_tui =
+        match crate::plugins::resolve_instance(&app.state::<AppState>(), &launch.instance_id) {
+            Ok((home_path, _)) => {
+                crate::process::profile_kind(&home_path, &launch.profile)
+                    == crate::process::InstanceKind::Tui
+            }
+            // Unresolvable instance: let start_instance report the real error.
+            Err(_) => false,
+        };
     crate::commands::start_instance(
         app.clone(),
         app.state::<AppState>(),
@@ -153,6 +210,12 @@ async fn start_one(
         launch.profile.clone(),
     )
     .await?;
+    if is_tui {
+        if !open_window {
+            close_tui_window(app, &launch.instance_id);
+        }
+        return Ok(());
+    }
     if !open_window {
         return Ok(());
     }
@@ -183,6 +246,18 @@ async fn start_one(
         }
     }
     Err("等待实例就绪超时".to_string())
+}
+
+/// Hides a TUI terminal window that `start_instance` opened for a silent
+/// autostart launch. The PTY session keeps running in the background, so the
+/// instance stays reachable from the tray.
+fn close_tui_window(app: &AppHandle, instance_id: &str) {
+    let label = format!("tui-{instance_id}");
+    if let Some(win) = app.get_webview_window(&label) {
+        if let Err(e) = win.hide() {
+            crate::log_warn!("静默自启隐藏 TUI 窗口失败: {e}");
+        }
+    }
 }
 
 #[cfg(test)]
@@ -216,10 +291,14 @@ mod tests {
     }
 
     #[test]
-    fn autostart_flag_is_matched_exactly() {
-        // The marker must not be confused with a prefix argument.
-        assert_ne!(AUTOSTART_ARG, "--autostart-silent");
-        assert!(AUTOSTART_ARG.starts_with("--"));
+    fn autostart_arg_matching_is_exact() {
+        // Behaviour of the marker check: only the exact flag counts, so a
+        // future look-alike flag cannot be mistaken for an autostart launch.
+        assert!(is_autostart_arg("--autostart"));
+        assert!(!is_autostart_arg("--autostart-silent"));
+        assert!(!is_autostart_arg("autostart"));
+        assert!(!is_autostart_arg("--autostart=true"));
+        assert!(!is_autostart_arg(""));
     }
 
     #[test]
@@ -237,11 +316,13 @@ mod tests {
     }
 
     #[test]
-    fn resolved_launches_fall_back_to_default_then_last_profile() {
+    fn resolved_launches_fall_back_to_last_then_default_profile() {
+        // Same order as the Home page: the last used profile wins over the
+        // configured default.
         let cfg = config_with(
             vec![
-                instance("i1", "Default", Some("web"), Some("other")),
-                instance("i2", "LastOnly", None, Some("tui")),
+                instance("i1", "Both", Some("web"), Some("other")),
+                instance("i2", "DefaultOnly", Some("web"), None),
             ],
             vec![
                 AutostartInstance {
@@ -255,8 +336,8 @@ mod tests {
             ],
         );
         let launches = resolve_launches(&cfg);
-        assert_eq!(launches[0].profile, "web");
-        assert_eq!(launches[1].profile, "tui");
+        assert_eq!(launches[0].profile, "other");
+        assert_eq!(launches[1].profile, "web");
     }
 
     #[test]

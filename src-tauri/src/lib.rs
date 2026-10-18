@@ -261,6 +261,12 @@ pub fn run() {
             // setting (hide the window, stay in the tray) and then starts the
             // configured instances in the background. A manual launch ignores
             // both, so the window always appears when the user opened it.
+            //
+            // Refresh the registration first: an entry written by a launcher
+            // that predates this feature carries no `--autostart` marker, and
+            // the toggle never flips for users who already had autostart on,
+            // so without this the marker would never reach the entry.
+            autostart::refresh_autostart_entry(app.handle());
             autostart::hide_main_for_silent_autostart(app.handle());
             autostart::spawn_autostart_launches(app.handle());
 

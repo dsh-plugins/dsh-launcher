@@ -386,6 +386,11 @@ pub async fn delete_instance(
     if cfg.settings.last_instance_id.as_deref() == Some(id.as_str()) {
         cfg.settings.last_instance_id = None;
     }
+    // A deleted instance must not linger in the autostart list: the boot path
+    // would skip it, but the settings page would keep showing a dangling id.
+    cfg.settings
+        .autostart_instances
+        .retain(|a| a.instance_id != id);
     save_state(&state, &cfg)
 }
 

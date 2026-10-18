@@ -332,7 +332,7 @@
     "saved": "Settings saved",
     "perInstanceTray": "Tray icon per instance",
     "perInstanceTrayHint": "Give every running instance its own tray icon: the instance's custom icon, a tooltip with its name, profile and active-conversation count, a left click that opens or focuses its window, and a right-click menu to open or stop it. When off, only the launcher tray remains and instances stay reachable from the \"Running profiles\" submenu.",
-    "autostart": {
+    "silentAutostart": {
       "title": "Silent autostart & auto-launch",
       "hint": "Only applies when the launcher was started by the OS autostart entry; opening it manually is unaffected.",
       "needsAutostart": "Enable \"Start with the OS\" above first for these options to take effect.",

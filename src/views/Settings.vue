@@ -1,4 +1,4 @@
-<script setup lang="ts">
+﻿<script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { Message } from '@arco-design/web-vue'
@@ -131,7 +131,7 @@ async function refreshDataDirSource() {
     dataDirSource.value = info.source as 'env' | 'pointer' | 'default'
     if (info.notice) Message.warning(info.notice)
   } catch {
-    /* source 未知时保持默认展示 */
+    /* source 鏈煡鏃朵繚鎸侀粯璁ゅ睍绀?*/
   }
 }
 
@@ -152,7 +152,7 @@ async function onConfirmMove() {
     const committed = await api.commitDataDir(moveTarget.value)
     moveModalVisible.value = false
     Message.success(t('settings.dataDir.migratedToast', [committed]))
-    // 指针已写入:迁移在下次启动时发生
+    // 鎸囬拡宸插啓鍏?杩佺Щ鍦ㄤ笅娆″惎鍔ㄦ椂鍙戠敓
     refreshDataDirSource()
   } catch (e) {
     Message.error(String(e))
@@ -232,7 +232,7 @@ async function onAddAutostartInstance() {
   const id = newAutostartInstance.value
   if (!id) return
   if (autostartInstances.value.some((a) => a.instance_id === id)) {
-    Message.warning(t('settings.autostart.duplicated'))
+    Message.warning(t('settings.silentAutostart.duplicated'))
     return
   }
   const profile = newAutostartProfile.value.trim()
@@ -691,12 +691,12 @@ const pluginSourceColumns = computed(() => [
     <div class="dl-card">
       <div class="dl-card-title">
         <h3>
-          {{ t('settings.autostart.title') }}
-          <HintIcon :content="t('settings.autostart.hint')" />
+          {{ t('settings.silentAutostart.title') }}
+          <HintIcon :content="t('settings.silentAutostart.hint')" />
         </h3>
       </div>
       <a-alert v-if="!store.settings.autostart" type="info" class="autostart-note">
-        {{ t('settings.autostart.needsAutostart') }}
+        {{ t('settings.silentAutostart.needsAutostart') }}
       </a-alert>
       <a-form :model="store.settings" layout="vertical" class="settings-form">
         <a-form-item>
@@ -706,8 +706,8 @@ const pluginSourceColumns = computed(() => [
             @change="onSilentAutostartChange"
           />
           <span class="switch-label">
-            {{ t('settings.autostart.silent') }}
-            <HintIcon :content="t('settings.autostart.silentHint')" />
+            {{ t('settings.silentAutostart.silent') }}
+            <HintIcon :content="t('settings.silentAutostart.silentHint')" />
           </span>
         </a-form-item>
         <a-form-item>
@@ -717,22 +717,22 @@ const pluginSourceColumns = computed(() => [
             @change="onAutostartOpenWindowsChange"
           />
           <span class="switch-label">
-            {{ t('settings.autostart.openWindows') }}
-            <HintIcon :content="t('settings.autostart.openWindowsHint')" />
+            {{ t('settings.silentAutostart.openWindows') }}
+            <HintIcon :content="t('settings.silentAutostart.openWindowsHint')" />
           </span>
         </a-form-item>
       </a-form>
 
       <div class="autostart-instances">
-        <h4>{{ t('settings.autostart.instances') }}</h4>
-        <p class="autostart-desc">{{ t('settings.autostart.instancesHint') }}</p>
+        <h4>{{ t('settings.silentAutostart.instances') }}</h4>
+        <p class="autostart-desc">{{ t('settings.silentAutostart.instancesHint') }}</p>
         <div v-if="autostartInstances.length === 0" class="autostart-empty">
-          {{ t('settings.autostart.empty') }}
+          {{ t('settings.silentAutostart.empty') }}
         </div>
         <div v-for="entry in autostartInstances" :key="entry.instance_id" class="autostart-row">
           <span class="autostart-name">{{ autostartInstanceName(entry.instance_id) }}</span>
           <a-tag v-if="entry.profile" size="small">{{ entry.profile }}</a-tag>
-          <a-tag v-else size="small" color="gray">{{ t('settings.autostart.defaultProfile') }}</a-tag>
+          <a-tag v-else size="small" color="gray">{{ t('settings.silentAutostart.defaultProfile') }}</a-tag>
           <a-button
             size="mini"
             type="text"
@@ -740,13 +740,13 @@ const pluginSourceColumns = computed(() => [
             :disabled="!store.settings.autostart"
             @click="onRemoveAutostartInstance(entry.instance_id)"
           >
-            {{ t('settings.autostart.remove') }}
+            {{ t('settings.silentAutostart.remove') }}
           </a-button>
         </div>
         <div class="autostart-add">
           <a-select
             v-model="newAutostartInstance"
-            :placeholder="t('settings.autostart.pickInstance')"
+            :placeholder="t('settings.silentAutostart.pickInstance')"
             :options="autostartCandidates"
             allow-clear
             :disabled="!store.settings.autostart"
@@ -754,7 +754,7 @@ const pluginSourceColumns = computed(() => [
           />
           <a-input
             v-model="newAutostartProfile"
-            :placeholder="t('settings.autostart.profilePlaceholder')"
+            :placeholder="t('settings.silentAutostart.profilePlaceholder')"
             allow-clear
             :disabled="!store.settings.autostart"
             class="autostart-profile"
@@ -764,7 +764,7 @@ const pluginSourceColumns = computed(() => [
             :disabled="!store.settings.autostart || !newAutostartInstance"
             @click="onAddAutostartInstance"
           >
-            {{ t('settings.autostart.add') }}
+            {{ t('settings.silentAutostart.add') }}
           </a-button>
         </div>
       </div>
@@ -995,7 +995,7 @@ const pluginSourceColumns = computed(() => [
         <template #psActions="{ record, rowIndex }">
           <a-space :size="4">
             <a-button size="mini" type="text" :disabled="pluginSourceBusy || rowIndex === 0" @click="onMovePluginSource(rowIndex, -1)">
-              ↑
+              鈫?
             </a-button>
             <a-button
               size="mini"
@@ -1003,7 +1003,7 @@ const pluginSourceColumns = computed(() => [
               :disabled="pluginSourceBusy || rowIndex === store.settings.plugin_sources.length - 1"
               @click="onMovePluginSource(rowIndex, 1)"
             >
-              ↓
+              鈫?
             </a-button>
             <a-button size="mini" status="danger" type="text" :disabled="pluginSourceBusy" @click="onRemovePluginSource(record.id)">
               {{ t('settings.pluginSources.delete') }}
