@@ -520,7 +520,7 @@
     "tuiCwdBrowse": "Browse",
     "tuiCwdBrowseTitle": "Select TUI working directory",
     "tuiCwdApply": "Apply",
-    "tuiCwdHint": "Working directory for TUI instance startup (only affects TUI profiles); uses DSH_HOME when empty. Session archiving and project config loading are based on this directory.",
+    "tuiCwdHint": "Working directory for TUI instance startup (only affects TUI profiles); uses DSH_HOME when empty. Session archiving and project config loading are based on this directory. Local instances take a Windows path; WSL instances take a Linux path inside the distro (e.g. /home/me/proj) or a directory under \\wsl$\\<distro>\\... . An unusable directory fails the launch instead of silently falling back.",
     "tuiCwdSaved": "TUI working directory set to {path}",
     "tuiCwdSavedDefault": "Saved; DSH_HOME will be used as working directory",
     "openDirectory": "Open directory",

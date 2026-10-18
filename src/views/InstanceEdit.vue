@@ -115,6 +115,9 @@ async function applyPort() {
 
 const tuiCwdInput = ref('')
 const tuiCwdBusy = ref(false)
+/** Profile the instance actually launches (mirrors the backend's
+ * `tui_active_profile`): the last launched one, else the default. */
+const activeProfile = ref<string | null>(null)
 
 /**
  * Kinds of the profiles in the currently selected HOME (issue #31), so the TUI
@@ -123,9 +126,32 @@ const tuiCwdBusy = ref(false)
  * control stays visible whenever we do not positively know better.
  */
 const profileKinds = ref<Record<string, string> | null>(null)
-const hasTuiProfile = computed(
-  () => profileKinds.value === null || Object.values(profileKinds.value).includes('tui'),
-)
+
+/**
+ * Whether this instance can actually launch the TUI, i.e. whether `tui_cwd`
+ * has any effect (issue #97 review). A HOME that merely *contains* some TUI
+ * profile is not enough: an instance pinned to a web profile would show the
+ * control, accept a value, and never use it.
+ * Unknown (probe pending/failed) keeps it visible — never hide an option
+ * because a probe did not answer.
+ */
+const hasTuiProfile = computed(() => {
+  const kinds = profileKinds.value
+  if (kinds === null) return true
+  // Any profile this instance would actually launch (last launched, else the
+  // default being edited) decides it; an unknown name counts as "no".
+  const candidates = [activeProfile.value, defaultProfile.value].filter(
+    (p): p is string => !!p,
+  )
+  if (candidates.length) return candidates.some((p) => kinds[p] === 'tui')
+  // No profile chosen yet: offer the control when the HOME has one at all.
+  return Object.values(kinds).includes('tui')
+})
+
+/** Keeps `activeProfile` in sync with the instance the form is editing. */
+function syncActiveProfile(inst: DshInstance | null | undefined) {
+  activeProfile.value = inst ? (inst.last_profile ?? inst.default_profile ?? null) : null
+}
 
 async function loadProfileKinds(homeIdValue: string | null) {
   profileKinds.value = null
@@ -218,6 +244,7 @@ onMounted(async () => {
   defaultProfile.value = inst.default_profile ?? undefined
   portInput.value = inst.port ? String(inst.port) : ''
   tuiCwdInput.value = inst.tui_cwd ?? ''
+  syncActiveProfile(inst)
   envRows.value = Object.entries(inst.env_overrides).map(([key, value]) => ({ key, value }))
   await loadIcon()
   void loadProfileKinds(inst.home_id)

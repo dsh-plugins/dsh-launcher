@@ -687,6 +687,17 @@ async function mockCall<T>(cmd: string, args?: Record<string, unknown>): Promise
       saveDb(db)
       return inst as T
     }
+    case 'set_instance_tui_cwd': {
+      // Issue #97 review: the browser-preview mock must know every command the
+      // UI can send, otherwise the settings page fails with "unknown command".
+      const id = String(args?.instance_id)
+      const inst = db.instances.find((i) => i.id === id)
+      if (!inst) fail('实例不存在')
+      const raw = typeof args?.path === 'string' ? args.path.trim() : ''
+      inst.tui_cwd = raw ? raw : null
+      saveDb(db)
+      return inst as T
+    }
     case 'delete_instance': {
       const id = String(args?.id)
       delete db.running[id]

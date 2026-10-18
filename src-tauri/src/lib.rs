@@ -22,6 +22,7 @@ mod tasks;
 mod terminal;
 mod tray;
 mod tui;
+mod tui_cwd;
 mod update;
 mod update_window;
 mod windows;
