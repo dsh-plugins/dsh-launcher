@@ -290,9 +290,20 @@ fn default_log_level() -> String {
     "info".to_string()
 }
 
+/// The default news feed URL, served from the project's own domain.
+///
+/// Kept in one place because the feed address appears in three defaults (this
+/// file, the frontend store and the browser-preview mock); a stale copy would
+/// silently point some launches at a dead gist.
+const DEFAULT_NEWS_SOURCE: &str = "https://dsh-plug.in/api/news.md";
+
+/// The feed URL shipped before the move to `dsh-plug.in`. Recognised only so
+/// existing configs can be migrated off it.
+const LEGACY_NEWS_SOURCE: &str =
+    "https://gist.githubusercontent.com/Gu-ZT/f08daa33afb82f4b375e604039b92742/raw/DSH_NEWS.md";
+
 fn default_news_source() -> String {
-    "https://gist.githubusercontent.com/Gu-ZT/f08daa33afb82f4b375e604039b92742/raw/DSH_NEWS.md"
-        .to_string()
+    DEFAULT_NEWS_SOURCE.to_string()
 }
 
 fn default_proxy_url() -> String {
@@ -469,10 +480,15 @@ pub fn load_config(path: &Path) -> Config {
 
 /// Backfills an empty (previously unset) news_source with the default feed,
 /// so existing users also get the default news URL without being forced to
-/// change a value they explicitly cleared. An explicitly cleared value is
-/// indistinguishable from "never set", so this only runs once when empty.
+/// change a value they explicitly cleared.
+///
+/// Also moves an untouched legacy default (the old gist) over to the current
+/// feed: that value was never a user choice, so leaving it would keep every
+/// upgraded launcher reading a stale source. A value differing from both the
+/// legacy and the current default is a user's own source and is kept.
 fn migrate_news_source(cfg: &mut Config) {
-    if cfg.settings.news_source.trim().is_empty() {
+    let current = cfg.settings.news_source.trim();
+    if current.is_empty() || current == LEGACY_NEWS_SOURCE {
         cfg.settings.news_source = default_news_source();
     }
 }
@@ -682,5 +698,31 @@ mod tests {
         assert_eq!(out[0].confidence, Confidence::Official);
         assert_eq!(out[3].id, "github-topic");
         assert!(!out[3].enabled);
+    }
+
+    #[test]
+    fn news_source_defaults_to_the_project_feed() {
+        assert_eq!(LauncherSettings::default().news_source, DEFAULT_NEWS_SOURCE);
+    }
+
+    #[test]
+    fn news_migration_moves_empty_and_legacy_values_only() {
+        // An unset value and the old shipped default are not user choices, so
+        // both move to the current feed.
+        let mut cfg = Config::default();
+        cfg.settings.news_source = String::new();
+        migrate_news_source(&mut cfg);
+        assert_eq!(cfg.settings.news_source, DEFAULT_NEWS_SOURCE);
+
+        let mut cfg = Config::default();
+        cfg.settings.news_source = LEGACY_NEWS_SOURCE.to_string();
+        migrate_news_source(&mut cfg);
+        assert_eq!(cfg.settings.news_source, DEFAULT_NEWS_SOURCE);
+
+        // A source the user configured themselves is preserved.
+        let mut cfg = Config::default();
+        cfg.settings.news_source = "https://example.com/my-news.md".to_string();
+        migrate_news_source(&mut cfg);
+        assert_eq!(cfg.settings.news_source, "https://example.com/my-news.md");
     }
 }
