@@ -100,15 +100,21 @@ fn read_patch(path: &Path, optional: bool) -> Result<Vec<Yaml>, String> {
 /// (`dsh-ptc-plus/execution-provider` → `dsh-ptc-plus` + `execution-provider`).
 ///
 /// Scoped names keep their scope: `@scope/name/sub` → `@scope/name` +
-/// `sub`. A bare `@scope` is not a package root and yields `None`.
+/// `sub`. Every segment must be a real name: empty segments, `.`/`..`
+/// traversal and Windows separators are rejected anywhere in the reference,
+/// so a crafted entry cannot resolve to a directory outside the package.
 fn split_package_ref(name: &str) -> Option<(&str, Option<&str>)> {
+    if name.contains('\\') {
+        return None;
+    }
     let mut parts = name.split('/');
     let first = parts.next()?;
-    if first.is_empty() || first.contains('\\') {
+    if first.is_empty() || first == "." || first == ".." {
         return None;
     }
     let root_end = if first.starts_with('@') {
-        // Scope owner plus package name; the remainder is the subpath.
+        // Scope owner plus package name; the remainder is the subpath. A bare
+        // `@scope` is not a package root.
         let second = parts.next()?;
         if second.is_empty() || second == "." || second == ".." {
             return None;
@@ -117,9 +123,16 @@ fn split_package_ref(name: &str) -> Option<(&str, Option<&str>)> {
     } else {
         first.len()
     };
-    let root = &name[..root_end];
     let rest = name[root_end..].strip_prefix('/');
-    Some((root, rest))
+    // Reject traversal in the subpath here rather than at the call sites, so
+    // every caller inherits the guard.
+    if rest.is_some_and(|sub| {
+        sub.split('/')
+            .any(|part| part.is_empty() || part == "." || part == "..")
+    }) {
+        return None;
+    }
+    Some((&name[..root_end], rest))
 }
 
 /// Roots a package may be installed under, most specific first: the profile's
@@ -156,18 +169,33 @@ fn package_roots(profile: &Path, version: &Path, bundle: bool) -> [PathBuf; 4] {
 }
 
 /// Picks the resolution target out of an `exports` value: a plain string, a
-/// conditions object (`node`/`import`/`require` before `default`, first match
-/// wins like Node), or an array of candidates.
+/// conditions object, or an array of candidates.
+///
+/// Only the conditions Node resolves for a `require`-style load are honoured
+/// (`node`, then `import`/`require`, then `default`). Falling back to an
+/// arbitrary condition such as `browser` would report a target as resolvable
+/// where Node itself refuses the subpath.
 fn export_target(value: &Json) -> Option<&str> {
     match value {
         Json::String(target) => Some(target),
         Json::Object(conditions) => ["node", "import", "require", "default"]
             .iter()
-            .find_map(|key| conditions.get(*key).and_then(export_target))
-            .or_else(|| conditions.values().find_map(export_target)),
+            .find_map(|key| conditions.get(*key).and_then(export_target)),
         Json::Array(candidates) => candidates.iter().find_map(export_target),
         _ => None,
     }
+}
+
+/// Whether an `exports` target stays inside the package directory.
+///
+/// `Path::starts_with` compares components without resolving `..`, so
+/// `./../outside.js` would pass a naive prefix check. Resolve the target
+/// lexically first and reject any escape or absolute path.
+fn target_inside_package(target: &Path) -> bool {
+    !target.is_absolute()
+        && !target
+            .components()
+            .any(|c| matches!(c, std::path::Component::ParentDir))
 }
 
 /// Resolves a package subpath through the package's `exports` map, the way
@@ -181,32 +209,34 @@ fn exported_subpath(pkg: &Json, subpath: &str) -> Option<Option<PathBuf>> {
     let map = pkg.get("exports")?.as_object()?;
     let wanted = format!("./{subpath}");
     if let Some(target) = map.get(&wanted).and_then(export_target) {
-        return Some(Some(PathBuf::from(target)));
+        let target = PathBuf::from(target);
+        return Some(target_inside_package(&target).then_some(target));
     }
     // Wildcard patterns: the longest prefix wins, as in Node.
-    let mut best: Option<(usize, &str, &str, &str)> = None; // (prefix len, prefix, suffix, target)
+    let mut best: Option<(usize, &str, &str)> = None; // (prefix len, suffix, target)
     for (key, value) in map {
         let Some((prefix, suffix)) = key.split_once('*') else {
             continue;
         };
-        let Some(captured) = wanted
+        if wanted
             .strip_prefix(prefix)
             .and_then(|rest| rest.strip_suffix(suffix))
-        else {
+            .is_none()
+        {
             continue;
-        };
-        let _ = captured;
+        }
         let Some(target) = export_target(value) else {
             continue;
         };
         if best.is_none_or(|(len, ..)| prefix.len() > len) {
-            best = Some((prefix.len(), prefix, suffix, target));
+            best = Some((prefix.len(), suffix, target));
         }
     }
     match best {
-        Some((len, _, suffix, target)) => {
+        Some((len, suffix, target)) => {
             let captured = &wanted[len..wanted.len() - suffix.len()];
-            Some(Some(PathBuf::from(target.replace('*', captured))))
+            let target = PathBuf::from(target.replace('*', captured));
+            Some(target_inside_package(&target).then_some(target))
         }
         None => Some(None),
     }
@@ -219,13 +249,8 @@ fn exported_subpath(pkg: &Json, subpath: &str) -> Option<Option<PathBuf>> {
 /// subpath is exported and present; the subpath itself is never a package
 /// root and has no `package.json` of its own.
 fn installed_package(profile: &Path, version: &Path, name: &str, bundle: bool) -> Option<PathBuf> {
+    // `split_package_ref` already rejects traversal in the root and subpath.
     let (root, subpath) = split_package_ref(name)?;
-    if subpath.is_some_and(|rest| {
-        rest.split('/')
-            .any(|part| part.is_empty() || part == "." || part == "..")
-    }) {
-        return None;
-    }
     let dir = package_roots(profile, version, bundle)
         .into_iter()
         .map(|base| base.join(root))
@@ -235,19 +260,13 @@ fn installed_package(profile: &Path, version: &Path, name: &str, bundle: bool) -
     };
     let pkg = read_json(&dir.join("package.json")).ok()?;
     match exported_subpath(&pkg, rest) {
-        // Exported: the target must exist inside the package.
-        Some(Some(target)) => {
-            let resolved = dir.join(target);
-            resolved
-                .starts_with(&dir)
-                .then(|| resolved.exists().then_some(dir))
-                .flatten()
-        }
+        // Exported and inside the package: the target must also exist.
+        Some(Some(target)) => (dir.join(target).exists()).then_some(dir),
         // An exports map that does not expose this subpath is not resolvable.
         Some(None) => None,
         // No exports map: legacy subpath resolution, a literal path inside
-        // the package directory. `.`/`..`/empty parts were rejected above, so
-        // the join cannot escape the package root.
+        // the package directory. Segments were validated above, so the join
+        // cannot escape the package root.
         None => dir.join(rest).exists().then_some(dir),
     }
 }
@@ -1273,6 +1292,16 @@ mod tests {
         assert_eq!(split_package_ref("@scope"), None);
         assert_eq!(split_package_ref(""), None);
         assert_eq!(split_package_ref("/leading"), None);
+        // Traversal and Windows separators are rejected anywhere in the
+        // reference, including the package root itself.
+        assert_eq!(split_package_ref(".."), None);
+        assert_eq!(split_package_ref("."), None);
+        assert_eq!(split_package_ref("..\\escape"), None);
+        assert_eq!(split_package_ref("pkg\\sub"), None);
+        assert_eq!(split_package_ref("@scope/.."), None);
+        assert_eq!(split_package_ref("pkg/..\\..\\evil"), None);
+        assert_eq!(split_package_ref("pkg/a//b"), None);
+        assert_eq!(split_package_ref("pkg/a/./b"), None);
 
         // A crafted reference must not resolve just because the package root
         // exists.
@@ -1288,6 +1317,62 @@ mod tests {
             false
         )
         .is_none());
+    }
+
+    #[test]
+    fn exports_target_escaping_the_package_is_not_resolvable() {
+        // `Path::starts_with` does not resolve `..`, so the target is checked
+        // lexically: an export pointing outside the package must not resolve
+        // just because the real file happens to exist there.
+        let fx = Fixture::new();
+        let dir = fx.version.join("node_modules/.pnpm/node_modules/escape");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("inside.js"), "").unwrap();
+        std::fs::write(
+            dir.join("package.json"),
+            serde_json::json!({
+                "name": "escape",
+                "version": "1.0.0",
+                "exports": {
+                    "./up": "./../outside.js",
+                    "./abs": "/etc/passwd",
+                    "./ok": "./inside.js",
+                },
+            })
+            .to_string(),
+        )
+        .unwrap();
+        // The escaped-to file exists, but the export still must not resolve.
+        std::fs::write(
+            fx.version
+                .join("node_modules/.pnpm/node_modules/outside.js"),
+            "",
+        )
+        .unwrap();
+        assert!(installed_package(&fx.profile, &fx.version, "escape/up", false).is_none());
+        assert!(installed_package(&fx.profile, &fx.version, "escape/abs", false).is_none());
+        assert!(installed_package(&fx.profile, &fx.version, "escape/ok", false).is_some());
+    }
+
+    #[test]
+    fn unknown_export_conditions_are_not_treated_as_resolvable() {
+        // Node does not resolve a `require` through `browser`, so neither may
+        // the launcher.
+        let fx = Fixture::new();
+        let dir = fx.version.join("node_modules/.pnpm/node_modules/cond");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("b.js"), "").unwrap();
+        std::fs::write(
+            dir.join("package.json"),
+            serde_json::json!({
+                "name": "cond",
+                "version": "1.0.0",
+                "exports": { "./feat": {"browser": "./b.js"} },
+            })
+            .to_string(),
+        )
+        .unwrap();
+        assert!(installed_package(&fx.profile, &fx.version, "cond/feat", false).is_none());
     }
 
     #[test]
