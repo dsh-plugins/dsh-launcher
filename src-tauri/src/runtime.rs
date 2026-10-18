@@ -47,9 +47,16 @@ pub async fn get_runtime_status(state: State<'_, AppState>) -> Result<RuntimeSta
     let node = probe("node").await;
     let pnpm = probe("pnpm").await;
     let data_dir = state.data_dir.clone();
-    let broken = crate::wsl::run_blocking(move || managed_node_incomplete(&data_dir))
-        .await
-        .unwrap_or(false);
+    // The probe itself cannot fail (it reads metadata); only the blocking
+    // thread can, and treating that as "not broken" is the safe direction —
+    // but it must still be logged rather than silently swallowed.
+    let broken = match crate::wsl::run_blocking(move || managed_node_incomplete(&data_dir)).await {
+        Ok(broken) => broken,
+        Err(e) => {
+            crate::log_warn!("检查内置 Node.js 运行时完整性失败: {e}");
+            false
+        }
+    };
     Ok(RuntimeStatus {
         node,
         pnpm,

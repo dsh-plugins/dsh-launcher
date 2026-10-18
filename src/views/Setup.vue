@@ -63,7 +63,13 @@ watch(
 
 const nodeOk = computed(() => store.runtime?.node?.installed ?? false)
 const pnpmOk = computed(() => store.runtime?.pnpm?.installed ?? false)
-const allOk = computed(() => nodeOk.value && pnpmOk.value)
+/**
+ * Everything green — including the managed runtime being usable. The system
+ * `node` can run while the launcher's own tree is broken (issue #101), so
+ * `nodeOk` alone would show "all ready" next to the repair card and let
+ * "enter app" bypass the repair.
+ */
+const allOk = computed(() => nodeOk.value && pnpmOk.value && !managedBroken.value)
 
 const nodeVersion = computed(() => store.runtime?.node?.version ?? '')
 const pnpmVersion = computed(() => store.runtime?.pnpm?.version ?? '')
