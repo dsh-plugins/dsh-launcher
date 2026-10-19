@@ -1990,6 +1990,20 @@ async fn do_copy_instance(
         wsl: None,
         links: Default::default(),
     };
+    // A full copy always lands on a fresh local HOME (see `src_fs` above), so a
+    // WSL source must not hand its distro path to an instance that can no
+    // longer reach it.
+    let tui_cwd = crate::tui_cwd::cwd_for_copy(
+        source.tui_cwd.as_deref(),
+        src_home.wsl.as_deref(),
+        home.wsl.as_deref(),
+    );
+    if source.tui_cwd.is_some() && tui_cwd.is_none() {
+        crate::log_warn!(
+            "实例「{}」的 TUI 工作目录未随复制保留：目标 DSH_HOME 与原实例的运行时不匹配",
+            source.name
+        );
+    }
     let inst = {
         let mut cfg = state.config.lock().unwrap();
         cfg.homes.push(home.clone());
@@ -2003,7 +2017,7 @@ async fn do_copy_instance(
             last_profile: None,
             icon: source.icon.clone(),
             port: source.port,
-            tui_cwd: source.tui_cwd.clone(),
+            tui_cwd,
         };
         cfg.instances.push(inst.clone());
         if let Err(e) = crate::commands::save_state(state, &cfg) {

@@ -617,6 +617,26 @@ pub fn copy_instance(
         source.home_id.clone()
     };
 
+    // The stored working directory only fits the runtime of the source HOME,
+    // and a copy that creates a new HOME always creates a local one.
+    let src_wsl = cfg
+        .homes
+        .iter()
+        .find(|h| h.id == source.home_id)
+        .and_then(|h| h.wsl.as_deref());
+    let dst_wsl = cfg
+        .homes
+        .iter()
+        .find(|h| h.id == home_id)
+        .and_then(|h| h.wsl.as_deref());
+    let tui_cwd = crate::tui_cwd::cwd_for_copy(source.tui_cwd.as_deref(), src_wsl, dst_wsl);
+    if source.tui_cwd.is_some() && tui_cwd.is_none() {
+        crate::log_warn!(
+            "实例「{}」的 TUI 工作目录未随复制保留：目标 DSH_HOME 与原实例的运行时不匹配",
+            source.name
+        );
+    }
+
     let mut inst = DshInstance {
         id: new_id("i"),
         name,
@@ -627,7 +647,7 @@ pub fn copy_instance(
         last_profile: None,
         icon: source.icon.clone(),
         port: source.port,
-        tui_cwd: source.tui_cwd.clone(),
+        tui_cwd,
     };
     // A local icon is stored per instance id; copy the file for the clone,
     // falling back to the launcher default when it cannot be carried over.

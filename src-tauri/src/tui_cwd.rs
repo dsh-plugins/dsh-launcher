@@ -117,6 +117,22 @@ pub fn normalize_linux_path(raw: &str) -> Result<String, String> {
     Ok(path.trim_end_matches('/').to_string())
 }
 
+/// The working directory a copied instance may inherit from its source.
+///
+/// The stored value only means something in the dialect of its own HOME: a
+/// local HOME holds a Windows path, a WSL HOME holds a path inside its distro.
+/// A copy that lands on a HOME of the other kind must not carry the value
+/// over — the clone would fail every launch on a directory its own runtime
+/// cannot reach, so it falls back to the documented DSH_HOME default instead.
+pub fn cwd_for_copy(
+    cwd: Option<&str>,
+    source_wsl: Option<&str>,
+    target_wsl: Option<&str>,
+) -> Option<String> {
+    let cwd = cwd?;
+    (source_wsl == target_wsl).then(|| cwd.to_string())
+}
+
 /// Parses \\wsl$\<distro>\<path> / \\wsl.localhost\<distro>\<path> (either
 /// separator) into (distro, /linux/path).
 ///
@@ -280,6 +296,28 @@ mod tests {
     fn local_instance_rejects_a_linux_path() {
         let err = parse_tui_cwd(Some("/home/u/proj"), None, &cwd()).unwrap_err();
         assert!(err.contains("Windows 路径"), "unexpected error: {err}");
+    }
+
+    #[test]
+    fn copied_cwd_survives_only_within_the_same_runtime() {
+        // Reusing the source HOME keeps the value, in either runtime.
+        assert_eq!(
+            cwd_for_copy(Some(r"D:\proj"), None, None),
+            Some(r"D:\proj".to_string())
+        );
+        assert_eq!(
+            cwd_for_copy(Some("/home/u/proj"), Some("Debian"), Some("Debian")),
+            Some("/home/u/proj".to_string())
+        );
+        // A clone that gets a HOME of the other runtime must not inherit a
+        // path its own runtime cannot reach.
+        assert_eq!(
+            cwd_for_copy(Some("/home/u/proj"), Some("Debian"), None),
+            None
+        );
+        assert_eq!(cwd_for_copy(Some(r"D:\proj"), None, Some("Debian")), None);
+        // Nothing configured stays nothing.
+        assert_eq!(cwd_for_copy(None, None, None), None);
     }
 
     #[test]
