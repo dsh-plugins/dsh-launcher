@@ -707,6 +707,7 @@ mod tests {
             last_profile: None,
             icon: None,
             port: None,
+            tui_cwd: None,
         });
         cfg
     }

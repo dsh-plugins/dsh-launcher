@@ -276,6 +276,7 @@ mod tests {
             last_profile: last.map(str::to_string),
             icon: None,
             port: None,
+            tui_cwd: None,
         }
     }
 

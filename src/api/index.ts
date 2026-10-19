@@ -694,6 +694,17 @@ async function mockCall<T>(cmd: string, args?: Record<string, unknown>): Promise
       saveDb(db)
       return inst as T
     }
+    case 'set_instance_tui_cwd': {
+      // Issue #97 review: the browser-preview mock must know every command the
+      // UI can send, otherwise the settings page fails with "unknown command".
+      const id = String(args?.instance_id)
+      const inst = db.instances.find((i) => i.id === id)
+      if (!inst) fail('实例不存在')
+      const raw = typeof args?.path === 'string' ? args.path.trim() : ''
+      inst.tui_cwd = raw ? raw : null
+      saveDb(db)
+      return inst as T
+    }
     case 'delete_instance': {
       const id = String(args?.id)
       delete db.running[id]
@@ -1600,6 +1611,9 @@ export const api = {
   /** Sets the instance's web port; null or out-of-range = random port. */
   setInstancePort: (instanceId: string, port: number | null) =>
     call<DshInstance>('set_instance_port', { instance_id: instanceId, port }),
+  /** Sets the instance's TUI working directory; null or empty = DSH_HOME (issue #97). */
+  setInstanceTuiCwd: (instanceId: string, path: string | null) =>
+    call<DshInstance>('set_instance_tui_cwd', { instance_id: instanceId, path }),
   deleteInstance: (id: string) => call<void>('delete_instance', { id }),
   copyInstance: (input: CopyInstanceInput) => call<DshInstance>('copy_instance', { input }),
   /** Full-content copy into a new dedicated HOME (background task). */

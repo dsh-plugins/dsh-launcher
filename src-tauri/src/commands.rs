@@ -301,6 +301,7 @@ pub fn create_instance(
         icon: None,
 
         port: None,
+        tui_cwd: None,
     };
     cfg.instances.push(inst.clone());
     save_state(&state, &cfg)?;
@@ -335,11 +336,13 @@ pub fn update_instance(
     let Some(pos) = cfg.instances.iter().position(|i| i.id == updated.id) else {
         return Err("实例不存在".to_string());
     };
-    // The icon is managed by set/clear_instance_icon and the port by
-    // set_instance_port, not by this form payload; preserve whatever is
+    // The icon is managed by set/clear_instance_icon, the port by
+    // set_instance_port and the TUI working directory by
+    // set_instance_tui_cwd, not by this form payload; preserve whatever is
     // currently stored (the frontend spreads a possibly stale instance).
     updated.icon = cfg.instances[pos].icon.clone();
     updated.port = cfg.instances[pos].port;
+    updated.tui_cwd = cfg.instances[pos].tui_cwd.clone();
     cfg.instances[pos] = updated.clone();
     save_state(&state, &cfg)?;
     Ok(updated)
@@ -363,6 +366,143 @@ pub fn set_instance_port(
         return Err("实例不存在".to_string());
     };
     inst.port = port;
+    let updated = inst.clone();
+    save_state(&state, &cfg)?;
+    Ok(updated)
+}
+
+/// Normalizes the TUI working-directory input (issue #97) into the value
+/// stored in the instance config.
+///
+/// Empty / whitespace-only input means "use DSH_HOME" and yields `None`.
+/// Anything else must exist and be a directory; the stored value is that
+/// path as given, trimmed.
+///
+/// Deliberately NOT `canonicalize()`d: on Windows that yields a verbatim
+/// path carrying the `\\?\` prefix, and this value is handed to dsh-tui as
+/// its workspace target (spawn cwd + positional argument). `\\?\C:\Users\yuki`
+/// and `C:\Users\yuki` encode different session buckets, so the prefix
+/// would defeat the point of the feature (session grouping and
+/// project-config discovery keyed by cwd) and would leak into the success
+/// toast. A pasted verbatim path is stripped by `tui_cwd::parse_tui_cwd` for
+/// the same reason.
+///
+/// The two instance kinds have different contracts (issue #97 review):
+/// local instances store a Windows absolute path validated with `is_dir()`;
+/// WSL instances store a Linux path inside their own distro, validated with
+/// `wsl_test -d` and used with a plain `cd` at launch. A Windows path picked
+/// for a WSL instance is translated with `wslpath` once, here, so the value
+/// saved is always in the launch-time form.
+fn normalize_tui_cwd(raw: Option<String>, distro: Option<&str>) -> Result<Option<String>, String> {
+    let cwd = std::env::current_dir().unwrap_or_default();
+    let target = crate::tui_cwd::parse_tui_cwd(raw.as_deref(), distro, &cwd)?;
+    match target {
+        crate::tui_cwd::TuiCwdTarget::Default => Ok(None),
+        crate::tui_cwd::TuiCwdTarget::Local(path) => {
+            if !path.exists() {
+                return Err(format!("目录不存在: {}", path.display()));
+            }
+            if !path.is_dir() {
+                return Err(format!("不是目录: {}", path.display()));
+            }
+            Ok(Some(path.to_string_lossy().to_string()))
+        }
+        crate::tui_cwd::TuiCwdTarget::Wsl(linux) => Ok(Some(linux)),
+        // Only reachable when the caller has a distro; `normalize_tui_cwd_blocking`
+        // maps it before validation, so this arm is a defensive error.
+        crate::tui_cwd::TuiCwdTarget::WslWindows(_) => {
+            Err("WSL 实例的 Windows 路径需要先转换为发行版内路径".to_string())
+        }
+    }
+}
+
+/// Async half of `set_instance_tui_cwd`: parses the input, translates a
+/// Windows path for WSL instances (once, at save time) and validates the
+/// directory inside the right runtime.
+async fn normalize_tui_cwd_blocking(
+    raw: Option<String>,
+    distro: Option<String>,
+) -> Result<Option<String>, String> {
+    let cwd = std::env::current_dir().unwrap_or_default();
+    let target = crate::wsl::run_blocking({
+        let raw = raw.clone();
+        let distro = distro.clone();
+        move || crate::tui_cwd::parse_tui_cwd(raw.as_deref(), distro.as_deref(), &cwd)
+    })
+    .await??;
+    match target {
+        crate::tui_cwd::TuiCwdTarget::Default => Ok(None),
+        crate::tui_cwd::TuiCwdTarget::Local(path) => {
+            let shown = path.display().to_string();
+            let is_dir = crate::wsl::run_blocking(move || path.exists() && path.is_dir()).await?;
+            if !is_dir {
+                return Err(format!("目录不存在: {shown}"));
+            }
+            crate::wsl::run_blocking(move || normalize_tui_cwd(raw, None)).await?
+        }
+        crate::tui_cwd::TuiCwdTarget::Wsl(linux) => {
+            let distro = distro.unwrap_or_default();
+            let probe = linux.clone();
+            if !crate::wsl::wsl_dir_exists(&distro, &probe).await {
+                return Err(format!(
+                    "发行版 {distro} 内不存在目录 {linux}，请确认路径正确（WSL 实例需填写发行版内的 Linux 路径）"
+                ));
+            }
+            Ok(Some(linux))
+        }
+        crate::tui_cwd::TuiCwdTarget::WslWindows(win) => {
+            let Some(distro) = distro else {
+                return Err("WSL 实例缺少发行版信息".to_string());
+            };
+            // The picker hands back a Windows path; translate it once so the
+            // stored value is the launch-time form (blocker 1 of the review).
+            let mapped = crate::wsl::to_wsl_path(&distro, &win).await?;
+            if !crate::wsl::wsl_dir_exists(&distro, &mapped).await {
+                return Err(format!(
+                    "发行版 {distro} 内不存在目录 {mapped}（由 {win} 映射而来），请重新选择"
+                ));
+            }
+            Ok(Some(mapped))
+        }
+    }
+}
+
+/// Sets an instance's TUI working directory (issue #97). Empty / whitespace-only
+/// input means "use DSH_HOME" (stored as `None`); see `normalize_tui_cwd`.
+#[tauri::command(rename_all = "snake_case")]
+pub async fn set_instance_tui_cwd(
+    state: State<'_, AppState>,
+    instance_id: String,
+    path: Option<String>,
+) -> Result<crate::config::DshInstance, String> {
+    // Resolve the instance's runtime first: a WSL instance validates and
+    // stores a Linux path, a local one a Windows path (issue #97 review).
+    let distro = {
+        let cfg = state.config.lock().unwrap();
+        let inst = cfg
+            .instances
+            .iter()
+            .find(|i| i.id == instance_id)
+            .ok_or_else(|| "实例不存在".to_string())?;
+        cfg.homes
+            .iter()
+            .find(|h| h.id == inst.home_id)
+            .and_then(|h| h.wsl.clone())
+    };
+    if let Some(d) = &distro {
+        if let Err(e) = crate::wsl::ensure_distro_running(&state, d).await {
+            crate::log_warn!("设置 TUI 工作目录前无法启动发行版 {d}: {e}");
+            return Err(format!("无法访问 WSL 发行版 {d}，暂时无法校验目录：{e}"));
+        }
+    }
+    // exists()/is_dir() and the in-distro probe are blocking: keep them off
+    // the UI thread, the same discipline wsl::run_blocking enforces elsewhere.
+    let path = normalize_tui_cwd_blocking(path, distro).await?;
+    let mut cfg = state.config.lock().unwrap();
+    let Some(inst) = cfg.instances.iter_mut().find(|i| i.id == instance_id) else {
+        return Err("实例不存在".to_string());
+    };
+    inst.tui_cwd = path;
     let updated = inst.clone();
     save_state(&state, &cfg)?;
     Ok(updated)
@@ -477,6 +617,26 @@ pub fn copy_instance(
         source.home_id.clone()
     };
 
+    // The stored working directory only fits the runtime of the source HOME,
+    // and a copy that creates a new HOME always creates a local one.
+    let src_wsl = cfg
+        .homes
+        .iter()
+        .find(|h| h.id == source.home_id)
+        .and_then(|h| h.wsl.as_deref());
+    let dst_wsl = cfg
+        .homes
+        .iter()
+        .find(|h| h.id == home_id)
+        .and_then(|h| h.wsl.as_deref());
+    let tui_cwd = crate::tui_cwd::cwd_for_copy(source.tui_cwd.as_deref(), src_wsl, dst_wsl);
+    if source.tui_cwd.is_some() && tui_cwd.is_none() {
+        crate::log_warn!(
+            "实例「{}」的 TUI 工作目录未随复制保留：目标 DSH_HOME 与原实例的运行时不匹配",
+            source.name
+        );
+    }
+
     let mut inst = DshInstance {
         id: new_id("i"),
         name,
@@ -487,6 +647,7 @@ pub fn copy_instance(
         last_profile: None,
         icon: source.icon.clone(),
         port: source.port,
+        tui_cwd,
     };
     // A local icon is stored per instance id; copy the file for the clone,
     // falling back to the launcher default when it cannot be carried over.
@@ -2334,5 +2495,111 @@ mod tests {
             "tail: {tail:?}"
         );
         std::fs::remove_dir_all(&root).ok();
+    }
+
+    // --- issue #97: TUI working directory normalization ---------------------
+
+    #[test]
+    fn normalize_tui_cwd_empty_means_dsh_home() {
+        for raw in [
+            None,
+            Some(String::new()),
+            Some("   ".to_string()),
+            Some("\t\n ".to_string()),
+        ] {
+            assert_eq!(normalize_tui_cwd(raw.clone(), None).unwrap(), None);
+            assert_eq!(normalize_tui_cwd(raw, Some("Debian")).unwrap(), None);
+        }
+    }
+
+    #[test]
+    fn normalize_tui_cwd_rejects_missing_and_non_directory() {
+        let root = unique_temp("tui-cwd");
+        std::fs::create_dir_all(&root).unwrap();
+
+        let missing = root.join("nope");
+        let err = normalize_tui_cwd(Some(missing.to_string_lossy().to_string()), None).unwrap_err();
+        assert!(err.contains("目录不存在"), "unexpected error: {err}");
+
+        let file = root.join("file.txt");
+        std::fs::write(&file, "x").unwrap();
+        let err = normalize_tui_cwd(Some(file.to_string_lossy().to_string()), None).unwrap_err();
+        assert!(err.contains("不是目录"), "unexpected error: {err}");
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn normalize_tui_cwd_stores_absolute_path_without_verbatim_prefix() {
+        let root = unique_temp("tui-cwd-abs");
+        std::fs::create_dir_all(&root).unwrap();
+
+        let stored = normalize_tui_cwd(Some(format!("  {}  ", root.display())), None)
+            .unwrap()
+            .expect("a real directory must be stored");
+        assert!(
+            std::path::Path::new(&stored).is_absolute(),
+            "stored path must be absolute: {stored}"
+        );
+        assert_eq!(stored, root.to_string_lossy());
+        // Issue #97 review: the Windows verbatim prefix must never be stored.
+        // It would put the TUI session in a different workspace bucket than
+        // the plain path, and would show up in the success toast.
+        assert!(
+            !stored.contains(r#"\\?\"#),
+            "stored path must not carry a verbatim prefix: {stored}"
+        );
+        // The same verbatim prefix pasted by hand is stripped at save time.
+        let verbatim = format!(r"\\?\{}", root.display());
+        let stored = normalize_tui_cwd(Some(verbatim), None).unwrap().unwrap();
+        assert_eq!(stored, root.to_string_lossy());
+
+        // A relative path hand-typed by the user is made absolute. The
+        // directory has to live under the *current* directory for the
+        // relative form to resolve: %TEMP% is on another drive in CI/Windows,
+        // and a strip_prefix() there never matches (issue #97 review).
+        let cwd = std::env::current_dir().expect("cargo test always has a cwd");
+        let rel_name = format!("dsh-tui-cwd-rel-{}", uuid::Uuid::new_v4());
+        let rel_dir = cwd.join(&rel_name);
+        std::fs::create_dir_all(&rel_dir).unwrap();
+        let stored_rel = normalize_tui_cwd(Some(rel_name.clone()), None)
+            .unwrap()
+            .expect("the relative temp dir exists");
+        assert_eq!(
+            std::path::Path::new(&stored_rel),
+            rel_dir.as_path(),
+            "a relative path must be stored as an absolute one under the cwd"
+        );
+        std::fs::remove_dir_all(&rel_dir).ok();
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// Issue #97 review (blocker 2): a WSL instance stores the *Linux* path
+    /// inside its own distro — a Windows `exists()` probe can never validate
+    /// that, so the value must pass through untouched.
+    #[test]
+    fn normalize_tui_cwd_keeps_wsl_linux_paths() {
+        assert_eq!(
+            normalize_tui_cwd(Some("/home/u/proj".to_string()), Some("Debian")).unwrap(),
+            Some("/home/u/proj".to_string())
+        );
+        assert_eq!(
+            normalize_tui_cwd(
+                Some(r"\\wsl$\Debian\home\u\proj".to_string()),
+                Some("Debian")
+            )
+            .unwrap(),
+            Some("/home/u/proj".to_string())
+        );
+        // A Linux path on a *local* instance is a mistake, not a relative
+        // path: report it instead of silently resolving it under the cwd.
+        // POSIX hosts are excluded: there "/home/u/proj" is an ordinary
+        // absolute path (that is the CI Linux runner's own layout).
+        #[cfg(windows)]
+        {
+            let err = normalize_tui_cwd(Some("/home/u/proj".to_string()), None).unwrap_err();
+            assert!(err.contains("Windows 路径"), "unexpected error: {err}");
+        }
     }
 }

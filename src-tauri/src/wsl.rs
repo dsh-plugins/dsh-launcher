@@ -59,12 +59,41 @@ pub async fn wsl_output(distro: &str, argv: &[String]) -> Result<String, String>
 }
 
 /// Tests a path inside the distro (`test -e` / `-f` / `-d`).
+///
+/// Note the difference from `wsl_dir_exists`: this runs `test` as a bare argv
+/// element, so WSL resolves it through the distro PATH *plus* the Windows PATH
+/// (`appendWindowsPath` is on by default). A Windows `test.exe` earlier in
+/// that PATH wins and the probe silently answers "false" (observed on a host
+/// with Git for Windows installed). Prefer `wsl_dir_exists` for directory
+/// checks; this stays for the `-e`/`-f`/`-s` call sites it already serves.
 pub async fn wsl_test(distro: &str, flag: &str, path: &str) -> bool {
     wsl_cmd(distro, &["test".into(), flag.into(), path.into()])
         .output()
         .await
         .map(|o| o.status.success())
         .unwrap_or(false)
+}
+
+/// Whether `path` is a directory inside `distro` (issue #97).
+///
+/// Runs the shell builtin through `bash -lc` with the path quoted: a bare
+/// argv `test` can be shadowed by a Windows `test.exe` on the interop PATH,
+/// which reports every in-distro path as missing. The builtin is the same one
+/// the launch script's `cd` uses, so the check matches the real behavior.
+pub async fn wsl_dir_exists(distro: &str, path: &str) -> bool {
+    wsl_bash(distro, &dir_probe_script(path))
+        .output()
+        .await
+        .map(|o| o.status.success())
+        .unwrap_or(false)
+}
+
+/// The shell line that probes a directory inside the distro.
+///
+/// Exposed (and unit-tested) like `wslpath_script`: quoting the path is what
+/// keeps a directory with spaces from being read as extra `test` operands.
+pub fn dir_probe_script(path: &str) -> String {
+    format!("test -d {}", sh_quote(path))
 }
 
 /// Maps a Linux path inside a distro to its `\\wsl$\` UNC path so plain
@@ -411,6 +440,62 @@ pub fn env_exports(env: &[(String, String)]) -> String {
         .collect::<Vec<_>>()
         .join("; ")
 }
+
+/// Converts a Windows path to a Linux path inside `distro` (issue #97).
+///
+/// Returns the Linux-style path (e.g. `C:\Users\foo` → `/mnt/c/Users/foo`).
+/// Requires the distro to be running.
+///
+/// The path goes through `bash -lc` **quoted**, never as a bare argv element:
+/// WSL's Windows→Linux argument hand-off drops the backslashes of a bare
+/// argument (and does not report it), so
+/// `wsl.exe -d D -- wslpath -u C:\Users\Administrator` reaches `wslpath` as
+/// `C:UsersAdministrator` and fails for every path without spaces. Quoting in
+/// the shell is also what makes paths with spaces and quotes deterministic.
+pub async fn to_wsl_path(distro: &str, win_path: &str) -> Result<String, String> {
+    let script = wslpath_script(win_path);
+    let out = wsl_bash(distro, &script)
+        .output()
+        .await
+        .map_err(|e| format!("wsl.exe 执行失败: {e}"))?;
+    if !out.status.success() {
+        let err = String::from_utf8_lossy(&out.stderr).trim().to_string();
+        return Err(if err.is_empty() {
+            format!("wslpath 无法把 {win_path} 映射到发行版 {distro}")
+        } else {
+            format!("wslpath 无法把 {win_path} 映射到发行版 {distro}: {err}")
+        });
+    }
+    parse_wslpath_output(&String::from_utf8_lossy(&out.stdout))
+        .map_err(|e| format!("{e}（无法映射 {win_path} 到发行版 {distro}）"))
+}
+
+/// The shell line that maps a Windows path inside the distro.
+///
+/// Exposed (and unit-tested) because the quoting is the whole fix: as a bare
+/// argv element the path loses its backslashes between wsl.exe and wslpath.
+pub fn wslpath_script(win_path: &str) -> String {
+    format!("wslpath -u -- {}", sh_quote(win_path))
+}
+
+/// Extracts the mapped path from `wslpath`'s stdout.
+///
+/// A login shell may print a banner before the result, so the last non-empty
+/// line wins; anything that is not an absolute Linux path is an error instead
+/// of a value that would later be `cd`-ed into (and fail silently).
+pub fn parse_wslpath_output(stdout: &str) -> Result<String, String> {
+    let mapped = stdout
+        .lines()
+        .map(str::trim)
+        .rfind(|l| !l.is_empty())
+        .unwrap_or("")
+        .to_string();
+    if !mapped.starts_with('/') {
+        return Err(format!("wslpath 返回了无法使用的路径: {mapped:?}"));
+    }
+    Ok(mapped)
+}
+
 /// The bash wrapper used to run an instance inside WSL: prints the inner PID
 /// marker, then execs node with the DSH CLI. Everything is single-quoted so
 /// env values and paths with spaces are safe.
@@ -459,6 +544,70 @@ mod tests {
         assert_eq!(decode_distro_list(&utf16), vec!["Ubuntu", "Debian"]);
         assert_eq!(decode_distro_list(b"Ubuntu\n"), vec!["Ubuntu"]);
         assert_eq!(decode_distro_list(b""), Vec::<String>::new());
+    }
+
+    /// issue #97 review: the probe has to hand the path to the shell as one
+    /// quoted word, or a directory with spaces is read as extra `test`
+    /// operands and every such path reads as missing.
+    #[test]
+    fn dir_probe_quotes_the_path_for_the_shell() {
+        let script = dir_probe_script("/home/u/my project");
+        assert!(
+            script.contains("'/home/u/my project'"),
+            "the path must stay one quoted word: {script}"
+        );
+        let quoted = dir_probe_script("/home/u/it's");
+        assert!(
+            quoted.contains(r"'\''"),
+            "an embedded quote must be escaped, not end the word: {quoted}"
+        );
+    }
+
+    /// issue #97 review (blocker 1): the path must reach `wslpath` quoted.
+    /// As a bare argv element WSL drops the Windows backslashes, so every
+    /// ordinary project path failed and the session silently used DSH_HOME.
+    #[test]
+    fn wslpath_script_quotes_the_windows_path() {
+        for win in [
+            r"C:\Users\Administrator",
+            r"D:\Projects\repos\dsh-plugins",
+            r"C:\Users\Administrator\my project",
+            r"C:\it's\quoted",
+        ] {
+            let script = wslpath_script(win);
+            assert_eq!(
+                script,
+                format!("wslpath -u -- {}", sh_quote(win)),
+                "the path must be single-quoted, not passed bare"
+            );
+            // What bash actually hands to wslpath is exactly the input.
+            let quoted = script
+                .strip_prefix("wslpath -u -- ")
+                .expect("the mapping line keeps its argv shape");
+            assert!(quoted.starts_with('\''), "must be quoted: {quoted}");
+            assert!(
+                quoted.contains(win) || quoted.contains(&win.replace('\'', r"'\''")),
+                "the raw path must survive quoting: {quoted}"
+            );
+        }
+    }
+
+    /// Only a real Linux path may be used as a `cd` target: a banner line or
+    /// empty output must not become the session's working directory.
+    #[test]
+    fn wslpath_output_must_be_an_absolute_linux_path() {
+        assert_eq!(
+            parse_wslpath_output("/mnt/d/Projects/repos\n").unwrap(),
+            "/mnt/d/Projects/repos"
+        );
+        // A login-shell banner may precede the answer.
+        assert_eq!(
+            parse_wslpath_output("Welcome to Debian!\n/mnt/c/Users/u\n").unwrap(),
+            "/mnt/c/Users/u"
+        );
+        assert!(parse_wslpath_output("").is_err());
+        assert!(parse_wslpath_output("wslpath: C:UsersAdministrator").is_err());
+        assert!(parse_wslpath_output("C:\\Users\\u").is_err());
     }
 
     #[test]

@@ -234,6 +234,60 @@ async fn start_tui_session_inner(
 
     let env = crate::process::build_env(&cfg, instance_id)?;
 
+    // Resolve the target working directory (issue #97): the instance's
+    // configured `tui_cwd`, or DSH_HOME as the unchanged default.
+    //
+    // The stored value doubles as dsh-tui's workspace target — that exact
+    // string is what groups sessions under the project directory — so it is
+    // kept as the plain path the user picked (never the Windows `\\?\` verbatim
+    // form; `tui_cwd::parse_tui_cwd` strips it at save time). Local instances
+    // use it as the PTY cwd; WSL instances store a Linux path inside their own
+    // distro and `cd` into it directly, no `wslpath` at launch.
+    //
+    // A configured directory that cannot be honoured is an ERROR, not a
+    // silent DSH_HOME fallback: the user asked for a specific project
+    // directory, and starting elsewhere would look like success while the
+    // session lands in the wrong bucket (review of issue #97).
+    let custom_cwd = inst
+        .tui_cwd
+        .as_deref()
+        .map(str::trim)
+        .filter(|c| !c.is_empty());
+    let target_cwd_path = match custom_cwd {
+        Some(custom) => std::path::PathBuf::from(custom),
+        None => home_path.clone(),
+    };
+    let target_cwd_linux = match (&wsl_distro, custom_cwd) {
+        (Some(distro), Some(custom)) => {
+            let linux = crate::tui_cwd::wsl_launch_cwd(custom, distro)?;
+            if !crate::wsl::wsl_dir_exists(distro, &linux).await {
+                let err = format!(
+                    "TUI 工作目录不可用：发行版 {distro} 内不存在目录 {linux}。请改为填写该发行版内的 Linux 路径，或清空以使用 DSH_HOME"
+                );
+                crate::log_warn!("{err}");
+                return Err(err);
+            }
+            linux
+        }
+        _ => linux_home.to_string_lossy().to_string(),
+    };
+    if let (None, Some(custom)) = (&wsl_distro, custom_cwd) {
+        // Local instances spawn the PTY in this directory; fail before the
+        // spawn so the terminal window does not flash and close. A network
+        // share can block the filesystem call, so it stays off the async
+        // worker (the same discipline `wsl::run_blocking` enforces).
+        let probe = custom.to_string();
+        let is_dir =
+            crate::wsl::run_blocking(move || std::path::Path::new(&probe).is_dir()).await?;
+        if !is_dir {
+            let err = format!(
+                "TUI 工作目录不可用：目录不存在或无权限访问：{custom}。请重新选择目录，或清空以使用 DSH_HOME"
+            );
+            crate::log_warn!("{err}");
+            return Err(err);
+        }
+    }
+
     let pty_system = native_pty_system();
     let pair = pty_system
         .openpty(PtySize {
@@ -259,22 +313,40 @@ async fn start_tui_session_inner(
         // on wsl.exe, and WSL does not forward the Windows environment into the
         // distro (that needs WSLENV), so DSH_HOME would never reach the CLI
         // (issue #49 S2). `launch_script` already does the same.
+        // Issue #97: cd into the configured working directory. The workspace
+        // target is handed to dsh-tui as a positional argument only when the
+        // user configured one — an unconfigured instance must keep the old
+        // behavior (spawn cwd decides the session root) untouched.
+        let workspace_arg = match custom_cwd {
+            Some(_) => format!(" {}", crate::wsl::sh_quote(&target_cwd_linux)),
+            None => String::new(),
+        };
+        // A failed `cd` must not leave the window open on a dead shell:
+        // `wsl_cd_guard` prints the reason and exits non-zero.
         let script = format!(
-            "{env}; export PATH={0}:\"$PATH\"; cd {1} && exec {2} {3} --profile {4}",
+            "{env}; export PATH={0}:\"$PATH\"; {1}; exec {2} {3} --profile {4}{5}",
             crate::wsl::sh_quote(&root.node_bin_dir()),
-            crate::wsl::sh_quote(&linux_home.to_string_lossy()),
+            wsl_cd_guard(&target_cwd_linux),
             crate::wsl::sh_quote(&root.node_exe()),
             crate::wsl::sh_quote(&bin.to_string_lossy()),
             crate::wsl::sh_quote(&profile),
+            workspace_arg,
             env = crate::wsl::env_exports(&env),
         );
         cmd.args(["-d", distro, "--", "bash", "-lc", &script]);
         cmd.cwd(std::env::temp_dir().as_os_str());
     } else {
+        // Local: the PTY starts in the target working directory. Only a
+        // configured path is also passed as dsh-tui's positional workspace
+        // target; passing it unconditionally would change how an unconfigured
+        // instance resolves its session root (issue #97).
         cmd.arg(crate::process::version_bin(&version_dir));
         cmd.arg("--profile");
         cmd.arg(&profile);
-        cmd.cwd(home_path.as_os_str());
+        if custom_cwd.is_some() {
+            cmd.arg(target_cwd_path.as_os_str());
+        }
+        cmd.cwd(target_cwd_path.as_os_str());
         for (k, v) in &env {
             cmd.env(k, v);
         }
@@ -614,6 +686,21 @@ pub async fn resize_tui_session(
         .map_err(|e| format!("调整 TUI 大小失败: {e}"))
 }
 
+/// `cd <cwd>` for the WSL launcher wrapper, aborting the wrapper on failure.
+///
+/// A failed `cd` must not leave the terminal window open on a dead shell, and
+/// it must not fall back to another directory either: the launch would then
+/// look successful while the session landed outside the configured project.
+/// The reason goes to stderr and the wrapper exits non-zero, so the failure
+/// reaches the window and the log.
+fn wsl_cd_guard(cwd: &str) -> String {
+    format!(
+        "cd {0} || {{ echo {1} >&2; exit 1; }}",
+        crate::wsl::sh_quote(cwd),
+        crate::wsl::sh_quote(&format!("无法进入 TUI 工作目录 {cwd}:"))
+    )
+}
+
 #[cfg(test)]
 mod tests {
     #[test]
@@ -626,6 +713,27 @@ mod tests {
     #[test]
     fn base64_decode_rejects_garbage() {
         assert!(super::base64_decode("not-base64!").is_err());
+    }
+
+    /// issue #97 review: a failed `cd` must abort the wrapper instead of
+    /// leaving the window on a dead shell or silently starting elsewhere, and
+    /// the target must stay a single quoted word for the shell.
+    #[test]
+    fn cd_guard_quotes_the_target_and_aborts_on_failure() {
+        let guard = super::wsl_cd_guard("/home/u/my project");
+        assert!(
+            guard.contains("'/home/u/my project'"),
+            "the target must stay one quoted word: {guard}"
+        );
+        assert!(
+            guard.contains("exit 1"),
+            "a failed cd must abort the wrapper: {guard}"
+        );
+        let quoted = super::wsl_cd_guard("/home/u/it's");
+        assert!(
+            quoted.contains(r"'\''"),
+            "an embedded quote must be escaped, not end the word: {quoted}"
+        );
     }
 
     /// issue #49 G2: \\wsl$\ is unreachable while the distro is stopped, so

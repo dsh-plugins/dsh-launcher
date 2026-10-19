@@ -55,6 +55,12 @@ pub struct DshInstance {
     /// a random free port (`--port 0`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub port: Option<u16>,
+    /// TUI instance working directory (issue #97): a plain absolute path
+    /// (never the Windows `\\?\` verbatim form); `None` uses DSH_HOME, which
+    /// is also the default for configs written before this field existed.
+    /// Drives both the PTY spawn cwd and dsh-tui's workspace target.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tui_cwd: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
