@@ -49,7 +49,13 @@ onMounted(async () => {
   applyTheme(store.settings.theme || 'system')
   themeMedia.addEventListener('change', onSystemThemeChange)
   // If Node.js is missing, guide the user to install it before anything else.
-  if (!store.runtime?.node?.installed && route.name !== 'setup') {
+  // A managed runtime that exists but cannot work (issue #101: pre-0.2.7
+  // extraction dropped exec bits and npm symlinks) routes there too — the
+  // system `node` may still run, so `installed` alone does not catch it.
+  if (
+    (!store.runtime?.node?.installed || store.runtime?.managed_node_broken) &&
+    route.name !== 'setup'
+  ) {
     router.push({ name: 'setup' })
   }
   await setupModpackEntryPoints()

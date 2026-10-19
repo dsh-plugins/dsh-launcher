@@ -526,6 +526,11 @@ pub async fn delete_instance(
     if cfg.settings.last_instance_id.as_deref() == Some(id.as_str()) {
         cfg.settings.last_instance_id = None;
     }
+    // A deleted instance must not linger in the autostart list: the boot path
+    // would skip it, but the settings page would keep showing a dangling id.
+    cfg.settings
+        .autostart_instances
+        .retain(|a| a.instance_id != id);
     save_state(&state, &cfg)
 }
 
@@ -1705,6 +1710,29 @@ pub fn update_settings(
             channel @ ("dev" | "release") => cfg.settings.update_channel = channel.to_string(),
             _ => return Err(format!("无效的更新渠道: {v}")),
         }
+    }
+    if let Some(v) = settings.silent_autostart {
+        cfg.settings.silent_autostart = v;
+    }
+    if let Some(v) = settings.autostart_open_windows {
+        cfg.settings.autostart_open_windows = v;
+    }
+    if let Some(v) = settings.autostart_instances {
+        // Only instances that still exist may be launched at startup; a stale
+        // id would otherwise turn every boot into a failed launch.
+        let known: std::collections::BTreeSet<&str> =
+            cfg.instances.iter().map(|i| i.id.as_str()).collect();
+        cfg.settings.autostart_instances = v
+            .into_iter()
+            .filter(|a| known.contains(a.instance_id.as_str()))
+            .map(|a| crate::config::AutostartInstance {
+                instance_id: a.instance_id,
+                profile: a
+                    .profile
+                    .map(|p| p.trim().to_string())
+                    .filter(|p| !p.is_empty()),
+            })
+            .collect();
     }
     crate::proxy::sync_from_settings(&cfg.settings);
     let out = cfg.settings.clone();

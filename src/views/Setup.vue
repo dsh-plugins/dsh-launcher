@@ -30,6 +30,20 @@ async function oneClickInstall() {
   }
 }
 
+/** Issue #101: the managed runtime exists but an older launcher extracted it
+ *  without exec bits / npm symlinks. Reinstall over it instead of asking the
+ *  user to repair the tree by hand. */
+const managedBroken = computed(() => store.runtime?.managed_node_broken ?? false)
+
+async function repairManagedNode() {
+  try {
+    nodeTaskId.value = await api.repairManagedNode()
+    await store.refreshTasks()
+  } catch (e) {
+    Message.error(String(e))
+  }
+}
+
 // Install finished: re-probe the runtime (pnpm is bootstrapped by the task)
 // and enter the launcher when everything is green.
 watch(
@@ -49,7 +63,13 @@ watch(
 
 const nodeOk = computed(() => store.runtime?.node?.installed ?? false)
 const pnpmOk = computed(() => store.runtime?.pnpm?.installed ?? false)
-const allOk = computed(() => nodeOk.value && pnpmOk.value)
+/**
+ * Everything green — including the managed runtime being usable. The system
+ * `node` can run while the launcher's own tree is broken (issue #101), so
+ * `nodeOk` alone would show "all ready" next to the repair card and let
+ * "enter app" bypass the repair.
+ */
+const allOk = computed(() => nodeOk.value && pnpmOk.value && !managedBroken.value)
 
 const nodeVersion = computed(() => store.runtime?.node?.version ?? '')
 const pnpmVersion = computed(() => store.runtime?.pnpm?.version ?? '')
@@ -87,6 +107,33 @@ async function recheck() {
         <span class="tool-name">pnpm</span>
         <a-tag v-if="pnpmOk" color="green">{{ t('setup.installed', { v: pnpmVersion }) }}</a-tag>
         <a-tag v-else color="red">{{ t('setup.missing') }}</a-tag>
+      </div>
+
+      <!-- Issue #101: a managed runtime that exists but cannot work. Reinstall
+           over it; a bare "missing" report would hide the broken state. -->
+      <div v-if="managedBroken" class="guide-block">
+        <h4>
+          {{ t('setup.repairNodeTitle') }}
+          <HintIcon :content="t('setup.repairNodeDesc')" />
+        </h4>
+        <a-button
+          type="primary"
+          size="large"
+          long
+          :loading="installing"
+          :disabled="installing"
+          @click="repairManagedNode"
+        >
+          {{ t('setup.repairNode') }}
+        </a-button>
+        <a-progress
+          v-if="installing && nodeTask"
+          class="one-click-progress"
+          :percent="nodeTask.percent / 100"
+        />
+        <p v-if="installing && nodeTask?.message" class="one-click-message">
+          {{ nodeTask.message }}
+        </p>
       </div>
 
       <!-- Guidance -->

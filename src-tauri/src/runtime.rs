@@ -15,6 +15,12 @@ pub struct ToolStatus {
 pub struct RuntimeStatus {
     pub node: ToolStatus,
     pub pnpm: ToolStatus,
+    /// Issue #101: the managed runtime in `<data>/tools/node` is present but
+    /// incomplete (files lost their executable bit, `bin/npm` etc. missing).
+    /// Such a tree was produced by launchers up to 0.2.6, whose tar extraction
+    /// dropped modes and symlinks; reinstalling is the fix and the user needs
+    /// a discoverable way to trigger it.
+    pub managed_node_broken: bool,
 }
 
 async fn probe(program: &str) -> ToolStatus {
@@ -37,10 +43,25 @@ async fn probe(program: &str) -> ToolStatus {
 }
 
 #[tauri::command]
-pub async fn get_runtime_status(_state: State<'_, AppState>) -> Result<RuntimeStatus, String> {
+pub async fn get_runtime_status(state: State<'_, AppState>) -> Result<RuntimeStatus, String> {
     let node = probe("node").await;
     let pnpm = probe("pnpm").await;
-    Ok(RuntimeStatus { node, pnpm })
+    let data_dir = state.data_dir.clone();
+    // The probe itself cannot fail (it reads metadata); only the blocking
+    // thread can, and treating that as "not broken" is the safe direction —
+    // but it must still be logged rather than silently swallowed.
+    let broken = match crate::wsl::run_blocking(move || managed_node_incomplete(&data_dir)).await {
+        Ok(broken) => broken,
+        Err(e) => {
+            crate::log_warn!("检查内置 Node.js 运行时完整性失败: {e}");
+            false
+        }
+    };
+    Ok(RuntimeStatus {
+        node,
+        pnpm,
+        managed_node_broken: broken,
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -73,6 +94,51 @@ fn local_node_bin_dir(node_dir: &Path) -> PathBuf {
     } else {
         node_dir.join("bin")
     }
+}
+
+/// The managed runtime's npm entry point. It is a regular file on Windows
+/// (`npm.cmd`) and a `bin/npm` symlink into `lib/node_modules` on unix.
+fn managed_npm_present(node_dir: &Path) -> bool {
+    let bin = local_node_bin_dir(node_dir);
+    if cfg!(windows) {
+        bin.join("npm.cmd").is_file() || bin.join("npm").is_file()
+    } else {
+        // A broken extraction left the file behind without its exec bit; the
+        // symlink itself is what earlier launchers dropped entirely.
+        bin.join("npm").symlink_metadata().is_ok()
+    }
+}
+
+/// Whether the managed runtime exists but cannot work (issue #101).
+///
+/// Launchers up to 0.2.6 unpacked the dist tarball without applying header
+/// modes or recreating symlinks, so `bin/node` landed non-executable and
+/// `bin/npm`/`npx`/`corepack` were missing. That fixed extractor cannot heal
+/// an already-extracted tree, and the user has no reason to delete it by hand,
+/// so startup probes for the damage and offers a reinstall.
+///
+/// Only a tree that exists is judged: a missing managed runtime is the normal
+/// "not installed yet" case and is not reported as broken.
+fn managed_node_incomplete(data_dir: &Path) -> bool {
+    let node_dir = local_node_dir(data_dir);
+    let exe = local_node_exe(&node_dir);
+    if exe.symlink_metadata().is_err() {
+        return false;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let executable = exe
+            .metadata()
+            .map(|m| m.permissions().mode() & 0o111 != 0)
+            .unwrap_or(false);
+        if !executable {
+            return true;
+        }
+    }
+    // The `lib/node_modules/npm` tree ships with Node, so a missing npm entry
+    // means the extraction dropped it even if `node` itself runs.
+    !managed_npm_present(&node_dir)
 }
 
 /// Appends the managed Node.js bin dir to this process's PATH when a local
@@ -408,12 +474,19 @@ fn extract_node_archive(archive: &Path, node_dir: &Path) -> Result<(), String> {
 /// downloads the latest LTS from the official dist (mirror fallback),
 /// unpacks it into `<data>/tools/node`, puts it on PATH, then bootstraps the
 /// pinned pnpm through the bundled npm.
+///
+/// `repair` (issue #101) reinstalls over a managed runtime that exists but is
+/// incomplete. Without it a working `node` on PATH makes the install a no-op,
+/// which is exactly the state a pre-0.2.7 extraction leaves behind (node runs,
+/// npm/npx symlinks are gone) — the user could never recover in-app.
 #[tauri::command]
 pub async fn start_install_node_task(
     app: AppHandle,
     state: State<'_, AppState>,
+    repair: Option<bool>,
 ) -> Result<String, String> {
-    if probe("node").await.installed {
+    let repair = repair.unwrap_or(false);
+    if !repair && probe("node").await.installed {
         return Err("系统已安装 Node.js".to_string());
     }
     {
@@ -427,6 +500,11 @@ pub async fn start_install_node_task(
         }) {
             return Err("Node.js 安装任务已在进行".to_string());
         }
+    }
+    if repair && !managed_node_incomplete(&state.data_dir) {
+        // A repair was requested for a runtime that is already complete:
+        // silently reinstalling would replace a working tree.
+        return Err("内置 Node.js 运行时不完整的状态已不成立，无需修复".to_string());
     }
 
     let task = crate::tasks::TaskInfo {
@@ -569,13 +647,15 @@ async fn do_install_node(
 // tests
 // ---------------------------------------------------------------------------
 
-// The change only touches the tar branch, which is dead code on Windows
-// (dist archives for Windows are zips), so the tests are unix-only and the
-// CI linux/macos legs exercise them.
-#[cfg(all(test, unix))]
+// Tests cover two areas: the tar extraction (unix-only — Windows unpacks
+// zips) and the managed-runtime integrity probe (#101), which is meaningful on
+// every platform. The module stays cross-platform; individual extraction tests
+// carry their own `#[cfg(unix)]`.
+#[cfg(test)]
 mod tests {
     use super::*;
 
+    #[cfg(unix)]
     fn unique_temp(tag: &str) -> PathBuf {
         std::env::temp_dir().join(format!("dsh-runtime-test-{tag}-{}", uuid::Uuid::new_v4()))
     }
@@ -583,6 +663,8 @@ mod tests {
     /// Builds a minimal node-dist-shaped tar.gz: a root directory, one
     /// executable file, one in-tree symlink, one escaping symlink. Written to
     /// a temp file; the caller gets (archive, node_dir, temp_root).
+    /// Only the unix tar branch is exercised (Windows unpacks zips).
+    #[cfg(unix)]
     fn build_dist_tarball(tag: &str) -> (PathBuf, PathBuf, PathBuf) {
         let root = unique_temp(tag);
         std::fs::create_dir_all(&root).unwrap();
@@ -634,6 +716,7 @@ mod tests {
         (archive, node_dir, root)
     }
 
+    #[cfg(unix)]
     #[test]
     fn extract_tar_unpacks_regular_files_on_every_platform() {
         let (archive, node_dir, root) = build_dist_tarball("basic");
@@ -683,5 +766,66 @@ mod tests {
             .symlink_metadata()
             .is_err());
         std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// Lays out a managed runtime the way the pre-0.2.7 extractor left it:
+    /// `node` written but not executable, no `bin/npm` symlink.
+    #[cfg(unix)]
+    fn broken_managed_tree(tag: &str) -> PathBuf {
+        use std::os::unix::fs::PermissionsExt;
+        let data_dir =
+            std::env::temp_dir().join(format!("dsh-runtime-broken-{tag}-{}", uuid::Uuid::new_v4()));
+        let node_dir = local_node_dir(&data_dir);
+        std::fs::create_dir_all(node_dir.join("bin")).unwrap();
+        let exe = local_node_exe(&node_dir);
+        std::fs::write(&exe, "#!/bin/sh\necho node\n").unwrap();
+        std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(0o644)).unwrap();
+        data_dir
+    }
+
+    /// Issue #101: an extraction that dropped the exec bit must be reported as
+    /// incomplete even though the file exists, so the UI can offer a repair.
+    #[cfg(unix)]
+    #[test]
+    fn managed_tree_without_exec_bit_is_incomplete() {
+        let data_dir = broken_managed_tree("mode");
+        assert!(managed_node_incomplete(&data_dir));
+        std::fs::remove_dir_all(&data_dir).ok();
+    }
+
+    /// Issue #101: `node` may be executable while `bin/npm` (a symlink in the
+    /// dist tarball) is missing — also incomplete.
+    #[cfg(unix)]
+    #[test]
+    fn managed_tree_without_npm_symlink_is_incomplete() {
+        use std::os::unix::fs::PermissionsExt;
+        let data_dir = broken_managed_tree("npm");
+        let node_dir = local_node_dir(&data_dir);
+        std::fs::set_permissions(
+            local_node_exe(&node_dir),
+            std::fs::Permissions::from_mode(0o755),
+        )
+        .unwrap();
+        assert!(managed_node_incomplete(&data_dir));
+        // A complete tree (exec bit plus the npm symlink) is not reported.
+        std::fs::create_dir_all(node_dir.join("lib/node_modules/npm/bin")).unwrap();
+        std::fs::write(node_dir.join("lib/node_modules/npm/bin/npm-cli.js"), "").unwrap();
+        std::os::unix::fs::symlink(
+            "../lib/node_modules/npm/bin/npm-cli.js",
+            node_dir.join("bin/npm"),
+        )
+        .unwrap();
+        assert!(!managed_node_incomplete(&data_dir));
+        std::fs::remove_dir_all(&data_dir).ok();
+    }
+
+    /// A runtime that was never installed is "missing", not "broken": the
+    /// repair entry point must stay hidden in that case.
+    #[test]
+    fn absent_managed_tree_is_not_reported_broken() {
+        let data_dir =
+            std::env::temp_dir().join(format!("dsh-runtime-absent-{}", uuid::Uuid::new_v4()));
+        assert!(!managed_node_incomplete(&data_dir));
+        std::fs::remove_dir_all(&data_dir).ok();
     }
 }

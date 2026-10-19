@@ -94,6 +94,20 @@ export interface LauncherSettings {
   update_channel: 'dev' | 'release'
   /** Versions the user chose "never remind" for on the update notice window. */
   update_suppressed: string[]
+  /** Start hidden in the tray when the OS autostart entry launched the
+   * launcher (issue #100). Manual launches always show the window. */
+  silent_autostart: boolean
+  /** Instances started in the background after an autostart launch (issue #100). */
+  autostart_instances: AutostartInstance[]
+  /** Open each auto-started instance's window, or leave it headless (#100). */
+  autostart_open_windows: boolean
+}
+
+/** One instance started automatically after an OS autostart launch (#100). */
+export interface AutostartInstance {
+  instance_id: string
+  /** Profile to launch; omitted = the instance's default profile. */
+  profile?: string | null
 }
 
 /** UI theme: explicit light/dark, or follow the OS color scheme. */
@@ -207,6 +221,11 @@ export interface ToolStatus {
 export interface RuntimeStatus {
   node: ToolStatus
   pnpm: ToolStatus
+  /**
+   * The managed runtime exists but is incomplete (pre-0.2.7 extraction dropped
+   * exec bits and npm symlinks, issue #101): offer a repair reinstall.
+   */
+  managed_node_broken: boolean
 }
 
 /** `queued`: waiting for another operation on the same profile to finish. */

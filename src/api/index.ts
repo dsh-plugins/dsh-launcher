@@ -131,7 +131,7 @@ function seedDb(): MockDb {
       minimize_to_tray: true,
       autostart: false,
       last_instance_id: 'i-main',
-      news_source: 'https://gist.githubusercontent.com/Gu-ZT/f08daa33afb82f4b375e604039b92742/raw/DSH_NEWS.md',
+      news_source: 'https://dsh-plug.in/api/news.md',
       theme: 'system',
       log_level: 'info',
       skill_repos: ['https://github.com/Gu-ZT/skills'],
@@ -152,6 +152,9 @@ function seedDb(): MockDb {
       last_link_root: null,
       update_channel: 'dev',
       update_suppressed: [],
+      silent_autostart: false,
+      autostart_instances: [],
+      autostart_open_windows: true,
     },
     running: {},
     mcp: {},
@@ -178,6 +181,9 @@ function loadDb(): MockDb {
       db.settings.plugin_sources = db.settings.plugin_sources ?? seedDb().settings.plugin_sources
       db.settings.update_channel = db.settings.update_channel ?? 'dev'
       db.settings.update_suppressed = db.settings.update_suppressed ?? []
+      db.settings.silent_autostart = db.settings.silent_autostart ?? false
+      db.settings.autostart_instances = db.settings.autostart_instances ?? []
+      db.settings.autostart_open_windows = db.settings.autostart_open_windows ?? true
       db.mcp = db.mcp ?? {}
       db.providers = db.providers ?? {}
       db.credentials = db.credentials ?? {}
@@ -619,6 +625,7 @@ async function mockCall<T>(cmd: string, args?: Record<string, unknown>): Promise
       const mockRuntime: RuntimeStatus = {
         node: { installed: true, version: 'v22.14.0', path: null },
         pnpm: { installed: true, version: '9.15.4', path: null },
+        managed_node_broken: false,
       }
       return mockRuntime as T
     }
@@ -1787,6 +1794,11 @@ export const api = {
 
   /** Starts the one-click Node.js install background task (issue #23). */
   startInstallNodeTask: () => call<string>('start_install_node_task'),
+  /**
+   * Reinstalls over a managed runtime that exists but is incomplete (issue
+   * #101). Refused by the backend when the runtime is already complete.
+   */
+  repairManagedNode: () => call<string>('start_install_node_task', { repair: true }),
   /** Checks GitHub for a newer launcher release on the given channel. */
   checkLauncherUpdate: (channel: 'dev' | 'release' = 'dev') =>
     call<LauncherUpdateInfo>('check_launcher_update', { channel }),
