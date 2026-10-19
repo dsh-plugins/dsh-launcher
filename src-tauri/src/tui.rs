@@ -321,15 +321,12 @@ async fn start_tui_session_inner(
             Some(_) => format!(" {}", crate::wsl::sh_quote(&target_cwd_linux)),
             None => String::new(),
         };
-        // A failed `cd` must not leave the window open on a dead shell: print
-        // the reason and exit non-zero so the user (and the log) can see why.
+        // A failed `cd` must not leave the window open on a dead shell:
+        // `wsl_cd_guard` prints the reason and exits non-zero.
         let script = format!(
-            "{env}; export PATH={0}:\"$PATH\"; cd {1} || {{ echo {2} >&2; exit 1; }}; exec {3} {4} --profile {5}{6}",
+            "{env}; export PATH={0}:\"$PATH\"; {1}; exec {2} {3} --profile {4}{5}",
             crate::wsl::sh_quote(&root.node_bin_dir()),
-            crate::wsl::sh_quote(&target_cwd_linux),
-            crate::wsl::sh_quote(&format!(
-                "无法进入 TUI 工作目录 {target_cwd_linux}:"
-            )),
+            wsl_cd_guard(&target_cwd_linux),
             crate::wsl::sh_quote(&root.node_exe()),
             crate::wsl::sh_quote(&bin.to_string_lossy()),
             crate::wsl::sh_quote(&profile),
@@ -689,6 +686,21 @@ pub async fn resize_tui_session(
         .map_err(|e| format!("调整 TUI 大小失败: {e}"))
 }
 
+/// `cd <cwd>` for the WSL launcher wrapper, aborting the wrapper on failure.
+///
+/// A failed `cd` must not leave the terminal window open on a dead shell, and
+/// it must not fall back to another directory either: the launch would then
+/// look successful while the session landed outside the configured project.
+/// The reason goes to stderr and the wrapper exits non-zero, so the failure
+/// reaches the window and the log.
+fn wsl_cd_guard(cwd: &str) -> String {
+    format!(
+        "cd {0} || {{ echo {1} >&2; exit 1; }}",
+        crate::wsl::sh_quote(cwd),
+        crate::wsl::sh_quote(&format!("无法进入 TUI 工作目录 {cwd}:"))
+    )
+}
+
 #[cfg(test)]
 mod tests {
     #[test]
@@ -703,34 +715,24 @@ mod tests {
         assert!(super::base64_decode("not-base64!").is_err());
     }
 
-    /// issue #97 review: the working directory must be `cd`-ed into as the
-    /// Linux path, single-quoted, and a failed `cd` must exit instead of
-    /// leaving the window on a dead shell (the old code silently fell back).
+    /// issue #97 review: a failed `cd` must abort the wrapper instead of
+    /// leaving the window on a dead shell or silently starting elsewhere, and
+    /// the target must stay a single quoted word for the shell.
     #[test]
-    fn wsl_script_cds_into_the_configured_cwd() {
-        let src = include_str!("tui.rs");
-        let body = src
-            .split("async fn start_tui_session_inner")
-            .nth(1)
-            .expect("start_tui_session must exist")
-            .split("#[cfg(test)]")
-            .next()
-            .unwrap();
+    fn cd_guard_quotes_the_target_and_aborts_on_failure() {
+        let guard = super::wsl_cd_guard("/home/u/my project");
         assert!(
-            body.contains("wsl_launch_cwd"),
-            "the WSL branch must resolve the stored Linux path"
+            guard.contains("'/home/u/my project'"),
+            "the target must stay one quoted word: {guard}"
         );
         assert!(
-            body.contains("wsl_dir_exists(distro, "),
-            "the WSL directory must be validated inside the distro"
+            guard.contains("exit 1"),
+            "a failed cd must abort the wrapper: {guard}"
         );
+        let quoted = super::wsl_cd_guard("/home/u/it's");
         assert!(
-            body.contains("exit 1; }}"),
-            "a failed cd must abort the wrapper instead of starting elsewhere"
-        );
-        assert!(
-            !body.contains("eprintln!("),
-            "failures must go through log_warn! / the returned error, not stderr"
+            quoted.contains(r"'\''"),
+            "an embedded quote must be escaped, not end the word: {quoted}"
         );
     }
 

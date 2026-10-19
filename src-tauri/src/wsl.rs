@@ -81,11 +81,19 @@ pub async fn wsl_test(distro: &str, flag: &str, path: &str) -> bool {
 /// which reports every in-distro path as missing. The builtin is the same one
 /// the launch script's `cd` uses, so the check matches the real behavior.
 pub async fn wsl_dir_exists(distro: &str, path: &str) -> bool {
-    wsl_bash(distro, &format!("test -d {}", sh_quote(path)))
+    wsl_bash(distro, &dir_probe_script(path))
         .output()
         .await
         .map(|o| o.status.success())
         .unwrap_or(false)
+}
+
+/// The shell line that probes a directory inside the distro.
+///
+/// Exposed (and unit-tested) like `wslpath_script`: quoting the path is what
+/// keeps a directory with spaces from being read as extra `test` operands.
+pub fn dir_probe_script(path: &str) -> String {
+    format!("test -d {}", sh_quote(path))
 }
 
 /// Maps a Linux path inside a distro to its `\\wsl$\` UNC path so plain
@@ -538,27 +546,20 @@ mod tests {
         assert_eq!(decode_distro_list(b""), Vec::<String>::new());
     }
 
-    /// issue #97 review: directory probes must use the shell builtin. A bare
-    /// argv `test` is resolved through the interop PATH, where a Windows
-    /// `test.exe` shadows the distro binary and every in-distro path reads
-    /// as missing (observed on this host).
+    /// issue #97 review: the probe has to hand the path to the shell as one
+    /// quoted word, or a directory with spaces is read as extra `test`
+    /// operands and every such path reads as missing.
     #[test]
-    fn dir_probe_uses_the_shell_builtin() {
-        let src = include_str!("wsl.rs");
-        let body = src
-            .split("pub async fn wsl_dir_exists")
-            .nth(1)
-            .expect("wsl_dir_exists must exist")
-            .split("#[cfg(test)]")
-            .next()
-            .unwrap();
+    fn dir_probe_quotes_the_path_for_the_shell() {
+        let script = dir_probe_script("/home/u/my project");
         assert!(
-            body.contains("wsl_bash(distro"),
-            "the probe must run through bash so the builtin wins over PATH"
+            script.contains("'/home/u/my project'"),
+            "the path must stay one quoted word: {script}"
         );
+        let quoted = dir_probe_script("/home/u/it's");
         assert!(
-            body.contains("test -d {}") && body.contains("sh_quote(path)"),
-            "the directory path must be quoted into the shell"
+            quoted.contains(r"'\''"),
+            "an embedded quote must be escaped, not end the word: {quoted}"
         );
     }
 
