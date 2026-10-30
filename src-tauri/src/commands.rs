@@ -310,6 +310,7 @@ pub fn create_instance(
 
 #[tauri::command]
 pub fn update_instance(
+    app: AppHandle,
     state: State<'_, AppState>,
     input: DshInstance,
 ) -> Result<DshInstance, String> {
@@ -345,6 +346,10 @@ pub fn update_instance(
     updated.tui_cwd = cfg.instances[pos].tui_cwd.clone();
     cfg.instances[pos] = updated.clone();
     save_state(&state, &cfg)?;
+    drop(cfg);
+    tauri::async_runtime::spawn(async move {
+        crate::tray::sync_tray_icons(&app).await;
+    });
     Ok(updated)
 }
 
@@ -514,24 +519,28 @@ pub async fn delete_instance(
     state: State<'_, AppState>,
     id: String,
 ) -> Result<(), String> {
-    // Stop it first if running.
     if state.running.lock().await.contains_key(&id) {
-        let _ = process::stop_instance_process(&app, &state, &id).await;
+        process::stop_instance_process(&app, &state, &id).await?;
+    }
+    if state.tui_sessions.lock().await.contains_key(&id) {
+        crate::tui::stop_tui_session(&app, &state, &id).await?;
     }
     // Drop the instance's WebView2 store: it holds a browser-session cookie
     // signed by this process only, so nothing can reuse it afterwards.
     crate::windows::clear_instance_webview_data(&state, &id);
-    let mut cfg = state.config.lock().unwrap();
-    cfg.instances.retain(|i| i.id != id);
-    if cfg.settings.last_instance_id.as_deref() == Some(id.as_str()) {
-        cfg.settings.last_instance_id = None;
+    {
+        let mut cfg = state.config.lock().unwrap();
+        cfg.instances.retain(|i| i.id != id);
+        if cfg.settings.last_instance_id.as_deref() == Some(id.as_str()) {
+            cfg.settings.last_instance_id = None;
+        }
+        cfg.settings
+            .autostart_instances
+            .retain(|a| a.instance_id != id);
+        save_state(&state, &cfg)?;
     }
-    // A deleted instance must not linger in the autostart list: the boot path
-    // would skip it, but the settings page would keep showing a dangling id.
-    cfg.settings
-        .autostart_instances
-        .retain(|a| a.instance_id != id);
-    save_state(&state, &cfg)
+    crate::tray::sync_tray_icons(&app).await;
+    Ok(())
 }
 
 /// Input for duplicating an instance.
@@ -873,6 +882,7 @@ fn validate_profile_name(name: &str) -> Result<(), String> {
 /// Renames a profile directory inside the given HOME.
 #[tauri::command(rename_all = "snake_case")]
 pub async fn rename_profile(
+    app: AppHandle,
     state: State<'_, AppState>,
     home_id: String,
     old_name: String,
@@ -927,6 +937,7 @@ pub async fn rename_profile(
         save_state(&state, &cfg)?;
     }
 
+    crate::tray::sync_tray_icons(&app).await;
     Ok(new_name)
 }
 
@@ -935,6 +946,7 @@ pub async fn rename_profile(
 /// removed profile.
 #[tauri::command(rename_all = "snake_case")]
 pub async fn delete_profile(
+    app: AppHandle,
     state: State<'_, AppState>,
     home_id: String,
     name: String,
@@ -982,6 +994,7 @@ pub async fn delete_profile(
         save_state(&state, &cfg)?;
     }
 
+    crate::tray::sync_tray_icons(&app).await;
     Ok(())
 }
 

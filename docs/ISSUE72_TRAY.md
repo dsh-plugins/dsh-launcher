@@ -71,3 +71,11 @@ Expected platform caveats, not defects: on Windows 11 new tray icons land in
 the overflow flyout until the user pins them; on macOS every icon is a menu-bar
 item, so many instances occupy real menu-bar space; on GNOME the tray needs the
 AppIndicator extension.
+
+## 持续刷新与菜单生命周期
+
+Windows 菜单命令只接收 16 位标识。每 15 秒的定时任务只更新提示文本，禁止重新创建菜单项；否则长时间运行会耗尽可用标识，导致终止实例和退出启动器失效。启动器固定菜单持续复用，实例菜单仅随实例增删创建或移除，重命名直接更新菜单文本。
+
+活跃会话和图标读取在托盘同步锁外执行；应用结果前重新检查实例状态和同步版本，避免已停止或已修改的实例收到旧结果。移除原生图标在主线程执行，并等待完成后再允许重建同一实例的托盘。终止实例、菜单更新和图标更新失败均记录上下文。
+
+自动回归测试执行一万次生产菜单同步逻辑，记录创建、删除和改名操作次数，覆盖实例增删、重命名、独立托盘开关和部分操作失败后的重试。Windows 人工验收时需持续运行并刷新提示，随后确认实例托盘的终止操作和启动器托盘的退出操作仍然有效；运行期间重命名实例、切换独立托盘开关后重复检查。

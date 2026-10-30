@@ -2,6 +2,7 @@
 import { computed, onMounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { Message } from '@arco-design/web-vue'
+import { IconArrowUp, IconArrowDown } from '@arco-design/web-vue/es/icon'
 import { api } from '@/api'
 import type {
   Confidence,
@@ -994,16 +995,18 @@ const pluginSourceColumns = computed(() => [
         </template>
         <template #psActions="{ record, rowIndex }">
           <a-space :size="4">
-            <a-button size="mini" type="text" :disabled="pluginSourceBusy || rowIndex === 0" @click="onMovePluginSource(rowIndex, -1)">
-              鈫?
+            <a-button size="mini" type="text" :title="t('settings.pluginSources.moveUp')" :aria-label="t('settings.pluginSources.moveUp')" :disabled="pluginSourceBusy || rowIndex === 0" @click="onMovePluginSource(rowIndex, -1)">
+              <IconArrowUp />
             </a-button>
             <a-button
               size="mini"
               type="text"
+              :title="t('settings.pluginSources.moveDown')"
+              :aria-label="t('settings.pluginSources.moveDown')"
               :disabled="pluginSourceBusy || rowIndex === store.settings.plugin_sources.length - 1"
               @click="onMovePluginSource(rowIndex, 1)"
             >
-              鈫?
+              <IconArrowDown />
             </a-button>
             <a-button size="mini" status="danger" type="text" :disabled="pluginSourceBusy" @click="onRemovePluginSource(record.id)">
               {{ t('settings.pluginSources.delete') }}

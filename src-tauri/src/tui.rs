@@ -403,6 +403,10 @@ async fn start_tui_session_inner(
 
     spawn_reader(app, state, instance_id).await?;
     spawn_waiter(app, instance_id, &profile).await;
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        crate::tray::sync_tray_icons(&app).await;
+    });
     Ok(())
 }
 

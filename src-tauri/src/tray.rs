@@ -18,11 +18,11 @@
 //!    alive. The instance registry therefore stores only ids; handles are
 //!    never kept.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use crate::{process, AppState};
 use tauri::image::Image;
-use tauri::menu::{IsMenuItem, Menu, MenuItem, PredefinedMenuItem, Submenu};
+use tauri::menu::{Menu, MenuItem, PredefinedMenuItem, Submenu};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{AppHandle, Manager};
 
@@ -50,6 +50,69 @@ const ACTIVITY_REFRESH: std::time::Duration = std::time::Duration::from_secs(15)
 /// (instance_id, instance_name, profile)
 type RunningItem = (String, String, String);
 
+struct TrayMenus {
+    running: Submenu<tauri::Wry>,
+    entries: HashMap<String, (String, MenuItem<tauri::Wry>)>,
+    titles: std::collections::HashMap<String, (String, MenuItem<tauri::Wry>)>,
+    revision: u64,
+}
+
+fn running_menu_items(snapshot: &[RunningItem]) -> Vec<(String, String)> {
+    snapshot
+        .iter()
+        .flat_map(|(id, name, profile)| {
+            [
+                (
+                    format!("{MENU_OPEN_PREFIX}{id}"),
+                    format!("打开：{name}（{profile}）"),
+                ),
+                (
+                    format!("{MENU_STOP_PREFIX}{id}"),
+                    format!("停止：{name}（{profile}）"),
+                ),
+            ]
+        })
+        .collect()
+}
+
+// 每完成一个原生操作就保存状态，后续操作失败后重试不会重复创建或移除。
+fn sync_menu_items<T>(
+    entries: &mut HashMap<String, (String, T)>,
+    desired: &[(String, String)],
+    mut create: impl FnMut(&str, &str) -> Result<T, String>,
+    mut remove: impl FnMut(&T) -> Result<(), String>,
+    mut rename: impl FnMut(&T, &str) -> Result<(), String>,
+) -> Result<(), String> {
+    let removed: Vec<String> = entries
+        .keys()
+        .filter(|id| !desired.iter().any(|(wanted, _)| wanted == *id))
+        .cloned()
+        .collect();
+    for id in removed {
+        remove(&entries[&id].1).map_err(|e| format!("移除菜单项 {id} 失败: {e}"))?;
+        entries.remove(&id);
+    }
+    for (id, text) in desired {
+        if let Some((old_text, item)) = entries.get_mut(id) {
+            if old_text != text {
+                rename(item, text).map_err(|e| format!("更新菜单项 {id} 失败: {e}"))?;
+                *old_text = text.clone();
+            }
+        } else {
+            let item = create(id, text).map_err(|e| format!("添加菜单项 {id} 失败: {e}"))?;
+            entries.insert(id.clone(), (text.clone(), item));
+        }
+    }
+    Ok(())
+}
+fn desired_trays(snapshot: &[RunningItem], enabled: bool) -> HashSet<String> {
+    snapshot
+        .iter()
+        .filter(|_| enabled)
+        .map(|(id, _, _)| id.clone())
+        .collect()
+}
+
 fn instance_tray_id(instance_id: &str) -> String {
     format!("{INSTANCE_TRAY_PREFIX}{instance_id}")
 }
@@ -67,7 +130,7 @@ fn default_icon(app: &AppHandle) -> Option<Image<'static>> {
 /// Builds the launcher tray and registers the single global menu / tray event
 /// handlers. Called from setup with no running instances yet.
 pub fn build_tray(app: &AppHandle) -> tauri::Result<()> {
-    let menu = build_launcher_menu(app, &[])?;
+    let menu = build_launcher_menu(app)?;
     TrayIconBuilder::with_id(MAIN_TRAY_ID)
         .icon(app.default_window_icon().cloned().unwrap())
         .menu(&menu)
@@ -120,7 +183,7 @@ pub fn spawn_activity_refresh(app: &AppHandle) {
             if !has_running_instances(&app).await {
                 continue;
             }
-            sync_tray_icons(&app).await;
+            refresh_activity(&app).await;
         }
     });
 }
@@ -136,133 +199,167 @@ async fn has_running_instances(app: &AppHandle) -> bool {
     count > 0
 }
 
-/// Brings the instance trays in line with the running set and rebuilds the
-/// launcher tray's menu. Must be called from an async context.
-///
-/// Applying tray changes is serialized (and re-checks existence inside the
-/// lock). Two overlapping runs could otherwise both observe "no tray for
-/// instance X" and both build one; `tray_by_id` would then only ever see the
-/// first and `remove_tray_by_id` would only remove the first, leaving a ghost
-/// icon that never disappears. Icon resolution (a network download or a UNC
-/// read, both slow) deliberately runs *outside* the lock so a slow fetch never
-/// delays stopping an instance.
+/// 菜单只响应实例集合与名称变化，慢速资源读取在同步锁外执行。
 pub async fn sync_tray_icons(app: &AppHandle) {
-    let enabled = app
-        .state::<AppState>()
-        .config
+    let sync_lock = app.state::<AppState>().tray_sync_lock.clone();
+    let (snapshot, revision) = {
+        let _guard = sync_lock.lock().await;
+        let snapshot = running_snapshot(app).await;
+        let enabled = app
+            .state::<AppState>()
+            .config
+            .lock()
+            .unwrap()
+            .settings
+            .per_instance_tray;
+        if let Err(error) = sync_launcher_menu(app, &snapshot) {
+            crate::log_warn!("更新启动器托盘菜单失败: {error}");
+        }
+        let revision = {
+            let state = app.state::<std::sync::Mutex<TrayMenus>>();
+            let mut menus = state.lock().unwrap();
+            menus.revision += 1;
+            menus.revision
+        };
+        let desired = desired_trays(&snapshot, enabled);
+        let stale: Vec<String> = app
+            .state::<AppState>()
+            .instance_trays
+            .lock()
+            .unwrap()
+            .difference(&desired)
+            .cloned()
+            .collect();
+        for id in stale {
+            remove_instance_tray(app, &id).await;
+        }
+        (if enabled { snapshot } else { Vec::new() }, revision)
+    };
+
+    let mut resolved = Vec::with_capacity(snapshot.len());
+    for (id, name, profile) in &snapshot {
+        let icon = resolve_instance_icon(app, id).await;
+        let tooltip = tooltip_for(app, id, name, profile).await;
+        resolved.push((id, name, profile, icon, tooltip));
+    }
+
+    let _guard = sync_lock.lock().await;
+    if app
+        .state::<std::sync::Mutex<TrayMenus>>()
         .lock()
         .unwrap()
-        .settings
-        .per_instance_tray;
-    let snapshot = if enabled {
-        running_snapshot(app).await
-    } else {
-        Vec::new()
-    };
-    let desired: HashSet<String> = snapshot.iter().map(|(id, _, _)| id.clone()).collect();
-
-    // Retract stale trays first: this must not wait behind an icon download,
-    // and stopping an instance should look immediate.
+        .revision
+        != revision
+        || !app
+            .state::<AppState>()
+            .config
+            .lock()
+            .unwrap()
+            .settings
+            .per_instance_tray
     {
-        let sync_lock = app.state::<AppState>().tray_sync_lock.clone();
-        let _guard = sync_lock.lock().await;
-        rebuild_launcher_menu(app, &snapshot);
-        let stale: Vec<String> = {
-            let state = app.state::<AppState>();
-            let trays = state.instance_trays.lock().unwrap();
-            trays.difference(&desired).cloned().collect()
-        };
-        for instance_id in stale {
-            remove_instance_tray(app, &instance_id);
-        }
-    }
-
-    // Slow part, outside the lock.
-    let mut icons = Vec::with_capacity(snapshot.len());
-    for (instance_id, _, _) in &snapshot {
-        icons.push(resolve_instance_icon(app, instance_id).await);
-    }
-
-    {
-        let sync_lock = app.state::<AppState>().tray_sync_lock.clone();
-        let _guard = sync_lock.lock().await;
-        for ((instance_id, name, profile), icon) in snapshot.iter().zip(icons) {
-            // The snapshot was taken before the slow icon resolution, so an
-            // instance may have stopped meanwhile. A later sync (from its
-            // waiter) would have removed its tray already; re-creating one here
-            // would leave a ghost icon for a stopped instance.
-            if !is_live(app, instance_id).await {
-                continue;
-            }
-            if let Err(e) = apply_instance_tray(app, instance_id, name, profile, icon).await {
-                crate::log_warn!("创建实例 {instance_id} 的托盘图标失败: {e}");
-            }
-        }
-    }
-}
-
-/// Whether an instance is still running (web process or TUI session). Used to
-/// re-validate a snapshot taken before a slow icon resolution.
-async fn is_live(app: &AppHandle, instance_id: &str) -> bool {
-    let state = app.state::<AppState>();
-    if state.running.lock().await.contains_key(instance_id) {
-        return true;
-    }
-    let tui = state.tui_sessions.lock().await;
-    let live = tui.contains_key(instance_id);
-    drop(tui);
-    live
-}
-
-/// Rebuilds the launcher tray's dynamic menu. The "running profiles" submenu
-/// stays useful even with per-instance trays, and is the only route to a
-/// running instance when they are disabled.
-fn rebuild_launcher_menu(app: &AppHandle, snapshot: &[RunningItem]) {
-    let Some(tray) = app.tray_by_id(MAIN_TRAY_ID) else {
         return;
-    };
-    match build_launcher_menu(app, snapshot) {
-        Ok(menu) => {
-            let _ = tray.set_menu(Some(menu));
+    }
+    let current = running_snapshot(app).await;
+    for (id, name, profile, icon, tooltip) in resolved {
+        if !current.contains(&(id.clone(), name.clone(), profile.clone())) {
+            continue;
         }
-        Err(e) => crate::log_warn!("重建启动器托盘菜单失败: {e}"),
+        if let Err(error) = apply_instance_tray(app, id, name, profile, icon, &tooltip) {
+            crate::log_warn!("更新实例 {id} 托盘失败: {error}");
+        }
     }
 }
 
-/// Creates or updates one instance's tray icon. The caller must hold the tray
-/// sync lock.
-async fn apply_instance_tray(
+/// 活跃对话数刷新不创建菜单项，避免 Windows 菜单命令标识不断增长。
+async fn refresh_activity(app: &AppHandle) {
+    let snapshot = running_snapshot(app).await;
+    for (id, name, profile) in snapshot {
+        let tooltip = tooltip_for(app, &id, &name, &profile).await;
+        let lock = app.state::<AppState>().tray_sync_lock.clone();
+        let _guard = lock.lock().await;
+        if !app
+            .state::<AppState>()
+            .config
+            .lock()
+            .unwrap()
+            .settings
+            .per_instance_tray
+            || !running_snapshot(app)
+                .await
+                .contains(&(id.clone(), name, profile))
+        {
+            continue;
+        }
+        if let Some(tray) = app.tray_by_id(&instance_tray_id(&id)) {
+            if let Err(error) = tray.set_tooltip(Some(&tooltip)) {
+                crate::log_warn!("更新实例 {id} 托盘提示失败: {error}");
+            }
+        }
+    }
+}
+
+fn sync_launcher_menu(app: &AppHandle, snapshot: &[RunningItem]) -> Result<(), String> {
+    let state = app.state::<std::sync::Mutex<TrayMenus>>();
+    let mut menus = state.lock().unwrap();
+    let running = menus.running.clone();
+    sync_menu_items(
+        &mut menus.entries,
+        &running_menu_items(snapshot),
+        |id, text| {
+            let item =
+                MenuItem::with_id(app, id, text, true, None::<&str>).map_err(|e| e.to_string())?;
+            running.append(&item).map_err(|e| e.to_string())?;
+            Ok(item)
+        },
+        |item| running.remove(item).map_err(|e| e.to_string()),
+        |item, text| item.set_text(text).map_err(|e| e.to_string()),
+    )?;
+    running
+        .set_enabled(!snapshot.is_empty())
+        .map_err(|e| format!("更新运行实例子菜单状态失败: {e}"))
+}
+fn apply_instance_tray(
     app: &AppHandle,
     instance_id: &str,
     name: &str,
     profile: &str,
     icon: Option<Image<'static>>,
+    tooltip: &str,
 ) -> Result<(), String> {
     let tray_id = instance_tray_id(instance_id);
-    let tooltip = tooltip_for(app, instance_id, name, profile).await;
-    let menu = build_instance_menu(app, instance_id, name).map_err(|e| e.to_string())?;
-
     if let Some(tray) = app.tray_by_id(&tray_id) {
         if let Some(icon) = icon {
-            let _ = tray.set_icon(Some(icon));
+            tray.set_icon(Some(icon)).map_err(|e| e.to_string())?;
         }
-        let _ = tray.set_tooltip(Some(&tooltip));
-        let _ = tray.set_menu(Some(menu));
+        tray.set_tooltip(Some(tooltip)).map_err(|e| e.to_string())?;
+        let state = app.state::<std::sync::Mutex<TrayMenus>>();
+        let mut menus = state.lock().unwrap();
+        if let Some((old_name, title)) = menus.titles.get_mut(instance_id) {
+            if old_name != name {
+                title.set_text(name).map_err(|e| e.to_string())?;
+                *old_name = name.to_string();
+            }
+        }
         return Ok(());
     }
 
+    let (menu, title) = build_instance_menu(app, instance_id, name).map_err(|e| e.to_string())?;
     let mut builder = TrayIconBuilder::with_id(tray_id)
         .menu(&menu)
-        // Left click opens/focuses, so the menu is right-click only.
         .show_menu_on_left_click(false)
-        .tooltip(&tooltip);
+        .tooltip(tooltip);
     if let Some(icon) = icon {
         builder = builder.icon(icon);
     }
     builder
         .build(app)
         .map_err(|e| format!("创建托盘失败: {e}"))?;
-
+    app.state::<std::sync::Mutex<TrayMenus>>()
+        .lock()
+        .unwrap()
+        .titles
+        .insert(instance_id.to_string(), (name.to_string(), title));
     app.state::<AppState>()
         .instance_trays
         .lock()
@@ -272,34 +369,33 @@ async fn apply_instance_tray(
     Ok(())
 }
 
-/// Removes an instance's tray icon and forgets it.
-///
-/// Unlike every other tray API, `remove_tray_by_id` is **not** marshalled to
-/// the main thread by Tauri: it returns the handle, and the OS teardown
-/// (`Shell_NotifyIcon` delete + `DestroyWindow` on Windows, `removeStatusItem`
-/// on macOS) runs in `TrayIcon`'s `Drop`. Windows only destroys a window from
-/// the thread that created it, and an `NSStatusItem` is main-thread-only, so
-/// the drop has to happen on the main thread — otherwise the hidden tray
-/// window and its `TrayUserData` leak. The handle is therefore dropped *inside*
-/// the closure rather than on this (worker) thread.
-fn remove_instance_tray(app: &AppHandle, instance_id: &str) {
-    {
-        let state = app.state::<AppState>();
-        state.instance_trays.lock().unwrap().remove(instance_id);
-    }
+/// 原生图标必须在主线程销毁，完成后才能重新创建同一实例的托盘。
+async fn remove_instance_tray(app: &AppHandle, instance_id: &str) {
     let tray_id = instance_tray_id(instance_id);
     let app_for_main = app.clone();
-    let id_for_log = instance_id.to_string();
-    if app
-        .run_on_main_thread(move || {
-            if app_for_main.remove_tray_by_id(&tray_id).is_some() {
-                crate::log_info!("已移除实例 {id_for_log} 的托盘图标");
-            }
-        })
-        .is_err()
-    {
-        crate::log_warn!("实例 {instance_id} 的托盘图标移除未能派发到主线程");
+    let (done, completion) = tokio::sync::oneshot::channel();
+    if let Err(error) = app.run_on_main_thread(move || {
+        drop(app_for_main.remove_tray_by_id(&tray_id));
+        let _ = done.send(());
+    }) {
+        crate::log_warn!("实例 {instance_id} 的托盘移除未能派发到主线程: {error}");
+        return;
     }
+    if let Err(error) = completion.await {
+        crate::log_warn!("实例 {instance_id} 的托盘移除未完成: {error}");
+        return;
+    }
+    app.state::<AppState>()
+        .instance_trays
+        .lock()
+        .unwrap()
+        .remove(instance_id);
+    app.state::<std::sync::Mutex<TrayMenus>>()
+        .lock()
+        .unwrap()
+        .titles
+        .remove(instance_id);
+    crate::log_info!("已移除实例 {instance_id} 的托盘图标");
 }
 
 /// The instance's own icon, or the launcher default. Local files live in the
@@ -503,60 +599,20 @@ async fn running_snapshot(app: &AppHandle) -> Vec<RunningItem> {
     items
 }
 
-/// The launcher tray's menu: open launcher / running profiles / quit.
-fn build_launcher_menu(
-    app: &AppHandle,
-    running: &[RunningItem],
-) -> tauri::Result<Menu<tauri::Wry>> {
-    let open_launcher =
-        MenuItem::with_id(app, MENU_OPEN_LAUNCHER, "打开启动器", true, None::<&str>)?;
+fn build_launcher_menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
+    let open = MenuItem::with_id(app, MENU_OPEN_LAUNCHER, "打开启动器", true, None::<&str>)?;
     let quit = MenuItem::with_id(app, MENU_QUIT, "退出启动器", true, None::<&str>)?;
-    let sep_running = PredefinedMenuItem::separator(app)?;
-    let sep_quit = PredefinedMenuItem::separator(app)?;
-
-    // Running profiles live in a second-level submenu: each instance gets an
-    // "open window" and a "stop" entry.
-    let mut owned: Vec<MenuItem<tauri::Wry>> = Vec::new();
-    let mut running_sub = None;
-    if !running.is_empty() {
-        for (id, name, profile) in running {
-            owned.push(MenuItem::with_id(
-                app,
-                format!("{MENU_OPEN_PREFIX}{id}"),
-                format!("打开：{name}（{profile}）"),
-                true,
-                None::<&str>,
-            )?);
-            owned.push(MenuItem::with_id(
-                app,
-                format!("{MENU_STOP_PREFIX}{id}"),
-                format!("停止：{name}（{profile}）"),
-                true,
-                None::<&str>,
-            )?);
-        }
-        let refs: Vec<&dyn IsMenuItem<tauri::Wry>> = owned
-            .iter()
-            .map(|i| i as &dyn IsMenuItem<tauri::Wry>)
-            .collect();
-        running_sub = Some(Submenu::with_id_and_items(
-            app,
-            MENU_RUNNING_SUB,
-            "运行中的 Profile",
-            true,
-            &refs,
-        )?);
-    }
-
-    let mut items: Vec<&dyn IsMenuItem<tauri::Wry>> = vec![&open_launcher];
-    if let Some(sub) = &running_sub {
-        items.push(&sep_running);
-        items.push(sub);
-    }
-    items.push(&sep_quit);
-    items.push(&quit);
-
-    Menu::with_items(app, &items)
+    let running =
+        Submenu::with_id_and_items(app, MENU_RUNNING_SUB, "运行中的 Profile", false, &[])?;
+    let separator = PredefinedMenuItem::separator(app)?;
+    let menu = Menu::with_items(app, &[&open, &running, &separator, &quit])?;
+    app.manage(std::sync::Mutex::new(TrayMenus {
+        running,
+        entries: Default::default(),
+        titles: Default::default(),
+        revision: 0,
+    }));
+    Ok(menu)
 }
 
 /// One instance tray's menu: open its window, stop it. The (disabled) title
@@ -565,7 +621,7 @@ fn build_instance_menu(
     app: &AppHandle,
     instance_id: &str,
     name: &str,
-) -> tauri::Result<Menu<tauri::Wry>> {
+) -> tauri::Result<(Menu<tauri::Wry>, MenuItem<tauri::Wry>)> {
     let title = MenuItem::with_id(
         app,
         format!("{INSTANCE_TRAY_PREFIX}{instance_id}::title"),
@@ -588,7 +644,8 @@ fn build_instance_menu(
         true,
         None::<&str>,
     )?;
-    Menu::with_items(app, &[&title, &sep, &open, &stop])
+    let menu = Menu::with_items(app, &[&title, &sep, &open, &stop])?;
+    Ok((menu, title))
 }
 
 fn show_launcher(app: &AppHandle) {
@@ -600,6 +657,7 @@ fn show_launcher(app: &AppHandle) {
 }
 
 fn quit(app: &AppHandle) {
+    crate::log_info!("收到退出启动器的托盘请求");
     let state = app.state::<AppState>();
     process::kill_all(&state);
     crate::tui::kill_all(&state);
@@ -639,11 +697,13 @@ fn stop_instance_from_tray(app: &AppHandle, instance_id: &str) {
     let id = instance_id.to_string();
     tauri::async_runtime::spawn(async move {
         let state = app.state::<AppState>();
-        // TUI instances live in their own session map (issue #31).
-        if state.tui_sessions.lock().await.contains_key(&id) {
-            let _ = crate::tui::stop_tui_session(&app, &state, &id).await;
+        let result = if state.tui_sessions.lock().await.contains_key(&id) {
+            crate::tui::stop_tui_session(&app, &state, &id).await
         } else {
-            let _ = process::stop_instance_process(&app, &state, &id).await;
+            process::stop_instance_process(&app, &state, &id).await
+        };
+        if let Err(error) = result {
+            crate::log_error!("托盘终止实例 {id} 失败: {error}");
         }
     });
 }
@@ -652,6 +712,117 @@ fn stop_instance_from_tray(app: &AppHandle, instance_id: &str) {
 mod tests {
     use super::*;
 
+    #[test]
+    fn menu_sync_reuses_entries_on_refresh_and_rename() {
+        let mut entries = HashMap::new();
+        let created = std::cell::Cell::new(0);
+        let renamed = std::cell::Cell::new(0);
+        let removed = std::cell::Cell::new(0);
+        let mut sync = |snapshot: &[RunningItem]| {
+            sync_menu_items(
+                &mut entries,
+                &running_menu_items(snapshot),
+                |id, _| {
+                    created.set(created.get() + 1);
+                    Ok(id.to_string())
+                },
+                |_| {
+                    removed.set(removed.get() + 1);
+                    Ok(())
+                },
+                |_, _| {
+                    renamed.set(renamed.get() + 1);
+                    Ok(())
+                },
+            )
+            .unwrap();
+        };
+        let mut snapshot = vec![("foo".into(), "示例".into(), "web".into())];
+        sync(&snapshot);
+        let initial = created.get();
+        for _ in 0..10_000 {
+            sync(&snapshot);
+        }
+        assert_eq!(created.get(), initial);
+        snapshot[0].1 = "改名".into();
+        sync(&snapshot);
+        assert_eq!(created.get(), initial);
+        assert!(renamed.get() > 0);
+        assert!(desired_trays(&snapshot, false).is_empty());
+        sync(&snapshot);
+        assert_eq!(created.get(), initial);
+        assert!(desired_trays(&snapshot, true).contains("foo"));
+        snapshot.push(("bar".into(), "新增".into(), "tui".into()));
+        sync(&snapshot);
+        assert!(created.get() > initial);
+        snapshot.remove(0);
+        sync(&snapshot);
+        assert!(removed.get() > 0);
+        assert!(entries.keys().all(|id| id.ends_with("bar")));
+    }
+
+    #[test]
+    fn partial_menu_failure_keeps_completed_operations() {
+        let mut entries = HashMap::new();
+        let desired = running_menu_items(&[("foo".into(), "示例".into(), "web".into())]);
+        let error = sync_menu_items(
+            &mut entries,
+            &desired,
+            |id, _| {
+                if id.starts_with(MENU_STOP_PREFIX) {
+                    Err("示例错误".into())
+                } else {
+                    Ok(id.to_string())
+                }
+            },
+            |_| Ok(()),
+            |_, _| Ok(()),
+        )
+        .unwrap_err();
+        assert!(error.contains("stop::foo"));
+        let mut created = Vec::new();
+        sync_menu_items(
+            &mut entries,
+            &desired,
+            |id, _| {
+                created.push(id.to_string());
+                Ok(id.to_string())
+            },
+            |_| Ok(()),
+            |_, _| Ok(()),
+        )
+        .unwrap();
+        assert_eq!(created, vec!["stop::foo"]);
+        let mut removed = Vec::new();
+        sync_menu_items(
+            &mut entries,
+            &[],
+            |_, _| unreachable!(),
+            |id| {
+                if !removed.is_empty() {
+                    return Err("示例错误".into());
+                }
+                removed.push(id.clone());
+                Ok(())
+            },
+            |_, _| Ok(()),
+        )
+        .unwrap_err();
+        assert!(!entries.contains_key(&removed[0]));
+        sync_menu_items(
+            &mut entries,
+            &[],
+            |_, _| unreachable!(),
+            |id| {
+                assert!(!removed.contains(id));
+                removed.push(id.clone());
+                Ok(())
+            },
+            |_, _| Ok(()),
+        )
+        .unwrap();
+        assert!(entries.is_empty());
+    }
     #[test]
     fn instance_tray_ids_round_trip() {
         let tray_id = instance_tray_id("inst-1");
