@@ -56,7 +56,7 @@ pub struct MarketPluginRelationship {
     #[serde(alias = "type")]
     pub kind: String,
     pub id: String,
-    pub versions: String,
+    pub versions: serde_json::Value,
 }
 
 /// description can be a plain string or a localized list; normalise both.
@@ -69,6 +69,8 @@ pub enum MarketDescription {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct MarketPlugin {
+    #[serde(default)]
+    pub catalog: Option<crate::market_index::IndexPlugin>,
     pub id: String,
     pub name: String,
     #[serde(default)]
@@ -307,6 +309,7 @@ fn awesome_to_market(p: &AwesomePlugin) -> Option<MarketPlugin> {
     });
     let repo = repo_hint_of(&id, p.url.as_deref());
     Some(MarketPlugin {
+        catalog: None,
         id,
         name: p.name.clone(),
         description,
@@ -391,6 +394,7 @@ fn dshget_to_market(p: &DshGetPlugin) -> Option<MarketPlugin> {
     });
     let repo = repo_hint_of(&id, p.url.as_deref());
     Some(MarketPlugin {
+        catalog: None,
         id,
         name: p.name.clone(),
         description,
@@ -584,6 +588,7 @@ async fn fetch_github_topic() -> Result<Vec<MarketPlugin>, String> {
             .filter(|s| !s.is_empty());
         let html = r.get("html_url").and_then(|v| v.as_str());
         out.push(MarketPlugin {
+            catalog: None,
             id: format!("github:{full_name}"),
             name: name.to_string(),
             description: description.map(|d| MarketDescription::Plain(d.to_string())),
@@ -683,6 +688,8 @@ pub struct InstallPluginInput {
     /// other install source.
     #[serde(default)]
     pub wsl_scratch: Option<String>,
+    #[serde(default)]
+    pub install_source: Option<crate::market_index::InstallSource>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -754,8 +761,11 @@ async fn fetch_catalog(src: &PluginSourceConfig) -> Result<Vec<MarketPlugin>, St
     match src.kind {
         SourceKind::Primary => {
             let v = fetch_json(&src.url, 8 * 1024 * 1024).await?;
-            let list: Vec<MarketPlugin> =
-                serde_json::from_value(v).map_err(|e| format!("解析主源数据失败: {e}"))?;
+            let list: Vec<MarketPlugin> = if v.is_array() {
+                serde_json::from_value(v).map_err(|e| format!("解析主源数据失败: {e}"))?
+            } else {
+                crate::market_index::parse_index(v, &src.url)?
+            };
             Ok(tag_all(src, list))
         }
         SourceKind::Awesome => {
@@ -899,7 +909,19 @@ fn is_core_package(id: &str) -> bool {
 /// package: the hint is what alpha resolution/installs follow, so a benign id
 /// paired with a core repo must not get through.
 fn entry_is_core(p: &MarketPlugin) -> bool {
-    is_core_package(&p.id) || p.repo.as_deref().is_some_and(is_core_repo)
+    is_core_package(&p.id)
+        || p.repo.as_deref().is_some_and(is_core_repo)
+        || p.catalog.as_ref().is_some_and(|catalog| {
+            catalog
+                .versions
+                .iter()
+                .any(|version| match &version.source {
+                    crate::market_index::InstallSource::Git { url, .. } => {
+                        normalize_repo_ref(url).as_deref().is_some_and(is_core_repo)
+                    }
+                    crate::market_index::InstallSource::Npm { .. } => false,
+                })
+        })
 }
 
 /// Drops core packages from one source's listing, logging each drop.
@@ -965,6 +987,7 @@ fn merge_into(dst: &mut MarketPlugin, src: MarketPlugin) {
         // which alpha resolution and alpha installs both follow. Keeping a
         // lower-trust source's `repo` would make the installed/queried repo
         // disagree with the entry the user selected.
+        dst.catalog = src.catalog;
         dst.confidence = src.confidence;
         dst.source = src.source;
         dst.name = src.name;
@@ -2170,6 +2193,7 @@ pub async fn uninstall_plugin(
             subcommand: "remove",
             spec: &input.plugin_id,
             loglevel: "warn",
+            registry: None,
         },
     )
     .await?;
@@ -2556,6 +2580,9 @@ pub async fn start_install_plugin_task(
     state: State<'_, AppState>,
     input: InstallPluginInput,
 ) -> Result<String, String> {
+    if let Some(source) = &input.install_source {
+        source.install_spec(&input.plugin_id, &input.version)?;
+    }
     // Validate instance + profile early. The exists() check can hit a cold
     // \\wsl$\ share, so it runs on the blocking pool (issue #71).
     let (home_path, _version) = resolve_instance(&state, &input.instance_id)?;
@@ -2685,6 +2712,7 @@ pub async fn start_install_plugin_file_task(
         profile,
         repo: None,
         wsl_scratch: scratch,
+        install_source: None,
     };
     start_install_plugin_task(app, state, input).await
 }
@@ -2791,21 +2819,27 @@ async fn do_install_plugin(
     // use <pkg>@<version>; git-hosted (github:) plugins install the repo at a
     // ref — a commit sha for alpha, a release tag for stable/beta — plus an
     // optional `&path:<subdir>` for monorepo plugins.
-    let spec = match input.plugin_id.strip_prefix("tgz:") {
-        Some(target) => target.to_string(),
-        None => match parse_github_id(&input.plugin_id) {
-            Some((repo, subpath)) => github_install_spec(&repo, &input.version, subpath.as_deref()),
-            None => match input.channel {
-                PluginChannel::Alpha => {
-                    // Live/unverified entries have no catalog entry to look up;
-                    // the frontend passes the repo hint with the install input.
-                    let repo = resolve_repo(&input.plugin_id, input.repo.as_deref())
-                        .ok_or_else(|| format!("插件 {} 没有 GitHub 仓库", input.plugin_id))?;
-                    format!("github:{repo}#{}", input.version)
+    let spec = if let Some(source) = &input.install_source {
+        source.install_spec(&input.plugin_id, &input.version)?
+    } else {
+        match input.plugin_id.strip_prefix("tgz:") {
+            Some(target) => target.to_string(),
+            None => match parse_github_id(&input.plugin_id) {
+                Some((repo, subpath)) => {
+                    github_install_spec(&repo, &input.version, subpath.as_deref())
                 }
-                _ => format!("{}@{}", input.plugin_id, input.version),
+                None => match input.channel {
+                    PluginChannel::Alpha => {
+                        // Live/unverified entries have no catalog entry to look up;
+                        // the frontend passes the repo hint with the install input.
+                        let repo = resolve_repo(&input.plugin_id, input.repo.as_deref())
+                            .ok_or_else(|| format!("插件 {} 没有 GitHub 仓库", input.plugin_id))?;
+                        format!("github:{repo}#{}", input.version)
+                    }
+                    _ => format!("{}@{}", input.plugin_id, input.version),
+                },
             },
-        },
+        }
     };
 
     crate::tasks::push_task_log_pub(
@@ -2863,6 +2897,10 @@ async fn do_install_plugin(
             subcommand: "add",
             spec: &spec,
             loglevel: "http",
+            registry: input
+                .install_source
+                .as_ref()
+                .and_then(|source| source.registry()),
         },
     )
     .await?;
@@ -2883,6 +2921,12 @@ async fn do_install_plugin(
     };
     let installed_name = match resolved_name {
         Some(name) => {
+            if input.install_source.is_some() && name != input.plugin_id {
+                return Err(format!(
+                    "安装包名 {name} 与索引声明 {} 不一致",
+                    input.plugin_id
+                ));
+            }
             if name != input.plugin_id {
                 crate::tasks::push_task_log_pub(
                     app,
@@ -2895,6 +2939,12 @@ async fn do_install_plugin(
             name
         }
         None => {
+            if input.install_source.is_some() {
+                return Err(format!(
+                    "无法确认官方索引插件 {} 的安装结果",
+                    input.plugin_id
+                ));
+            }
             if input.plugin_id.starts_with("github:") || input.plugin_id.starts_with("tgz:") {
                 // Boot safety: never mount an unresolved github:/tgz: id.
                 let msg = format!(
@@ -3089,6 +3139,7 @@ struct PluginCliOp<'a> {
     subcommand: &'a str,
     spec: &'a str,
     loglevel: &'a str,
+    registry: Option<&'a str>,
 }
 
 /// Runs one `dsh plugin --profile <name> <pnpm subcommand> <spec/id>` through
@@ -3188,7 +3239,12 @@ async fn run_dsh_plugin(
 
     for attempt in 1..=2 {
         let mut args: Vec<String> = vec![subcommand.to_string(), spec.to_string()];
-        args.extend(forwarded_pnpm_flags(loglevel, subcommand, &linux_store));
+        args.extend(forwarded_pnpm_flags_with_registry(
+            loglevel,
+            subcommand,
+            &linux_store,
+            op.registry,
+        ));
         let cmd = dsh_plugin_command(
             target.wsl,
             version_dir,
@@ -3454,6 +3510,15 @@ async fn dsh_plugin_command(
 /// `install`): `pnpm remove` rejects them outright ("Unknown options:
 /// 'fetch-timeout', …") and would fail before touching anything.
 fn forwarded_pnpm_flags(loglevel: &str, subcommand: &str, store_dir: &str) -> Vec<String> {
+    forwarded_pnpm_flags_with_registry(loglevel, subcommand, store_dir, None)
+}
+
+fn forwarded_pnpm_flags_with_registry(
+    loglevel: &str,
+    subcommand: &str,
+    store_dir: &str,
+    registry: Option<&str>,
+) -> Vec<String> {
     let mut args: Vec<String> = vec![
         "--store-dir".to_string(),
         store_dir.to_string(),
@@ -3471,7 +3536,10 @@ fn forwarded_pnpm_flags(loglevel: &str, subcommand: &str, store_dir: &str) -> Ve
             "4".to_string(),
         ]);
     }
-    if let Ok(registry) = std::env::var("DSH_NPM_REGISTRY") {
+    if let Some(registry) = registry
+        .map(str::to_owned)
+        .or_else(|| std::env::var("DSH_NPM_REGISTRY").ok())
+    {
         let registry = registry.trim().to_string();
         if !registry.is_empty() {
             args.push("--registry".to_string());
@@ -3674,6 +3742,41 @@ fn ensure_cordis_insert(dir: &std::path::Path, plugin_id: &str) -> Result<(), St
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn index_registry_is_forwarded_once() {
+        let args = forwarded_pnpm_flags_with_registry(
+            "http",
+            "add",
+            "/example/store",
+            Some("https://example.com/"),
+        );
+        let positions: Vec<usize> = args
+            .iter()
+            .enumerate()
+            .filter_map(|(i, arg)| (arg == "--registry").then_some(i))
+            .collect();
+        assert_eq!(positions.len(), 1);
+        assert_eq!(args[positions[0] + 1], "https://example.com/");
+    }
+
+    #[test]
+    fn index_installation_follows_the_winning_source() {
+        let mut lower = entry("foo", "Foo");
+        lower.confidence = Confidence::Unverified;
+        lower.catalog = Some(
+            serde_json::from_value(serde_json::json!({
+                "name": "foo", "versions": [{"version": "1.0.0", "publishTimestamp": 100,
+                    "source": {"type": "npm", "registry": "https://example.com/"}}]
+            }))
+            .unwrap(),
+        );
+        let mut higher = entry("foo", "Foo official");
+        higher.confidence = Confidence::Official;
+        merge_into(&mut lower, higher);
+        assert!(lower.catalog.is_none());
+        assert_eq!(lower.name, "Foo official");
+    }
 
     #[test]
     fn cordis_id_of_strips_scope_and_org() {
@@ -4112,6 +4215,7 @@ mod tests {
 
     fn entry(id: &str, name: &str) -> MarketPlugin {
         MarketPlugin {
+            catalog: None,
             id: id.to_string(),
             name: name.to_string(),
             description: None,

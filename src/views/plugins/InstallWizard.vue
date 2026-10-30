@@ -4,6 +4,7 @@ import { useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { Message } from '@arco-design/web-vue'
 import { api } from '@/api'
+import { compatibility, rangeParts, useCompatibilityAck } from '@/utils/market'
 import { useLauncherStore } from '@/stores/launcher'
 import HintIcon from '@/components/HintIcon.vue'
 
@@ -38,6 +39,14 @@ const profilesLoading = ref(false)
 
 const instances = computed(() => store.instances)
 const selectedInstance = computed(() => store.instanceById(instanceId.value))
+const runtimeVersion = computed(() => store.versionById(selectedInstance.value?.version_id ?? '')?.version ?? '')
+const supportedVersions = computed(() => state.value?.plugin.catalog
+  ? state.value.version?.support_versions : state.value?.plugin.support_versions)
+const compatibilityResult = computed(() => compatibility(supportedVersions.value, runtimeVersion.value))
+const compatibilitySelection = computed(() => JSON.stringify([
+  state.value?.plugin.id, state.value?.version, instanceId.value, runtimeVersion.value, supportedVersions.value,
+]))
+const compatibilityAck = useCompatibilityAck(compatibilitySelection)
 
 /** Distro of the selected instance, or null for a local Windows instance. */
 const selectedDistro = computed(() => {
@@ -101,15 +110,17 @@ const canSubmit = computed(
     !!instanceId.value &&
     !!profile.value &&
     !submitting.value &&
-    (!needsUnverifiedAck.value || unverifiedAck.value),
+    (!needsUnverifiedAck.value || unverifiedAck.value) &&
+    (compatibilityResult.value.status !== 'incompatible' || compatibilityAck.value),
 )
 
 async function startInstall() {
   const s = state.value
-  if (!s || !s.version) return
+  if (!s || !s.version || !canSubmit.value) return
   submitting.value = true
   try {
     const taskId = await api.startInstallPluginTask({
+      installSource: s.version.install_source,
       pluginId: s.plugin.id,
       version: s.version.version,
       channel: s.channel,
@@ -210,6 +221,22 @@ async function startInstall() {
             {{ t('plugins.wslInstallHint', { distro: selectedDistro }) }}
           </a-alert>
 
+          <div v-if="selectedInstance" class="compatibility-block">
+            <a-tag v-for="part in rangeParts(supportedVersions)" :key="part" size="small">{{ part }}</a-tag>
+            <a-alert v-if="compatibilityResult.status === 'incompatible'" type="warning">
+              {{ t('plugins.marketIncompatible', { version: runtimeVersion, range: compatibilityResult.reason }) }}
+            </a-alert>
+            <a-checkbox v-if="compatibilityResult.status === 'incompatible'" v-model="compatibilityAck">
+              {{ t('plugins.marketCompatibilityAck') }}
+            </a-checkbox>
+            <a-alert v-if="compatibilityResult.status === 'unknown'" type="warning">
+              {{ t('plugins.marketCompatibilityUnknown', { reason: compatibilityResult.reason }) }}
+            </a-alert>
+            <div v-if="state.plugin.catalog" class="profile-hint">
+              {{ state.plugin.catalog.index_url }}
+              {{ state.version?.label }}
+            </div>
+          </div>
           <div class="profile-section">
             <div class="profile-label">{{ t('plugins.chooseProfile') }}</div>
             <a-select
@@ -328,6 +355,13 @@ async function startInstall() {
 
 .wsl-install-hint {
   margin: 12px 0;
+}
+
+.compatibility-block {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 12px;
 }
 
 .profile-section {

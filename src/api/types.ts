@@ -595,7 +595,7 @@ export interface MarketPluginUrls {
 export interface MarketPluginRelationship {
   kind: string // "dependency" | "incompatibility"
   id: string
-  versions: string
+  versions: string | string[]
 }
 
 /** Which catalog a market entry came from (serialised kebab-case). */
@@ -617,7 +617,21 @@ export interface PluginSourceConfig {
   order: number
 }
 
+/** 安装来源绑定精确版本，避免从展示地址重新推断包来源。 */
+export type InstallSource =
+  | { type: 'npm'; registry?: string | null }
+  | { type: 'git'; url: string; commit: string; path?: string | null }
+
+/** 官方索引保留每个版本的精确安装来源。 */
+export interface IndexPlugin {
+  title?: string | Record<string, string>
+  icon?: string | null
+  index_url: string
+  versions: { version: string; publishTimestamp: number; source: InstallSource; engines?: { dsh?: string } }[]
+}
+
 export interface MarketPlugin {
+  catalog?: IndexPlugin | null
   id: string
   name: string
   description?: string | MarketPluginDescription[]
@@ -643,6 +657,8 @@ export interface MarketPlugin {
 export type PluginChannel = 'stable' | 'beta' | 'alpha'
 
 export interface PluginVersionInfo {
+  install_source?: InstallSource
+  support_versions?: string
   version: string
   channel: PluginChannel
   label?: string
@@ -675,6 +691,7 @@ export interface PluginUpdateInfo {
 }
 
 export interface InstallPluginInput {
+  installSource?: InstallSource
   pluginId: string
   version: string
   channel: PluginChannel

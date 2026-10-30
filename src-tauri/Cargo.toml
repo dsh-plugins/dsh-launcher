@@ -34,6 +34,7 @@ serde_yaml = "0.9"
 tauri-plugin-deep-link = "2"
 tauri-plugin-single-instance = "2"
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "ico"] }
+node-semver = "2.2.0"
 
 [profile.release]
 codegen-units = 1

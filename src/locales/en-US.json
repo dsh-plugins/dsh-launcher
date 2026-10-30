@@ -149,6 +149,9 @@
     "sourceBuildHint": "This version ships only on GitHub (not on npm). It will be cloned and built from source, which takes much longer (possibly ten minutes or more) — watch the task log."
   },
   "plugins": {
+    "marketIncompatible": "DSH {version} is outside the declared range {range}.",
+    "marketCompatibilityAck": "I confirm installation of this version",
+    "marketCompatibilityUnknown": "Compatibility is unknown: {reason}",
     "title": "Plugins",
     "searchPlaceholder": "Search plugins (name / description)",
     "sourceAll": "All sources",

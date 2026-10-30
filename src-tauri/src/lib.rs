@@ -8,6 +8,7 @@ mod doctor;
 mod early_loading;
 mod icons;
 mod links;
+mod market_index;
 mod mcp;
 mod migrate;
 mod modpack;

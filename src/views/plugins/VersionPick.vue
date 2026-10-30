@@ -3,6 +3,7 @@ import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { api } from '@/api'
+import { indexedVersions } from '@/utils/market'
 import { useLauncherStore } from '@/stores/launcher'
 import type { MarketPlugin, PluginChannel, PluginVersionInfo } from '@/api/types'
 
@@ -39,6 +40,10 @@ const error = ref<string | null>(null)
 
 /** All channels merged into one list, newest first by publish time. */
 const mergedVersions = computed(() => {
+  const indexed = plugin.value ? indexedVersions(plugin.value) : null
+  if (indexed) {
+    return indexed
+  }
   const all = [
     ...versionsByChannel.value.stable,
     ...versionsByChannel.value.beta,
@@ -66,7 +71,27 @@ async function loadChannel(ch: PluginChannel) {
 /** Reload every channel from its first page — all three channels fetch in
  * parallel (issue #71): alpha used to wait for stable+beta, adding a full
  * GitHub round trip to the page's first paint for no dependency reason. */
-async function reloadAll() {
+async function reloadAll(refresh = true) {
+  if (plugin.value?.catalog) {
+    if (refresh) {
+      error.value = null
+      const id = plugin.value.id
+      loadingChannel.value = 'stable'
+      try {
+        await store.refreshMarketPlugins(true)
+        const updated = store.marketPlugins.find((entry) => entry.id === id)
+        if (updated?.catalog && store.pluginWizard?.plugin.id === id) {
+          store.pluginWizard = { ...store.pluginWizard, plugin: updated, version: null }
+        } else {
+          error.value = t('plugins.noMatch')
+        }
+      } finally {
+        loadingChannel.value = null
+      }
+    }
+    hasMore.value = { stable: false, beta: false, alpha: false }
+    return
+  }
   pagesLoaded.value = { stable: 1, beta: 1, alpha: 1 }
   await Promise.all([loadChannel('stable'), loadChannel('beta'), loadChannel('alpha')])
 }
@@ -127,7 +152,7 @@ onMounted(async () => {
     router.replace({ name: 'download-plugins' })
     return
   }
-  await reloadAll()
+  await reloadAll(false)
 })
 
 onBeforeUnmount(() => {
@@ -186,7 +211,7 @@ function displayVersion(v: PluginVersionInfo): string {
           size="small"
           type="text"
           :loading="loadingChannel !== null"
-          @click="reloadAll"
+          @click="reloadAll()"
         >
           ⟳
         </a-button>

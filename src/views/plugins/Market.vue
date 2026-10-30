@@ -5,6 +5,7 @@ import { useI18n } from 'vue-i18n'
 import { useLauncherStore } from '@/stores/launcher'
 import { injectDownloadScroll } from '@/composables/download-scroll'
 import { api } from '@/api'
+import { localizedText, rangeParts } from '@/utils/market'
 import { useProgressiveList } from '@/composables/progressive-list'
 import type { Confidence, MarketPlugin, PluginSource } from '@/api/types'
 
@@ -12,7 +13,7 @@ import type { Confidence, MarketPlugin, PluginSource } from '@/api/types'
 defineOptions({ name: 'MarketPage' })
 
 const router = useRouter()
-const { t, te } = useI18n()
+const { t, te, locale } = useI18n()
 const store = useLauncherStore()
 const scrollAccessor = injectDownloadScroll()
 
@@ -45,8 +46,10 @@ function pickDescription(p: MarketPlugin): string {
   const d = p.description
   if (!d) return ''
   if (typeof d === 'string') return d
-  const zh = d.find((x) => x.language.startsWith('zh'))
-  return (zh ?? d[0])?.content ?? ''
+  const language = locale.value.toLowerCase()
+  const localized = d.find((x) => x.language.toLowerCase() === language)
+    ?? d.find((x) => x.language.toLowerCase() === language.split('-')[0])
+  return (localized ?? d[0])?.content ?? ''
 }
 
 /** Source of an entry; absent on old payloads means the primary catalog. */
@@ -84,7 +87,8 @@ const filtered = computed(() => {
   if (!q) return list
   return list.filter((p) => {
     const desc = pickDescription(p).toLowerCase()
-    return p.id.toLowerCase().includes(q) || p.name.toLowerCase().includes(q) || desc.includes(q)
+    return p.id.toLowerCase().includes(q) || p.name.toLowerCase().includes(q)
+      || localizedText(p.catalog?.title, locale.value).toLowerCase().includes(q) || desc.includes(q)
   })
 })
 
@@ -92,18 +96,6 @@ const filtered = computed(() => {
 // thousands of entries; rendering them in one pass freezes the page. Rows
 // stream in per animation frame instead.
 const { visible: visiblePlugins, growing: listGrowing } = useProgressiveList(filtered)
-
-const hasSupportBadge = (p: MarketPlugin) => {
-  const sv = p.support_versions
-  return sv !== undefined && sv !== null && sv !== ''
-}
-
-function supportText(p: MarketPlugin): string {
-  const sv = p.support_versions
-  if (typeof sv === 'string') return sv
-  if (typeof sv === 'number') return String(sv)
-  return ''
-}
 
 function relationships(p: MarketPlugin) {
   return p.relationship ?? []
@@ -188,10 +180,11 @@ onBeforeUnmount(() => {
           class="plugin-row"
           @click="choose(p)"
         >
-          <span class="plugin-icon">🧩</span>
+          <img v-if="p.catalog?.icon" :src="p.catalog.icon" class="plugin-icon" alt="" style="width: 32px; height: 32px; object-fit: contain" />
+          <span v-else class="plugin-icon">🧩</span>
           <div class="plugin-meta">
             <div class="plugin-name">
-              {{ p.name }}
+              {{ localizedText(p.catalog?.title, locale) || p.name }}
               <span class="plugin-id">{{ p.id }}</span>
               <a-tag v-if="sourceOf(p) !== 'dsh-plugins'" size="small">
                 {{ sourceLabel(sourceOf(p)) }}
@@ -211,12 +204,12 @@ onBeforeUnmount(() => {
                 size="small"
                 :color="r.kind === 'dependency' ? 'blue' : 'red'"
               >
-                {{ r.kind === 'dependency' ? t('plugins.dependency') : t('plugins.incompatibility') }}: {{ r.id }} {{ r.versions }}
+                {{ r.kind === 'dependency' ? t('plugins.dependency') : t('plugins.incompatibility') }}: {{ r.id }} {{ rangeParts(r.versions).join('; ') }}
               </a-tag>
             </div>
           </div>
           <div class="plugin-side">
-            <a-tag v-if="hasSupportBadge(p)" size="small">{{ supportText(p) }}</a-tag>
+            <a-tag v-for="part in rangeParts(p.support_versions)" :key="part" size="small">{{ part }}</a-tag>
             <span class="version-arrow">›</span>
           </div>
         </div>

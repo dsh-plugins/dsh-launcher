@@ -149,6 +149,9 @@
     "sourceBuildHint": "该版本仅在 GitHub 发布（未发布到 npm），将从源码克隆并构建，耗时明显更长（可能需要十几分钟），请耐心等待任务日志。"
   },
   "plugins": {
+    "marketIncompatible": "DSH {version} 不在声明的兼容范围 {range} 内。",
+    "marketCompatibilityAck": "我确认仍要安装此版本",
+    "marketCompatibilityUnknown": "无法判断兼容性：{reason}",
     "title": "插件下载",
     "searchPlaceholder": "搜索插件（名称 / 描述）",
     "sourceAll": "全部来源",

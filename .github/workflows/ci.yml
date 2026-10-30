@@ -52,6 +52,8 @@ jobs:
         run: cargo clippy --manifest-path src-tauri/Cargo.toml --workspace --all-targets --locked -- -D warnings
       - name: Rust tests
         run: cargo test --manifest-path src-tauri/Cargo.toml --workspace --locked
+      - name: 市场兼容性测试
+        run: pnpm test:market
       - name: Frontend build
         run: pnpm build
 
