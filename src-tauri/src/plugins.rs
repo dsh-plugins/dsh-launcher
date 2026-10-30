@@ -109,6 +109,21 @@ pub struct MarketPlugin {
     pub downloads: Option<u64>,
 }
 
+/// 来源刷新失败时保留来源标识及缓存状态，供市场页面说明数据完整性。
+#[derive(Clone, Debug, Serialize)]
+pub struct MarketSourceWarning {
+    pub source_id: String,
+    pub error: String,
+    pub cached: bool,
+}
+
+/// 插件列表和本次刷新警告一起返回，部分来源失败时仍可浏览其余插件。
+#[derive(Debug, Serialize)]
+pub struct MarketResult {
+    pub plugins: Vec<MarketPlugin>,
+    pub warnings: Vec<MarketSourceWarning>,
+}
+
 fn default_source_id() -> String {
     "dsh-plugins".to_string()
 }
@@ -713,10 +728,10 @@ fn http_client() -> Result<reqwest::Client, String> {
         .map_err(|e| format!("创建 HTTP 客户端失败: {e}"))
 }
 
-/// Fetch and parse a JSON document with a size cap.
+/// 逐块限制响应大小，避免先读取完整的超限响应再拒绝。
 async fn fetch_json(url: &str, cap: usize) -> Result<serde_json::Value, String> {
     let client = http_client()?;
-    let resp = client
+    let mut resp = client
         .get(url)
         .send()
         .await
@@ -724,12 +739,19 @@ async fn fetch_json(url: &str, cap: usize) -> Result<serde_json::Value, String> 
     if !resp.status().is_success() {
         return Err(format!("请求失败 {url}: HTTP {}", resp.status()));
     }
-    let bytes = resp
-        .bytes()
+    let mut bytes = Vec::new();
+    while let Some(chunk) = resp
+        .chunk()
         .await
-        .map_err(|e| format!("读取响应失败 {url}: {e}"))?;
-    if bytes.len() > cap {
-        return Err(format!("响应过大 {url}"));
+        .map_err(|e| format!("读取响应失败 {url}: {e}"))?
+    {
+        if chunk.len() > cap.saturating_sub(bytes.len()) {
+            return Err(format!(
+                "响应过大 {url}: 已读取至少 {} 字节，上限 {cap} 字节",
+                bytes.len() + chunk.len()
+            ));
+        }
+        bytes.extend_from_slice(&chunk);
     }
     serde_json::from_slice(&bytes).map_err(|e| format!("解析 JSON 失败 {url}: {e}"))
 }
@@ -754,13 +776,13 @@ fn tag_all(src: &PluginSourceConfig, mut list: Vec<MarketPlugin>) -> Vec<MarketP
     list
 }
 
-/// Adapter dispatch: fetches and parses one catalog over the network, tagging
-/// every entry with the source id + credibility. No caching here (see
-/// `fetch_source`).
+const CATALOG_MAX_BYTES: usize = 32 * 1024 * 1024;
+
+/// 目录适配后统一添加来源与可信度，缓存由调用方保存。
 async fn fetch_catalog(src: &PluginSourceConfig) -> Result<Vec<MarketPlugin>, String> {
     match src.kind {
         SourceKind::Primary => {
-            let v = fetch_json(&src.url, 8 * 1024 * 1024).await?;
+            let v = fetch_json(&src.url, CATALOG_MAX_BYTES).await?;
             let list: Vec<MarketPlugin> = if v.is_array() {
                 serde_json::from_value(v).map_err(|e| format!("解析主源数据失败: {e}"))?
             } else {
@@ -769,7 +791,7 @@ async fn fetch_catalog(src: &PluginSourceConfig) -> Result<Vec<MarketPlugin>, St
             Ok(tag_all(src, list))
         }
         SourceKind::Awesome => {
-            let v = fetch_json(&src.url, 8 * 1024 * 1024).await?;
+            let v = fetch_json(&src.url, CATALOG_MAX_BYTES).await?;
             let cat: AwesomeCatalog =
                 serde_json::from_value(v).map_err(|e| format!("解析 awesome 数据失败: {e}"))?;
             let mut out = Vec::new();
@@ -786,7 +808,7 @@ async fn fetch_catalog(src: &PluginSourceConfig) -> Result<Vec<MarketPlugin>, St
             Ok(tag_all(src, out))
         }
         SourceKind::DshGet => {
-            let v = fetch_json(&src.url, 8 * 1024 * 1024).await?;
+            let v = fetch_json(&src.url, CATALOG_MAX_BYTES).await?;
             let cat: DshGetCatalog =
                 serde_json::from_value(v).map_err(|e| format!("解析 dshget 数据失败: {e}"))?;
             let mut out = Vec::new();
@@ -848,40 +870,57 @@ fn write_source_cache(cache_dir: &std::path::Path, id: &str, plugins: &[MarketPl
     }
 }
 
-/// Fetches one source, degrading to its last-good cache when the network fails.
+fn source_failure(
+    src: &PluginSourceConfig,
+    cache_dir: Option<&std::path::Path>,
+    error: String,
+) -> MarketResult {
+    let cache = cache_dir.and_then(|dir| read_source_cache(dir, &src.id));
+    let cached = cache.is_some();
+    let plugins = cache.map(|value| value.plugins).unwrap_or_default();
+    crate::log_warn!(
+        "插件源「{}」刷新失败，缓存可用: {cached}，返回 {} 条: {error}",
+        src.id,
+        plugins.len()
+    );
+    MarketResult {
+        plugins,
+        warnings: vec![MarketSourceWarning {
+            source_id: src.id.clone(),
+            error,
+            cached,
+        }],
+    }
+}
+
+/// 来源刷新失败时返回最近成功的数据，并携带本次失败原因。
 async fn fetch_source(
     src: &PluginSourceConfig,
     cache_dir: Option<&std::path::Path>,
-) -> Result<Vec<MarketPlugin>, String> {
+) -> MarketResult {
     if src.kind == SourceKind::GithubTopic {
         if let Some(dir) = cache_dir {
             if let Some(c) = read_source_cache(dir, &src.id) {
                 if now_ts() - c.saved_at < TOPIC_CACHE_TTL_SECS {
-                    return Ok(c.plugins);
+                    return MarketResult {
+                        plugins: c.plugins,
+                        warnings: Vec::new(),
+                    };
                 }
             }
         }
     }
     match fetch_catalog(src).await {
-        Ok(list) => {
+        Ok(plugins) => {
             if let Some(dir) = cache_dir {
-                write_source_cache(dir, &src.id, &list);
+                write_source_cache(dir, &src.id, &plugins);
             }
-            Ok(list)
-        }
-        Err(e) => {
-            if let Some(dir) = cache_dir {
-                if let Some(c) = read_source_cache(dir, &src.id) {
-                    crate::log_warn!(
-                        "插件源「{}」不可达，改用 last-good 缓存({} 条): {e}",
-                        src.id,
-                        c.plugins.len()
-                    );
-                    return Ok(c.plugins);
-                }
+            MarketResult {
+                plugins,
+                warnings: Vec::new(),
             }
-            Err(e)
         }
+        Err(error) => source_failure(src, cache_dir, error),
     }
 }
 
@@ -1016,99 +1055,88 @@ fn matches_query(p: &MarketPlugin, q: &str) -> bool {
     }
 }
 
-/// Overall budget for one market refresh. Sources are fetched concurrently, so
-/// this bounds the whole listing: a source that misses the deadline is skipped
-/// (it keeps whatever it cached on a previous run, and is logged), rather than
-/// holding the market hostage.
 const MARKET_FETCH_BUDGET: std::time::Duration = std::time::Duration::from_secs(45);
 
-/// Core market listing: fetches every enabled source concurrently, drops core
-/// packages, merges duplicates, then filters by `query`. Sources that fail or
-/// exceed the deadline are skipped in favour of their last-good cache, so one
-/// bad source never prevents the rest of the market from rendering.
+/// 并发刷新各来源，超时来源使用缓存，警告独立于搜索结果返回。
 async fn fetch_market_impl(
     sources: Vec<PluginSourceConfig>,
     cache_dir: Option<std::path::PathBuf>,
     query: Option<String>,
-) -> Vec<MarketPlugin> {
+    budget: std::time::Duration,
+) -> MarketResult {
     let mut all_enabled: Vec<PluginSourceConfig> =
         sources.into_iter().filter(|s| s.enabled).collect();
     all_enabled.sort_by_key(|s| s.order);
-
-    // Tasks report `(order, id, result)`. An aborted task's output is discarded
-    // by JoinSet, so which sources finished is tracked here rather than read
-    // back out of the set.
-    let mut set: tokio::task::JoinSet<(u32, String, Result<Vec<MarketPlugin>, String>)> =
-        tokio::task::JoinSet::new();
+    let mut set = tokio::task::JoinSet::new();
+    let mut task_sources = std::collections::HashMap::new();
     for src in all_enabled.iter().cloned() {
         let dir = cache_dir.clone();
-        set.spawn(async move {
-            let res = fetch_source(&src, dir.as_deref()).await;
-            (src.order, src.id, res)
+        let id = src.id.clone();
+        let task = set.spawn(async move {
+            let result = fetch_source(&src, dir.as_deref()).await;
+            (src.order, src.id, result)
         });
+        task_sources.insert(task.id(), id);
     }
-
-    let mut collected: Vec<(u32, Vec<MarketPlugin>)> = Vec::new();
-    let mut finished: std::collections::HashSet<String> = std::collections::HashSet::new();
-    let deadline = tokio::time::Instant::now() + MARKET_FETCH_BUDGET;
+    let mut collected = Vec::new();
+    let mut warnings = Vec::new();
+    let mut finished = std::collections::HashSet::new();
+    let deadline = tokio::time::Instant::now() + budget;
     loop {
         let joined = match tokio::time::timeout_at(deadline, set.join_next()).await {
-            Ok(Some(j)) => j,
-            // No tasks left.
+            Ok(Some(joined)) => joined,
             Ok(None) => break,
-            // Budget exhausted: the rest are aborted below.
             Err(_) => break,
         };
         match joined {
-            Ok((order, id, Ok(list))) => {
+            Ok((order, id, result)) => {
                 finished.insert(id.clone());
-                collected.push((order, drop_core_packages(&id, list)));
+                collected.push((order, drop_core_packages(&id, result.plugins)));
+                warnings.extend(result.warnings);
             }
-            Ok((_, id, Err(e))) => {
-                finished.insert(id.clone());
-                crate::log_warn!("插件源「{id}」获取失败，忽略: {e}");
+            Err(error) => {
+                crate::log_warn!("插件源任务异常: {error}");
+                if let Some(src) = task_sources
+                    .get(&error.id())
+                    .and_then(|id| all_enabled.iter().find(|src| &src.id == id))
+                {
+                    finished.insert(src.id.clone());
+                    let result = source_failure(
+                        src,
+                        cache_dir.as_deref(),
+                        format!("插件源任务异常: {error}"),
+                    );
+                    collected.push((src.order, drop_core_packages(&src.id, result.plugins)));
+                    warnings.extend(result.warnings);
+                }
             }
-            Err(e) => crate::log_warn!("插件源任务异常: {e}"),
         }
     }
-    // Sources that never reported (over budget or panicked): fall back to their
-    // last-good cache so they still contribute last-known data.
     set.abort_all();
-    for src in all_enabled.iter() {
+    for src in &all_enabled {
         if finished.contains(&src.id) {
             continue;
         }
-        if let Some(dir) = cache_dir.as_deref() {
-            if let Some(c) = read_source_cache(dir, &src.id) {
-                crate::log_warn!(
-                    "插件源「{}」超出 {}s 预算，改用 last-good 缓存({} 条)",
-                    src.id,
-                    MARKET_FETCH_BUDGET.as_secs(),
-                    c.plugins.len()
-                );
-                collected.push((src.order, c.plugins));
-                continue;
-            }
-        }
-        crate::log_warn!(
-            "插件源「{}」超出 {}s 预算且无缓存，本次跳过",
-            src.id,
-            MARKET_FETCH_BUDGET.as_secs()
-        );
+        let error = format!("获取超时，超过 {} 秒刷新时限", budget.as_secs_f64());
+        let result = source_failure(src, cache_dir.as_deref(), error);
+        collected.push((src.order, drop_core_packages(&src.id, result.plugins)));
+        warnings.extend(result.warnings);
     }
-
-    let plugins = merge_plugins(collected);
-    let q = query
+    warnings.sort_by_key(|warning| {
+        all_enabled
+            .iter()
+            .position(|src| src.id == warning.source_id)
+    });
+    let mut plugins = merge_plugins(collected);
+    if let Some(query) = query
         .as_deref()
-        .map(|s| s.trim().to_lowercase())
-        .filter(|s| !s.is_empty());
-    match q {
-        Some(q) => plugins
-            .into_iter()
-            .filter(|p| matches_query(p, &q))
-            .collect(),
-        None => plugins,
+        .map(str::trim)
+        .filter(|query| !query.is_empty())
+    {
+        let query = query.to_lowercase();
+        plugins.retain(|plugin| matches_query(plugin, &query));
     }
+    MarketResult { plugins, warnings }
 }
 
 /// The source list the launcher actually uses: the `DSHLAUNCHER_PLUGIN_SOURCES`
@@ -1222,18 +1250,15 @@ pub fn list_plugin_sources(state: State<'_, AppState>) -> Result<Vec<PluginSourc
     Ok(effective_plugin_sources(state.inner()))
 }
 
-/// Fetches the marketplace plugin catalog from every enabled source and merges
-/// them. A source that fails to fetch or parse degrades to its last-good cache
-/// (logged) and never aborts the whole listing. `query` filters by
-/// id/name/description (case-insensitive substring).
+/// 合并已启用来源，并返回失败原因与缓存状态。
 #[tauri::command(rename_all = "snake_case")]
 pub async fn fetch_plugin_market(
     state: State<'_, AppState>,
     query: Option<String>,
-) -> Result<Vec<MarketPlugin>, String> {
+) -> Result<MarketResult, String> {
     let cache_dir = state.data_dir.join("plugin-cache");
     let sources = effective_plugin_sources(state.inner());
-    Ok(fetch_market_impl(sources, Some(cache_dir), query).await)
+    Ok(fetch_market_impl(sources, Some(cache_dir), query, MARKET_FETCH_BUDGET).await)
 }
 
 // ---------------------------------------------------------------------------
@@ -3743,6 +3768,189 @@ fn ensure_cordis_insert(dir: &std::path::Path, plugin_id: &str) -> Result<(), St
 mod tests {
     use super::*;
 
+    async fn catalog_server(
+        body: Vec<u8>,
+        chunked: bool,
+        delay: std::time::Duration,
+    ) -> (String, tokio::task::JoinHandle<()>) {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}/catalog.json", listener.local_addr().unwrap());
+        let task = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut request = [0; 4096];
+            let received = stream.read(&mut request).await.unwrap();
+            assert!(received > 0);
+            tokio::time::sleep(delay).await;
+            let headers = if chunked {
+                "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n"
+                    .to_string()
+            } else {
+                format!(
+                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    body.len()
+                )
+            };
+            stream.write_all(headers.as_bytes()).await.unwrap();
+            if chunked {
+                for chunk in body.chunks(body.len().div_ceil(2)) {
+                    stream
+                        .write_all(format!("{:x}\r\n", chunk.len()).as_bytes())
+                        .await
+                        .unwrap();
+                    stream.write_all(chunk).await.unwrap();
+                    stream.write_all(b"\r\n").await.unwrap();
+                }
+                stream.write_all(b"0\r\n\r\n").await.unwrap();
+            } else {
+                stream.write_all(&body).await.unwrap();
+            }
+        });
+        (url, task)
+    }
+
+    #[tokio::test]
+    async fn awesome_catalog_larger_than_eight_mib_is_loaded() {
+        let body = serde_json::to_vec(&serde_json::json!({
+            "plugins": [{
+                "name": "foo",
+                "install": "dsh plugin --profile web add @foo/bar",
+                "description": { "en": "x".repeat(9 * 1024 * 1024) }
+            }]
+        }))
+        .unwrap();
+        let (url, server) = catalog_server(body, false, std::time::Duration::ZERO).await;
+        let mut source = src("awesome", SourceKind::Awesome, Confidence::Curated, 0);
+        source.url = url;
+        let plugins = fetch_catalog(&source).await.unwrap();
+        assert!(plugins.iter().any(|plugin| plugin.id == "@foo/bar"));
+        server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn json_response_size_is_checked_for_known_and_chunked_bodies() {
+        let body = br#"{"example":"foo"}"#.to_vec();
+        for chunked in [false, true] {
+            let (url, server) =
+                catalog_server(body.clone(), chunked, std::time::Duration::ZERO).await;
+            assert_eq!(
+                fetch_json(&url, body.len()).await.unwrap()["example"],
+                "foo"
+            );
+            server.await.unwrap();
+            let (url, server) =
+                catalog_server(body.clone(), chunked, std::time::Duration::ZERO).await;
+            let cap = body.len() - 1;
+            let error = fetch_json(&url, cap).await.unwrap_err();
+            assert!(error.contains(&url));
+            assert!(error.contains(&format!("上限 {cap} 字节")));
+            server.await.unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn market_refresh_keeps_successful_sources_and_reports_cached_failures() {
+        let dir = std::env::temp_dir().join(format!("dsh-market-{}", uuid::Uuid::new_v4()));
+        let (good_url, good_server) = catalog_server(
+            serde_json::to_vec(&vec![entry("foo", "可用插件")]).unwrap(),
+            false,
+            std::time::Duration::ZERO,
+        )
+        .await;
+        let (bad_url, bad_server) =
+            catalog_server(b"invalid-json".to_vec(), false, std::time::Duration::ZERO).await;
+        let mut good = src("good", SourceKind::Primary, Confidence::Official, 0);
+        good.url = good_url;
+        let mut bad = src("bad", SourceKind::Primary, Confidence::Unverified, 1);
+        bad.url = bad_url;
+        write_source_cache(
+            &dir,
+            &bad.id,
+            &[entry("bar", "缓存插件"), entry("@deepseek-ai/dsh", "核心")],
+        );
+        let before = std::fs::read(cache_file(&dir, &bad.id)).unwrap();
+        let result = fetch_market_impl(
+            vec![good, bad.clone()],
+            Some(dir.clone()),
+            None,
+            MARKET_FETCH_BUDGET,
+        )
+        .await;
+        assert_eq!(result.plugins.len(), 2);
+        assert!(result.plugins.iter().any(|plugin| plugin.id == "foo"));
+        assert!(result.plugins.iter().any(|plugin| plugin.id == "bar"));
+        assert_eq!(result.warnings.len(), 1);
+        assert_eq!(result.warnings[0].source_id, "bad");
+        assert!(result.warnings[0].cached);
+        assert!(result.warnings[0].error.contains("解析 JSON"));
+        assert_eq!(std::fs::read(cache_file(&dir, &bad.id)).unwrap(), before);
+        assert!(read_source_cache(&dir, "good")
+            .unwrap()
+            .plugins
+            .iter()
+            .any(|plugin| plugin.id == "foo"));
+        good_server.await.unwrap();
+        bad_server.await.unwrap();
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn market_deadline_reports_sources_with_and_without_cache() {
+        for cached in [false, true] {
+            let dir = std::env::temp_dir().join(format!("dsh-market-{}", uuid::Uuid::new_v4()));
+            let (url, server) =
+                catalog_server(b"[]".to_vec(), false, std::time::Duration::from_secs(10)).await;
+            let mut source = src("slow", SourceKind::Primary, Confidence::Unverified, 0);
+            source.url = url;
+            if cached {
+                write_source_cache(
+                    &dir,
+                    &source.id,
+                    &[entry("foo", "缓存插件"), entry("@deepseek-ai/dsh", "核心")],
+                );
+            }
+            let result = fetch_market_impl(
+                vec![source],
+                Some(dir.clone()),
+                None,
+                std::time::Duration::from_millis(100),
+            )
+            .await;
+            assert_eq!(
+                result.plugins.iter().any(|plugin| plugin.id == "foo"),
+                cached
+            );
+            assert!(result
+                .plugins
+                .iter()
+                .all(|plugin| !is_core_package(&plugin.id)));
+            assert_eq!(result.warnings.len(), 1);
+            assert_eq!(result.warnings[0].source_id, "slow");
+            assert_eq!(result.warnings[0].cached, cached);
+            assert!(result.warnings[0].error.contains("超时"));
+            server.abort();
+            assert!(server.await.unwrap_err().is_cancelled());
+            if cached {
+                std::fs::remove_dir_all(dir).unwrap();
+            }
+        }
+    }
+
+    #[tokio::test]
+    #[ignore = "需要访问真实 Awesome 插件目录"]
+    async fn live_awesome_catalog_includes_reported_plugin() {
+        let source = default_plugin_sources()
+            .into_iter()
+            .find(|source| source.kind == SourceKind::Awesome)
+            .unwrap();
+        let plugins = fetch_catalog(&source).await.unwrap();
+        assert!(plugins.iter().any(|plugin| plugin.id == "@aiwayds/dsh-dcp"));
+        println!(
+            "Awesome 目录解析成功，共 {} 个插件，已找到 @aiwayds/dsh-dcp",
+            plugins.len()
+        );
+    }
+
     #[test]
     fn index_registry_is_forwarded_once() {
         let args = forwarded_pnpm_flags_with_registry(
@@ -4492,15 +4700,18 @@ mod tests {
         let cached = vec![entry("github:o/r", "from-cache")];
         write_source_cache(&dir, &s.id, &cached);
 
-        let got = fetch_source(&s, Some(&dir))
-            .await
-            .expect("an unreachable source must degrade to its last-good cache");
+        let result = fetch_source(&s, Some(&dir)).await;
+        assert!(result.warnings[0].cached);
+        assert_eq!(result.warnings[0].source_id, s.id);
+        let got = result.plugins;
         assert_eq!(got.len(), 1);
         assert_eq!(got[0].name, "from-cache");
 
         // With no cache, the failure is surfaced (the caller logs and skips it).
         let empty_dir = dir.join("empty");
-        assert!(fetch_source(&s, Some(&empty_dir)).await.is_err());
+        let failed = fetch_source(&s, Some(&empty_dir)).await;
+        assert!(failed.plugins.is_empty());
+        assert!(!failed.warnings[0].cached);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -4555,19 +4766,8 @@ mod tests {
         // `unreachable_source_falls_back_to_last_good_cache` (connection
         // refused on port 1).
         let before = read_source_cache(&dir, &s.id).expect("stale cache written above");
-        let fetched_live = match fetch_source(&s, Some(&dir)).await {
-            Ok(got) => {
-                // The only two ways to get here are the successful refresh and
-                // the last-good fallback; the fake id tells them apart.
-                let served_stale = got.iter().any(|p| p.id == "github:stale/x");
-                assert!(
-                    served_stale || !got.is_empty(),
-                    "a refresh must either succeed or fall back to the stale cache"
-                );
-                !served_stale
-            }
-            Err(_) => false,
-        };
+        let fetched = fetch_source(&s, Some(&dir)).await;
+        let fetched_live = fetched.warnings.is_empty();
         // Reading the cache back is pure I/O, so it pins the contract down
         // without touching the network.
         let after = read_source_cache(&dir, &s.id).expect("cache must remain readable");
@@ -4971,7 +5171,9 @@ mod tests {
     #[ignore]
     async fn live_fetch_market() {
         let sources = default_plugin_sources();
-        let plugins = fetch_market_impl(sources.clone(), None, None).await;
+        let plugins = fetch_market_impl(sources.clone(), None, None, MARKET_FETCH_BUDGET)
+            .await
+            .plugins;
         assert!(!plugins.is_empty(), "market must return plugins");
         // Every enabled source must have contributed: a source that failed only
         // logs a warning and is skipped, so a missing source id is the signal.

@@ -10,6 +10,7 @@ import type {
   LauncherSettings,
   MarketModpack,
   MarketPlugin,
+  MarketSourceWarning,
   PluginChannel,
   PluginSource,
   PluginSourceConfig,
@@ -57,6 +58,8 @@ interface LauncherState {
   remoteLoading: boolean
   runtime: RuntimeStatus | null
   marketPlugins: MarketPlugin[]
+  marketWarnings: MarketSourceWarning[]
+  marketError: string | null
   marketLoading: boolean
   marketLoadedAt: number | null
   /** Configurable plugin catalog sources (issue #plugin-sources). */
@@ -125,6 +128,8 @@ export const useLauncherStore = defineStore('launcher', {
     remoteLoading: false,
     runtime: null,
     marketPlugins: [],
+    marketWarnings: [],
+    marketError: null,
     marketLoading: false,
     marketLoadedAt: null,
     pluginSources: [],
@@ -322,16 +327,19 @@ export const useLauncherStore = defineStore('launcher', {
       }
     },
 
-    /** Load the plugin marketplace catalog (cached until force=true). */
+    /** 保留来源警告，成功刷新后替换旧结果，整体请求失败时保留已有目录。 */
     async refreshMarketPlugins(force = false) {
-      if (this.marketLoading) return
-      if (!force && this.marketPlugins.length > 0 && this.marketLoadedAt) return
+      if (this.marketLoading) { return }
+      if (!force && this.marketPlugins.length > 0 && this.marketLoadedAt) { return }
       this.marketLoading = true
+      this.marketError = null
       try {
-        this.marketPlugins = await api.fetchPluginMarket()
+        const result = await api.fetchPluginMarket()
+        this.marketPlugins = result.plugins
+        this.marketWarnings = result.warnings
         this.marketLoadedAt = Date.now()
-      } catch (e) {
-        Message.error(String(e))
+      } catch (error) {
+        this.marketError = String(error)
       } finally {
         this.marketLoading = false
       }

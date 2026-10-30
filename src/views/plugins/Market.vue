@@ -18,7 +18,7 @@ const store = useLauncherStore()
 const scrollAccessor = injectDownloadScroll()
 
 const search = ref(store.pluginMarketSearch)
-const error = ref<string | null>(null)
+const error = computed(() => store.marketError)
 /** '' means "all sources". */
 const sourceFilter = ref<'' | PluginSource>(store.pluginMarketSource)
 
@@ -107,12 +107,7 @@ function choose(p: MarketPlugin) {
 }
 
 async function load() {
-  error.value = null
-  try {
-    await store.refreshMarketPlugins(true)
-  } catch (e) {
-    error.value = String(e)
-  }
+  await store.refreshMarketPlugins(true)
 }
 
 onMounted(() => {
@@ -160,18 +155,30 @@ onBeforeUnmount(() => {
 
       <div v-if="error" class="market-error">
         <a-alert :title="t('plugins.marketError')" type="error">
+          {{ error }}
           <template #action>
             <a-button size="mini" @click="load">{{ t('plugins.retry') }}</a-button>
           </template>
         </a-alert>
       </div>
 
-      <div v-if="!error && store.marketLoading" class="market-loading">
+      <a-alert
+        v-for="warning in store.marketWarnings"
+        :key="warning.source_id"
+        class="market-warning"
+        type="warning"
+        :title="t('plugins.sourceFetchFailed', { source: sourceLabel(warning.source_id) })"
+      >
+        <p>{{ warning.error }}</p>
+        <p>{{ t(warning.cached ? 'plugins.sourceUsingCache' : 'plugins.sourceUnavailable') }}</p>
+      </a-alert>
+
+      <div v-if="store.marketLoading" class="market-loading">
         <a-spin />
       </div>
 
-      <template v-else-if="!error">
-        <div v-if="filtered.length === 0" class="market-empty">
+      <template v-else>
+        <div v-if="filtered.length === 0 && !error" class="market-empty">
           <a-empty :description="search ? t('plugins.noMatch') : t('plugins.empty')" />
         </div>
         <div
@@ -235,8 +242,14 @@ onBeforeUnmount(() => {
   width: 190px;
 }
 
-.market-error {
+.market-error,
+.market-warning {
   margin: 12px 0;
+}
+
+.market-warning p {
+  margin: 0;
+  overflow-wrap: anywhere;
 }
 
 .market-loading {

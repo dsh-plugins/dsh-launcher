@@ -20,6 +20,7 @@ import type {
   LauncherSettings,
   LauncherUpdateInfo,
   MarketPlugin,
+  MarketResult,
   MarketModpack,
   McpServer,
   ModpackManifest,
@@ -1328,13 +1329,13 @@ async function mockCall<T>(cmd: string, args?: Record<string, unknown>): Promise
           urls: { repository: 'https://github.com/some-user/dsh-live-notifier' },
         },
       ]
-      if (!q) return all as T
-      return all.filter((p) => {
+      const plugins = !q ? all : all.filter((p) => {
         const desc = Array.isArray(p.description)
           ? p.description.map((d) => d.content).join(' ')
           : (p.description ?? '')
         return (p.id + p.name + desc).toLowerCase().includes(q)
-      }) as T
+      })
+      return { plugins, warnings: [] } as T
     }
     case 'fetch_modpack_market': {
       // Mirrors the real PackForge index: one dshhome pack, one plain-string
@@ -1835,7 +1836,7 @@ export const api = {
   },
 
   // Plugin marketplace
-  fetchPluginMarket: (query?: string) => call<MarketPlugin[]>('fetch_plugin_market', { query: query ?? null }),
+  fetchPluginMarket: (query?: string) => call<MarketResult>('fetch_plugin_market', { query: query ?? null }),
   /** The configurable plugin source registry (issue #plugin-sources). */
   listPluginSources: () => call<PluginSourceConfig[]>('list_plugin_sources'),
   fetchPluginVersions: (pluginId: string, channel: PluginChannel, page = 1, repo?: string) =>

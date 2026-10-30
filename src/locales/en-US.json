@@ -213,6 +213,9 @@
     "issues": "Issues",
     "viewLinks": "Links",
     "marketError": "Failed to load plugin market",
+    "sourceFetchFailed": "Failed to refresh {source}",
+    "sourceUsingCache": "Showing the last successful cached catalog. Plugin information may be outdated.",
+    "sourceUnavailable": "No cached catalog is available. Plugins from this source are absent from these results.",
     "retry": "Retry",
     "source": {
       "dsh-plugins": "Official source",

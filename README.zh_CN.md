@@ -31,6 +31,7 @@ Tauri 2 + Vue 3 + TypeScript + Sass + vue-router + vue-i18n + Arco Design Vue。
   - 主目录自动识别数组目录与[官方 `format: 1` 索引](https://dsh-plug.in/api/dsh-plugins.json)。官方版本直接读取索引，安装使用精确 npm 版本及指定 registry，或固定 Git 提交及包子目录；
   - `support_versions` 和 `relationship[].versions` 支持分号分隔的区间并集，例如 `[0.1.0-rc.6,0.2.0-rc.1);[0.2.1-rc.4,)`，预发布版本参与比较，仍支持 SemVer 范围和版本数组；
   - 安装流程为向导：选插件 → 选版本渠道/版本 → 选实例 → 选 Profile → 创建任务 → 开始安装。安装前按实例 DSH 版本检查兼容性；明确不兼容时需确认继续，切换插件、版本或实例后重新确认；
+  - 静态插件目录支持最大 32 MiB 响应。来源获取失败或超时会显示具体原因；有最近成功的缓存时继续展示缓存，并提示其可能过期；
   - 自动允许依赖的 buildScripts（`onlyBuiltDependencies: ['*']`），并在 Profile 的 `package.json`（`dsh.profile.bundles` + `dependencies`）注册插件，非 bundle 插件额外写入 `cordis.patch.yml` insert 行。
 - **按 Profile 管理插件**（实例设置 → 插件页）：筛选 Profile 查看其下插件，单个启用/禁用，支持多选批量启用/禁用；核心 `@deepseek-ai/*` 包不显示。
 - **系统托盘**：

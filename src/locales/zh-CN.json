@@ -213,6 +213,9 @@
     "issues": "Issues",
     "viewLinks": "链接",
     "marketError": "插件市场加载失败",
+    "sourceFetchFailed": "{source} 刷新失败",
+    "sourceUsingCache": "正在使用最近成功获取的缓存，插件信息可能不是最新。",
+    "sourceUnavailable": "此来源暂无可用缓存，本次结果未包含该来源的插件。",
     "retry": "重试",
     "source": {
       "dsh-plugins": "官方插件源",

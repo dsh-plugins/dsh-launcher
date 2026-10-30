@@ -630,6 +630,20 @@ export interface IndexPlugin {
   versions: { version: string; publishTimestamp: number; source: InstallSource; engines?: { dsh?: string } }[]
 }
 
+
+/** 来源失败时显示原因，并说明是否仍在使用最近成功的数据。 */
+export interface MarketSourceWarning {
+  source_id: string
+  error: string
+  cached: boolean
+}
+
+/** 一次目录刷新的插件与来源警告，警告不受搜索条件影响。 */
+export interface MarketResult {
+  plugins: MarketPlugin[]
+  warnings: MarketSourceWarning[]
+}
+
 export interface MarketPlugin {
   catalog?: IndexPlugin | null
   id: string
