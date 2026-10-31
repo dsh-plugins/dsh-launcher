@@ -121,12 +121,6 @@ fn instance_id_of_tray(tray_id: &str) -> Option<&str> {
     tray_id.strip_prefix(INSTANCE_TRAY_PREFIX)
 }
 
-/// The app's bundled icon as an owned image, so the fallback outlives the
-/// borrow of the app handle.
-fn default_icon(app: &AppHandle) -> Option<Image<'static>> {
-    app.default_window_icon().cloned().map(Image::to_owned)
-}
-
 /// Builds the launcher tray and registers the single global menu / tray event
 /// handlers. Called from setup with no running instances yet.
 pub fn build_tray(app: &AppHandle) -> tauri::Result<()> {
@@ -238,7 +232,7 @@ pub async fn sync_tray_icons(app: &AppHandle) {
 
     let mut resolved = Vec::with_capacity(snapshot.len());
     for (id, name, profile) in &snapshot {
-        let icon = resolve_instance_icon(app, id).await;
+        let icon = crate::icons::resolve_instance_icon(app, id).await;
         let tooltip = tooltip_for(app, id, name, profile).await;
         resolved.push((id, name, profile, icon, tooltip));
     }
@@ -396,105 +390,6 @@ async fn remove_instance_tray(app: &AppHandle, instance_id: &str) {
         .titles
         .remove(instance_id);
     crate::log_info!("已移除实例 {instance_id} 的托盘图标");
-}
-
-/// The instance's own icon, or the launcher default. Local files live in the
-/// HOME (a UNC round trip for WSL homes); remote URLs are downloaded once per
-/// session and cached.
-async fn resolve_instance_icon(app: &AppHandle, instance_id: &str) -> Option<Image<'static>> {
-    let source = {
-        let state = app.state::<AppState>();
-        let cfg = state.config.lock().unwrap();
-        cfg.instances
-            .iter()
-            .find(|i| i.id == instance_id)
-            .and_then(|i| i.icon.clone())
-    };
-    let Some(source) = source else {
-        return default_icon(app);
-    };
-
-    {
-        let state = app.state::<AppState>();
-        let cache = state.instance_icon_cache.lock().unwrap();
-        if let Some((cached_source, bytes)) = cache.get(instance_id) {
-            if cached_source == &source {
-                // `None` bytes cache a *failure* for this source, so a broken
-                // icon URL or unreadable file is not retried on every sync.
-                return bytes
-                    .as_deref()
-                    .and_then(decode_icon)
-                    .or_else(|| default_icon(app));
-            }
-        }
-    }
-
-    let bytes = if source == "local" {
-        read_local_instance_icon(app, instance_id).await
-    } else {
-        match crate::icons::fetch_square_icon_png(&source).await {
-            Ok(bytes) => Some(bytes),
-            Err(e) => {
-                crate::log_warn!("实例 {instance_id} 的托盘图标下载失败: {e}");
-                None
-            }
-        }
-    };
-
-    app.state::<AppState>()
-        .instance_icon_cache
-        .lock()
-        .unwrap()
-        .insert(instance_id.to_string(), (source, bytes.clone()));
-    match bytes {
-        Some(bytes) => decode_icon(&bytes).or_else(|| default_icon(app)),
-        None => default_icon(app),
-    }
-}
-
-/// Clears the cached icon of one instance, so the next sync re-reads it.
-pub fn invalidate_instance_icon(app: &AppHandle, instance_id: &str) {
-    app.state::<AppState>()
-        .instance_icon_cache
-        .lock()
-        .unwrap()
-        .remove(instance_id);
-}
-
-async fn read_local_instance_icon(app: &AppHandle, instance_id: &str) -> Option<Vec<u8>> {
-    let path = {
-        let state = app.state::<AppState>();
-        let cfg = state.config.lock().unwrap();
-        let inst = cfg.instances.iter().find(|i| i.id == instance_id)?;
-        let home = cfg
-            .homes
-            .iter()
-            .find(|h| h.id == inst.home_id)
-            .map(crate::wsl::home_fs_path)?;
-        crate::icons::local_icon_path(&home, instance_id)
-    };
-    let read = crate::wsl::run_blocking(move || std::fs::read(path)).await;
-    match read {
-        Ok(Ok(bytes)) => Some(bytes),
-        Ok(Err(e)) => {
-            crate::log_warn!("实例 {instance_id} 的本地托盘图标读取失败: {e}");
-            None
-        }
-        Err(e) => {
-            crate::log_warn!("实例 {instance_id} 的本地托盘图标读取失败: {e}");
-            None
-        }
-    }
-}
-
-fn decode_icon(bytes: &[u8]) -> Option<Image<'static>> {
-    match Image::from_bytes(bytes) {
-        Ok(img) => Some(img),
-        Err(e) => {
-            crate::log_warn!("托盘图标解码失败: {e}");
-            None
-        }
-    }
 }
 
 /// `"<name> · <profile> · 运行中（N 个活跃对话）"`, capped for the shell. The

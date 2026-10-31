@@ -261,6 +261,76 @@ fn current_instance_url(app: &AppHandle, instance_id: &str, fallback: &str) -> S
         .unwrap_or_else(|| fallback.to_string())
 }
 
+/// Resolves icons off the event thread (remote URLs and WSL files may be slow).
+/// Both web and TUI windows use the same icon and fallback as the instance tray.
+pub(crate) fn refresh_instance_window_icon(app: &AppHandle, instance_id: &str) {
+    let windows: Vec<_> = [
+        format!("instance-{instance_id}"),
+        format!("tui-{instance_id}"),
+    ]
+    .iter()
+    .filter_map(|label| app.get_webview_window(label))
+    .collect();
+    if windows.is_empty() {
+        return;
+    }
+    let app = app.clone();
+    let id = instance_id.to_string();
+    tauri::async_runtime::spawn(async move {
+        if let Some(icon) = crate::icons::resolve_instance_icon(&app, &id).await {
+            for win in windows {
+                if let Err(e) = set_instance_window_icon(&win, icon.clone()) {
+                    crate::log_warn!("更新实例 {id} 的窗口图标失败: {e}");
+                }
+            }
+        }
+    });
+}
+
+fn set_instance_window_icon(
+    win: &tauri::WebviewWindow,
+    icon: tauri::image::Image<'static>,
+) -> tauri::Result<()> {
+    #[cfg(not(windows))]
+    {
+        win.set_icon(icon)
+    }
+    #[cfg(windows)]
+    {
+        let window = win.clone();
+        win.run_on_main_thread(move || match window.set_icon(icon) {
+            Ok(()) => match window.hwnd() {
+                Ok(hwnd) => sync_taskbar_icon(hwnd),
+                Err(e) => crate::log_warn!("读取窗口 {} 的句柄失败: {e}", window.label()),
+            },
+            Err(e) => crate::log_warn!("设置窗口 {} 的图标失败: {e}", window.label()),
+        })
+    }
+}
+
+/// Tauri/tao's set_icon updates ICON_SMALL only. Mirror its managed HICON
+/// into ICON_BIG for the taskbar and Alt+Tab. The caller runs both updates
+/// on the event thread so the handle is installed before reading it and
+/// cannot be replaced/dropped between these native messages.
+#[cfg(windows)]
+fn sync_taskbar_icon(hwnd: windows::Win32::Foundation::HWND) {
+    use windows::Win32::{
+        Foundation::{LPARAM, WPARAM},
+        UI::WindowsAndMessaging::{SendMessageW, ICON_BIG, ICON_SMALL, WM_GETICON, WM_SETICON},
+    };
+    // SAFETY: hwnd belongs to this live window and this runs on its event
+    // thread. The small HICON stays owned by tao; neither copy nor destroy it.
+    unsafe {
+        let icon = SendMessageW(hwnd, WM_GETICON, Some(WPARAM(ICON_SMALL as usize)), None);
+        SendMessageW(
+            hwnd,
+            WM_SETICON,
+            Some(WPARAM(ICON_BIG as usize)),
+            Some(LPARAM(icon.0)),
+        );
+    }
+}
+
 /// Opens (or focuses) the webview window hosting the instance's DSH Web GUI.
 pub fn open_instance_window(
     app: &AppHandle,
@@ -276,6 +346,7 @@ pub fn open_instance_window(
     // Loopback origin of this instance's DSH page, when it has one.
     let origin = loopback_origin(&url);
     if let Some(win) = app.get_webview_window(&label) {
+        refresh_instance_window_icon(app, instance_id);
         let _ = win.show();
         let _ = win.unminimize();
         let _ = win.set_focus();
@@ -330,6 +401,7 @@ pub fn open_instance_window(
     let win = apply_window_store(builder, app, instance_id)
         .build()
         .map_err(|e| e.to_string())?;
+    refresh_instance_window_icon(app, instance_id);
     remember_window_url(app, instance_id, &url);
     record_focus(app, instance_id);
     maybe_hide_main(app);
@@ -360,6 +432,7 @@ pub fn close_instance_window(app: &AppHandle, instance_id: &str) {
 pub fn open_tui_window(app: &AppHandle, instance_id: &str) -> Result<(), String> {
     let label = format!("tui-{instance_id}");
     if let Some(win) = app.get_webview_window(&label) {
+        refresh_instance_window_icon(app, instance_id);
         let _ = win.show();
         let _ = win.unminimize();
         let _ = win.set_focus();
@@ -394,6 +467,7 @@ pub fn open_tui_window(app: &AppHandle, instance_id: &str) -> Result<(), String>
         builder = builder.data_directory(dir);
     }
     let win = builder.build().map_err(|e| e.to_string())?;
+    refresh_instance_window_icon(app, instance_id);
     record_focus(app, instance_id);
     maybe_hide_main(app);
 
@@ -424,6 +498,72 @@ mod tests {
     // than in the file header, where a Windows build would flag them unused.
     use base64::Engine;
     use sha2::{Digest, Sha256};
+
+    #[cfg(windows)]
+    #[test]
+    fn taskbar_icon_follows_replacement_and_default_restore() {
+        use windows::{
+            core::w,
+            Win32::{
+                Foundation::{HWND, LPARAM, WPARAM},
+                UI::WindowsAndMessaging::{
+                    CreateWindowExW, DestroyWindow, LoadIconW, SendMessageW, ICON_BIG, ICON_SMALL,
+                    IDI_APPLICATION, IDI_INFORMATION, IDI_WARNING, WM_GETICON, WM_SETICON,
+                },
+            },
+        };
+
+        struct TestWindow(HWND);
+        impl Drop for TestWindow {
+            fn drop(&mut self) {
+                // SAFETY: this test owns the window on the creating thread.
+                unsafe { DestroyWindow(self.0).unwrap() };
+            }
+        }
+
+        // An invisible native window exercises the actual Windows icon slots
+        // without a WebView2 installation or a Tauri event loop.
+        // SAFETY: STATIC is a built-in class; no borrowed window data is used.
+        let win = TestWindow(unsafe {
+            CreateWindowExW(
+                Default::default(),
+                w!("STATIC"),
+                w!("icon regression"),
+                Default::default(),
+                0,
+                0,
+                0,
+                0,
+                None,
+                None,
+                None,
+                None,
+            )
+            .unwrap()
+        });
+        for resource in [IDI_INFORMATION, IDI_WARNING, IDI_APPLICATION] {
+            // SAFETY: LoadIconW returns shared system icons, which must not
+            // be destroyed. SendMessageW targets our live window synchronously.
+            unsafe {
+                let icon = LoadIconW(None, resource).unwrap();
+                SendMessageW(
+                    win.0,
+                    WM_SETICON,
+                    Some(WPARAM(ICON_SMALL as usize)),
+                    Some(LPARAM(icon.0 as isize)),
+                );
+                sync_taskbar_icon(win.0);
+                let small =
+                    SendMessageW(win.0, WM_GETICON, Some(WPARAM(ICON_SMALL as usize)), None);
+                let big = SendMessageW(win.0, WM_GETICON, Some(WPARAM(ICON_BIG as usize)), None);
+                assert_eq!(small.0, icon.0 as isize);
+                assert_eq!(
+                    big.0, icon.0 as isize,
+                    "taskbar must follow every replacement and reset"
+                );
+            }
+        }
+    }
 
     #[test]
     fn loopback_origin_accepts_only_plain_loopback_http() {

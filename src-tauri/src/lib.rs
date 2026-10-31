@@ -34,10 +34,15 @@ use std::collections::HashMap;
 use std::sync::Mutex as StdMutex;
 use tauri::{Emitter, Manager, WindowEvent};
 
-/// A cached instance tray icon: the icon source it was resolved from (so a
+/// A cached instance icon shared by windows and trays: the source (so a
 /// changed icon invalidates the entry) and the PNG bytes, or `None` when
 /// resolving that source failed (so a broken URL is not retried every refresh).
-pub type CachedInstanceIcon = (String, Option<Vec<u8>>);
+/// The shared cell coalesces concurrent window/tray loads and identifies a
+/// stale in-flight load after an icon is replaced or cleared.
+pub type CachedInstanceIcon = (
+    String,
+    std::sync::Arc<tokio::sync::OnceCell<Option<Vec<u8>>>>,
+);
 
 pub struct AppState {
     pub config_path: std::path::PathBuf,
@@ -85,7 +90,7 @@ pub struct AppState {
     /// stored: holding a `TrayIcon` handle would keep the native icon alive
     /// after `remove_tray_by_id`.
     pub instance_trays: StdMutex<std::collections::HashSet<String>>,
-    /// Per-instance tray icon cache: instance id → [`CachedInstanceIcon`].
+    /// Per-instance icon cache shared by windows and trays: id → [`CachedInstanceIcon`].
     /// Decoding a PNG and, for remote icons, downloading it must not happen on
     /// every tray sync.
     pub instance_icon_cache: StdMutex<HashMap<String, CachedInstanceIcon>>,

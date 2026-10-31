@@ -6,7 +6,7 @@
 use std::path::{Path, PathBuf};
 
 use crate::AppState;
-use tauri::{Manager, State};
+use tauri::{image::Image, Manager, State};
 
 const ICON_MAX_BYTES: usize = 16 * 1024 * 1024;
 const ICON_SIZE: u32 = 256;
@@ -157,8 +157,7 @@ pub async fn set_instance_icon(
     inst.icon = Some(icon);
     crate::commands::save_state(&state, &cfg)?;
     drop(cfg);
-    // The running instance's tray icon follows the new icon (issue #72).
-    refresh_instance_tray(&app, &instance_id);
+    refresh_instance_icons(&app, &instance_id);
     Ok(())
 }
 
@@ -183,15 +182,14 @@ pub fn clear_instance_icon(
     if was_local {
         let _ = std::fs::remove_file(local_icon_path(&home, &instance_id));
     }
-    // The running instance's tray icon follows the cleared icon (issue #72).
-    refresh_instance_tray(&app, &instance_id);
+    refresh_instance_icons(&app, &instance_id);
     Ok(())
 }
 
-/// Drops the cached tray icon of one instance and re-syncs, so a changed
-/// instance icon shows up on the live tray immediately (issue #72). Called
-/// from the icon commands; a no-op when the instance has no tray.
-fn refresh_instance_tray(app: &tauri::AppHandle, instance_id: &str) {
+/// Refreshes open instance windows even when per-instance trays are disabled.
+fn refresh_instance_icons(app: &tauri::AppHandle, instance_id: &str) {
+    invalidate_instance_icon(app, instance_id);
+    crate::windows::refresh_instance_window_icon(app, instance_id);
     let running = app
         .state::<AppState>()
         .instance_trays
@@ -201,11 +199,127 @@ fn refresh_instance_tray(app: &tauri::AppHandle, instance_id: &str) {
     if !running {
         return;
     }
-    crate::tray::invalidate_instance_icon(app, instance_id);
     let app = app.clone();
     tauri::async_runtime::spawn(async move {
         crate::tray::sync_tray_icons(&app).await;
     });
+}
+
+/// The app's bundled icon as an owned image, so the fallback outlives the
+/// borrow of the app handle.
+fn default_icon(app: &tauri::AppHandle) -> Option<Image<'static>> {
+    app.default_window_icon().cloned().map(Image::to_owned)
+}
+
+/// The instance's own icon, or the launcher default. Local files live in the
+/// HOME (a UNC round trip for WSL homes); remote URLs are downloaded once per
+/// session and cached.
+pub(crate) async fn resolve_instance_icon(
+    app: &tauri::AppHandle,
+    instance_id: &str,
+) -> Option<Image<'static>> {
+    loop {
+        let state = app.state::<AppState>();
+        let source = {
+            let cfg = state.config.lock().unwrap();
+            cfg.instances
+                .iter()
+                .find(|i| i.id == instance_id)
+                .and_then(|i| i.icon.clone())
+        };
+        let Some(source) = source else {
+            return default_icon(app);
+        };
+
+        let cell = {
+            let mut cache = state.instance_icon_cache.lock().unwrap();
+            let entry = cache
+                .entry(instance_id.to_string())
+                .or_insert_with(|| (source.clone(), Default::default()));
+            if entry.0 != source {
+                *entry = (source.clone(), Default::default());
+            }
+            entry.1.clone()
+        };
+        let bytes = cell
+            .get_or_init(|| async {
+                if source == "local" {
+                    read_local_instance_icon(app, instance_id).await
+                } else {
+                    match fetch_square_icon_png(&source).await {
+                        Ok(bytes) => Some(bytes),
+                        Err(e) => {
+                            crate::log_warn!("实例 {instance_id} 的图标下载失败: {e}");
+                            None
+                        }
+                    }
+                }
+            })
+            .await;
+
+        // A set/clear may have invalidated this load while it was waiting on
+        // a remote URL or WSL file. Retry against the current source rather
+        // than applying the old image over the user's latest choice.
+        let current = state
+            .instance_icon_cache
+            .lock()
+            .unwrap()
+            .get(instance_id)
+            .is_some_and(|(_, cached)| std::sync::Arc::ptr_eq(cached, &cell));
+        if current {
+            // Cache failures too, so an unreachable URL is not retried on
+            // every window reopen or tray sync.
+            return bytes
+                .as_deref()
+                .and_then(decode_icon)
+                .or_else(|| default_icon(app));
+        }
+    }
+}
+
+/// Clears the cached icon of one instance, so the next sync re-reads it.
+pub(crate) fn invalidate_instance_icon(app: &tauri::AppHandle, instance_id: &str) {
+    app.state::<AppState>()
+        .instance_icon_cache
+        .lock()
+        .unwrap()
+        .remove(instance_id);
+}
+
+async fn read_local_instance_icon(app: &tauri::AppHandle, instance_id: &str) -> Option<Vec<u8>> {
+    let path = {
+        let state = app.state::<AppState>();
+        let cfg = state.config.lock().unwrap();
+        let inst = cfg.instances.iter().find(|i| i.id == instance_id)?;
+        let home = cfg
+            .homes
+            .iter()
+            .find(|h| h.id == inst.home_id)
+            .map(crate::wsl::home_fs_path)?;
+        local_icon_path(&home, instance_id)
+    };
+    let read = crate::wsl::run_blocking(move || std::fs::read(path)).await;
+    match read {
+        Ok(Ok(bytes)) => Some(bytes),
+        Ok(Err(e)) => {
+            crate::log_warn!("实例 {instance_id} 的本地图标读取失败: {e}");
+            None
+        }
+        Err(e) => {
+            crate::log_warn!("实例 {instance_id} 的本地图标读取失败: {e}");
+            None
+        }
+    }
+}
+
+fn decode_icon(bytes: &[u8]) -> Option<Image<'static>> {
+    match Image::from_bytes(bytes) {
+        Ok(img) => Some(img),
+        Err(e) => {
+            crate::log_warn!("图标解码失败: {e}");
+            None
+        }
+    }
 }
 
 /// Resolves an instance icon for display: remote URLs pass through, local
