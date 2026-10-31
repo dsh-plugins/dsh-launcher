@@ -377,6 +377,8 @@ pub async fn start_instance_process(
                 cmd.arg("--no-open");
             }
         }
+        let mut env = env;
+        crate::runtime::apply_instance_pnpm_env(&state.data_dir, &mut env)?;
         for (k, v) in env {
             cmd.env(k, v);
         }

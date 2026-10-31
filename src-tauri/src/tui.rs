@@ -232,7 +232,10 @@ async fn start_tui_session_inner(
         ));
     }
 
-    let env = crate::process::build_env(&cfg, instance_id)?;
+    let mut env = crate::process::build_env(&cfg, instance_id)?;
+    if wsl_distro.is_none() {
+        crate::runtime::apply_instance_pnpm_env(&state.data_dir, &mut env)?;
+    }
 
     // Resolve the target working directory (issue #97): the instance's
     // configured `tui_cwd`, or DSH_HOME as the unchanged default.

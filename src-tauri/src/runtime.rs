@@ -163,6 +163,69 @@ pub fn ensure_local_node_on_path(data_dir: &Path) {
     }
 }
 
+/// Keep package operations started *inside* an instance (e.g. dshmarket's
+/// Gist restore) on the same store/toolchain as launcher-managed installs.
+/// pnpm 11 ignores npm_config_store_dir; its own env spelling is required.
+pub(crate) fn apply_instance_pnpm_env(
+    data_dir: &Path,
+    env: &mut Vec<(String, String)>,
+) -> Result<(), String> {
+    if !env
+        .iter()
+        .any(|(key, _)| key.eq_ignore_ascii_case("PNPM_CONFIG_STORE_DIR"))
+    {
+        env.push((
+            "PNPM_CONFIG_STORE_DIR".into(),
+            data_dir.join(".pnpm-store").to_string_lossy().into_owned(),
+        ));
+    }
+    let tools = data_dir.join("tools");
+    let version = std::fs::read(tools.join("node_modules/pnpm/package.json"))
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
+        .and_then(|manifest| {
+            manifest["version"]
+                .as_str()
+                .and_then(|v| semver::Version::parse(v).ok())
+        });
+    if version.is_some_and(|v| v.major == crate::tasks::REQUIRED_PNPM_MAJOR as u64) {
+        let bin = if cfg!(windows) {
+            tools.clone()
+        } else {
+            tools.join("bin")
+        };
+        let executable = if cfg!(windows) { "pnpm.cmd" } else { "pnpm" };
+        if bin.join(executable).is_file() {
+            prepend_env_path(env, &bin)?;
+        }
+    }
+    Ok(())
+}
+
+fn env_key_matches(key: &str, expected: &str) -> bool {
+    if cfg!(windows) {
+        key.eq_ignore_ascii_case(expected)
+    } else {
+        key == expected
+    }
+}
+
+/// Preserve an instance's effective PATH when adding managed tools or shims.
+pub(crate) fn prepend_env_path(env: &mut Vec<(String, String)>, dir: &Path) -> Result<(), String> {
+    let existing = env
+        .iter()
+        .rev()
+        .find(|(key, _)| env_key_matches(key, "PATH"))
+        .map(|(_, value)| std::ffi::OsString::from(value))
+        .unwrap_or_else(|| std::env::var_os("PATH").unwrap_or_default());
+    let mut paths = vec![dir.to_path_buf()];
+    paths.extend(std::env::split_paths(&existing).filter(|p| p != dir));
+    let joined = std::env::join_paths(paths).map_err(|e| format!("拼接实例 PATH 失败: {e}"))?;
+    env.retain(|(key, _)| !env_key_matches(key, "PATH"));
+    env.push(("PATH".into(), joined.to_string_lossy().into_owned()));
+    Ok(())
+}
+
 /// dist archive file name for this platform.
 fn node_archive_name(version: &str) -> String {
     #[cfg(windows)]
@@ -654,6 +717,177 @@ async fn do_install_node(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn package_env_fixture(version: &str) -> PathBuf {
+        let root = std::env::temp_dir().join(format!("dsh-pnpm-env-{}", uuid::Uuid::new_v4()));
+        let package = root.join("tools/node_modules/pnpm");
+        std::fs::create_dir_all(&package).unwrap();
+        std::fs::write(
+            package.join("package.json"),
+            format!(r#"{{"version":"{version}"}}"#),
+        )
+        .unwrap();
+        let bin = if cfg!(windows) {
+            root.join("tools")
+        } else {
+            root.join("tools/bin")
+        };
+        std::fs::create_dir_all(&bin).unwrap();
+        std::fs::write(
+            bin.join(if cfg!(windows) { "pnpm.cmd" } else { "pnpm" }),
+            "",
+        )
+        .unwrap();
+        root
+    }
+
+    #[test]
+    fn instance_package_env_keeps_managed_pnpm_when_terminal_shim_is_added() {
+        let root = package_env_fixture("11.0.0");
+        let user_bin = root.join("user tools");
+        let shim = root.join("instance shim");
+        let mut env = vec![("PATH".into(), user_bin.to_string_lossy().into_owned())];
+        apply_instance_pnpm_env(&root, &mut env).unwrap();
+        prepend_env_path(&mut env, &shim).unwrap();
+        let path = &env.iter().find(|(key, _)| key == "PATH").unwrap().1;
+        let paths: Vec<_> = std::env::split_paths(path).collect();
+        let managed = if cfg!(windows) {
+            root.join("tools")
+        } else {
+            root.join("tools/bin")
+        };
+        assert_eq!(paths, vec![shim, managed, user_bin]);
+        assert_eq!(env.iter().filter(|(key, _)| key == "PATH").count(), 1);
+        assert_eq!(
+            env.iter()
+                .find(|(key, _)| key == "PNPM_CONFIG_STORE_DIR")
+                .unwrap()
+                .1,
+            root.join(".pnpm-store").to_string_lossy()
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn instance_package_env_preserves_explicit_store_and_skips_old_managed_pnpm() {
+        let root = package_env_fixture("10.0.0");
+        let mut env = vec![
+            ("PATH".into(), "custom-path".into()),
+            ("pnpm_config_store_dir".into(), "custom-store".into()),
+        ];
+        let before = env.clone();
+        apply_instance_pnpm_env(&root, &mut env).unwrap();
+        assert_eq!(env, before);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[tokio::test]
+    #[ignore = "requires DSH_TEST_PNPM_CLI pointing to a pnpm 11 bin/pnpm.cjs or bin/pnpm.mjs"]
+    async fn instance_pnpm_add_and_backup_restore_keep_the_launcher_store() {
+        let cli = std::env::var_os("DSH_TEST_PNPM_CLI").expect("set DSH_TEST_PNPM_CLI");
+        let root = std::env::temp_dir().join(format!("dsh-issue107-{}", uuid::Uuid::new_v4()));
+        let profile = root.join("profile");
+        std::fs::create_dir_all(&profile).unwrap();
+        for name in ["first", "second", "restored"] {
+            let package = root.join(name);
+            std::fs::create_dir_all(&package).unwrap();
+            std::fs::write(
+                package.join("package.json"),
+                format!(r#"{{"name":"issue107-{name}","version":"1.0.0","main":"index.js"}}"#),
+            )
+            .unwrap();
+            std::fs::write(
+                package.join("index.js"),
+                format!("module.exports = '{name}'"),
+            )
+            .unwrap();
+            std::fs::write(package.join("keep.txt"), "existing plugin").unwrap();
+            let archive = std::fs::File::create(root.join(format!("{name}.tgz"))).unwrap();
+            let gzip = flate2::write::GzEncoder::new(archive, flate2::Compression::default());
+            let mut tar = tar::Builder::new(gzip);
+            tar.append_dir_all("package", &package).unwrap();
+            tar.into_inner().unwrap().finish().unwrap();
+        }
+        std::fs::write(profile.join("package.json"), r#"{"name":"issue107-profile","private":true,"dependencies":{"issue107-first":"file:../first.tgz"}}"#).unwrap();
+        let mut env = Vec::new();
+        apply_instance_pnpm_env(&root, &mut env).unwrap();
+        let run = |args: Vec<&str>, env: Vec<(String, String)>| {
+            let mut cmd = tokio::process::Command::new(crate::process::node());
+            crate::process::hide_console(&mut cmd);
+            cmd.arg(&cli)
+                .args(args)
+                .current_dir(&profile)
+                .env_remove("pnpm_config_store_dir")
+                .env_remove("PNPM_CONFIG_STORE_DIR")
+                .env_remove("npm_config_store_dir")
+                .env("CI", "true")
+                .envs(env);
+            cmd.output()
+        };
+        let installed = run(
+            vec!["install", "--offline", "--no-frozen-lockfile"],
+            env.clone(),
+        )
+        .await
+        .unwrap();
+        assert!(
+            installed.status.success(),
+            "{}",
+            String::from_utf8_lossy(&installed.stdout)
+        );
+        let modules = profile.join("node_modules");
+        let marker = modules.join("issue107-first/keep.txt");
+        assert_eq!(std::fs::read_to_string(&marker).unwrap(), "existing plugin");
+        let drifted = run(
+            vec!["add", "file:../second.tgz", "--offline"],
+            vec![(
+                "PNPM_CONFIG_STORE_DIR".into(),
+                root.join("other-store").to_string_lossy().into_owned(),
+            )],
+        )
+        .await
+        .unwrap();
+        assert!(!drifted.status.success());
+        assert!(
+            String::from_utf8_lossy(&drifted.stdout).contains("ERR_PNPM_UNEXPECTED_STORE"),
+            "{}",
+            String::from_utf8_lossy(&drifted.stdout)
+        );
+        let added = run(vec!["add", "file:../second.tgz", "--offline"], env.clone())
+            .await
+            .unwrap();
+        assert!(
+            added.status.success(),
+            "{}",
+            String::from_utf8_lossy(&added.stdout)
+        );
+
+        // dshmarket restores package.json first, then invokes `dsh plugin install`.
+        let manifest_file = profile.join("package.json");
+        let mut manifest: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&manifest_file).unwrap()).unwrap();
+        manifest["dependencies"]["issue107-restored"] = "file:../restored.tgz".into();
+        std::fs::write(&manifest_file, serde_json::to_vec(&manifest).unwrap()).unwrap();
+        let restored = run(vec!["install", "--offline", "--no-frozen-lockfile"], env)
+            .await
+            .unwrap();
+        assert!(
+            restored.status.success(),
+            "{}",
+            String::from_utf8_lossy(&restored.stdout)
+        );
+        assert_eq!(std::fs::read_to_string(&marker).unwrap(), "existing plugin");
+        for name in ["first", "second", "restored"] {
+            assert!(modules.join(format!("issue107-{name}/index.js")).is_file());
+        }
+        let modules_config = std::fs::read_to_string(modules.join(".modules.yaml")).unwrap();
+        let config: serde_yaml::Value = serde_yaml::from_str(&modules_config).unwrap();
+        assert_eq!(
+            Path::new(config["storeDir"].as_str().unwrap()),
+            root.join(".pnpm-store/v11")
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
 
     #[cfg(unix)]
     fn unique_temp(tag: &str) -> PathBuf {

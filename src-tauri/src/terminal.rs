@@ -133,17 +133,14 @@ fn terminal_env(
     if cfg.settings.proxy_enabled && cfg.settings.proxy_apply_dsh {
         crate::proxy::override_env(&mut env, &cfg.settings);
     }
+    if home.wsl.is_none() {
+        crate::runtime::apply_instance_pnpm_env(&state.data_dir, &mut env)?;
+    }
 
     // WSL terminals (issue #19 follow-up): the Windows `dsh` shim cannot run
     // inside bash, so PATH is left to the distro.
     if let Some(shim_dir) = shim_dir {
-        let existing = std::env::var_os("PATH").unwrap_or_default();
-        let mut entries = vec![shim_dir.to_path_buf()];
-        entries.extend(std::env::split_paths(&existing));
-        match std::env::join_paths(entries) {
-            Ok(joined) => env.push(("PATH".to_string(), joined.to_string_lossy().to_string())),
-            Err(e) => crate::log_warn!("拼接 PATH 失败，沿用系统 PATH: {e}"),
-        }
+        crate::runtime::prepend_env_path(&mut env, shim_dir)?;
     }
     Ok(env)
 }
