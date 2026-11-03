@@ -569,7 +569,7 @@ fn open_instance_from_tray(app: &AppHandle, instance_id: &str) {
             let _ = crate::windows::open_tui_window(&app, &id);
             return;
         }
-        let url = state.running.lock().await.get(&id).map(|r| r.url.clone());
+        let url = state.running.lock().await.get(&id).map(|r| r.desktop_url());
         let url = match url {
             Some(Some(u)) => u,
             _ => return,

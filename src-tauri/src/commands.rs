@@ -301,6 +301,7 @@ pub fn create_instance(
         icon: None,
 
         port: None,
+        web_access: Default::default(),
         tui_cwd: None,
     };
     cfg.instances.push(inst.clone());
@@ -343,6 +344,7 @@ pub fn update_instance(
     // currently stored (the frontend spreads a possibly stale instance).
     updated.icon = cfg.instances[pos].icon.clone();
     updated.port = cfg.instances[pos].port;
+    updated.web_access = cfg.instances[pos].web_access.clone();
     updated.tui_cwd = cfg.instances[pos].tui_cwd.clone();
     cfg.instances[pos] = updated.clone();
     save_state(&state, &cfg)?;
@@ -367,13 +369,89 @@ pub fn set_instance_port(
         _ => None,
     };
     let mut cfg = state.config.lock().unwrap();
-    let Some(inst) = cfg.instances.iter_mut().find(|i| i.id == instance_id) else {
-        return Err("实例不存在".to_string());
-    };
+    let access = cfg
+        .instances
+        .iter()
+        .find(|i| i.id == instance_id)
+        .ok_or("实例不存在")?
+        .web_access
+        .clone();
+    save_web_access(&state, &mut cfg, &instance_id, access, port)
+}
+
+/// 原子保存实例的监听端口与访问策略，避免运行中的配置被局部覆盖。
+#[tauri::command(rename_all = "snake_case")]
+pub fn set_instance_web_access(
+    state: State<'_, AppState>,
+    instance_id: String,
+    access: crate::web_access::WebAccess,
+    port: Option<u16>,
+) -> Result<DshInstance, String> {
+    let mut cfg = state.config.lock().unwrap();
+    save_web_access(&state, &mut cfg, &instance_id, access, port)
+}
+
+fn save_web_access(
+    state: &State<'_, AppState>,
+    cfg: &mut crate::config::Config,
+    id: &str,
+    access: crate::web_access::WebAccess,
+    port: Option<u16>,
+) -> Result<DshInstance, String> {
+    let mut next = cfg.clone();
+    let inst = next
+        .instances
+        .iter_mut()
+        .find(|i| i.id == id)
+        .ok_or("实例不存在")?;
+    inst.web_access = access.normalized(port)?;
     inst.port = port;
-    let updated = inst.clone();
-    save_state(&state, &cfg)?;
-    Ok(updated)
+    let result = inst.clone();
+    save_state(state, &next)?;
+    *cfg = next;
+    Ok(result)
+}
+
+async fn running_share_url(
+    window: &tauri::WebviewWindow,
+    state: &State<'_, AppState>,
+    id: &str,
+) -> Result<String, String> {
+    if window.label() != "main" {
+        return Err("只能从启动器主窗口取得访问链接".into());
+    }
+    let running = state.running.lock().await;
+    let links = running
+        .get(id)
+        .and_then(|r| r.links.as_ref())
+        .ok_or("实例未运行或尚未就绪")?;
+    Ok(links.share.to_string())
+}
+
+/// 仅响应主窗口的主动复制操作，返回当前进程签发的完整登录链接。
+#[tauri::command]
+pub async fn get_instance_share_url(
+    window: tauri::WebviewWindow,
+    state: State<'_, AppState>,
+    id: String,
+) -> Result<String, String> {
+    running_share_url(&window, &state, &id).await
+}
+
+/// 本机 TLS 名称不匹配时，允许用户用系统浏览器打开配置的分享入口。
+#[tauri::command]
+pub async fn open_instance_share_url(
+    window: tauri::WebviewWindow,
+    state: State<'_, AppState>,
+    id: String,
+) -> Result<(), String> {
+    let url = running_share_url(&window, &state, &id).await?;
+    open::that(url).map_err(|e| {
+        format!(
+            "打开分享入口失败: {}",
+            crate::web_launch::redact_tokens(&e.to_string())
+        )
+    })
 }
 
 /// Normalizes the TUI working-directory input (issue #97) into the value
@@ -656,6 +734,7 @@ pub fn copy_instance(
         last_profile: None,
         icon: source.icon.clone(),
         port: source.port,
+        web_access: Default::default(),
         tui_cwd,
     };
     // A local icon is stored per instance id; copy the file for the clone,
@@ -1617,7 +1696,7 @@ pub async fn open_instance_window(
         .lock()
         .await
         .get(&id)
-        .and_then(|r| r.url.clone());
+        .and_then(|r| r.desktop_url());
     // A window can outlive the URL record: the registry entry is removed the
     // moment the child process exits. An open window stays authoritative for
     // its own page, so re-navigating it does not need a fresh URL.
@@ -1943,9 +2022,37 @@ pub fn export_instance_log(
     if dest.is_empty() {
         return Err("未选择导出路径".to_string());
     }
-    std::fs::copy(&src, dest).map_err(|e| format!("导出日志失败: {e}"))?;
+    export_redacted_log(&src, std::path::Path::new(dest))
+        .map_err(|e| format!("导出日志失败: {e}"))?;
     crate::log_info!("已导出实例 {instance_id} 日志到 {dest}");
     Ok(dest.to_string())
+}
+
+fn export_redacted_log(src: &std::path::Path, dest: &std::path::Path) -> std::io::Result<()> {
+    use std::io::{BufRead, BufReader, BufWriter, Write};
+    let source = std::fs::File::open(src)?;
+    if dest.exists() && src.canonicalize()? == dest.canonicalize()? {
+        return Err(std::io::Error::other("请选择与原日志不同的导出路径"));
+    }
+    let temp = dest.with_file_name(format!(".dsh-log-{}.tmp", uuid::Uuid::new_v4()));
+    let mut writer = BufWriter::new(std::fs::File::create_new(&temp)?);
+    let result = (|| {
+        let mut reader = BufReader::new(source);
+        let mut line = String::new();
+        while reader.read_line(&mut line)? > 0 {
+            writer.write_all(crate::web_launch::redact_tokens(&line).as_bytes())?;
+            line.clear();
+        }
+        writer.flush()?;
+        drop(writer);
+        std::fs::rename(&temp, dest)
+    })();
+    if result.is_err() {
+        if let Err(error) = std::fs::remove_file(&temp) {
+            crate::log_warn!("清理临时导出日志失败: {error}");
+        }
+    }
+    result
 }
 
 /// Heuristic crash-suspect guess (issue #64): scans the tail of the crashed
@@ -2052,7 +2159,10 @@ fn read_tail(path: &std::path::Path, n: usize) -> Vec<String> {
         lines.pop();
     }
     let start = lines.len().saturating_sub(n);
-    lines[start..].iter().map(|s| s.to_string()).collect()
+    lines[start..]
+        .iter()
+        .map(|line| crate::web_launch::redact_tokens(line).into_owned())
+        .collect()
 }
 
 /// Opens the DSH_HOME directory of one instance in the file manager.

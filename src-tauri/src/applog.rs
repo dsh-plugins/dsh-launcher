@@ -115,6 +115,7 @@ pub fn write(level: Level, msg: &str) {
     if (level as u8) < LOG_LEVEL.load(Ordering::Relaxed) {
         return;
     }
+    let msg = crate::web_launch::redact_tokens(msg);
     let now = Local::now();
     let line = format!(
         "[{}.{:03}] [{}] {}",

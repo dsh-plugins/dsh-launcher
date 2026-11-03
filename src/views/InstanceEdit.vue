@@ -29,6 +29,7 @@ import type {
   SkillUpdateInfo,
 } from '@/api/types'
 import TerminalEmbed from './TerminalEmbed.vue'
+import InstanceNetwork from '@/components/InstanceNetwork.vue'
 import SkillRepoDialog from '@/components/SkillRepoDialog.vue'
 import MigratePluginsDialog from '@/components/MigratePluginsDialog.vue'
 import ModelPickerDialog from '@/components/ModelPickerDialog.vue'
@@ -41,6 +42,7 @@ const { t, te } = useI18n()
 const store = useLauncherStore()
 
 const editingId = computed(() => (route.params.id as string | undefined) ?? null)
+const networkInstance = computed(() => editingId.value ? store.instanceById(editingId.value) : undefined)
 const isNew = computed(() => !editingId.value)
 
 // --- WSL runtime (issue #19) ---------------------------------------------------
@@ -58,7 +60,7 @@ const homeOptions = computed(() =>
 
 // --- Sidebar tabs ---------------------------------------------------------------
 
-type TabKey = 'basic' | 'env' | 'profiles' | 'plugins' | 'skills' | 'agents' | 'mcp' | 'models' | 'storage' | 'terminal'
+type TabKey = 'basic' | 'network' | 'env' | 'profiles' | 'plugins' | 'skills' | 'agents' | 'mcp' | 'models' | 'storage' | 'terminal'
 const activeTab = ref<TabKey>('basic')
 
 // --- Form state ---------------------------------------------------------------
@@ -77,39 +79,6 @@ const newProfileName = ref('')
 const creatingProfile = ref(false)
 const addingProfile = ref(false)
 const saving = ref(false)
-
-// --- Web port (issue #21) ---------------------------------------------------
-
-const portInput = ref('')
-const portBusy = ref(false)
-
-/** Parses the port field: empty / non-integer / outside 1-65535 → random. */
-function parsePortInput(raw: string): number | null {
-  const text = raw.trim()
-  if (!text) return null
-  const n = Number(text)
-  return Number.isInteger(n) && n >= 1 && n <= 65535 ? n : null
-}
-
-async function applyPort() {
-  if (!editingId.value) return
-  portBusy.value = true
-  try {
-    const updated = await api.setInstancePort(editingId.value, parsePortInput(portInput.value))
-    const inst = store.instanceById(editingId.value)
-    if (inst) inst.port = updated.port ?? null
-    portInput.value = updated.port ? String(updated.port) : ''
-    Message.success(
-      updated.port
-        ? t('instanceEdit.portSaved', { port: updated.port })
-        : t('instanceEdit.portSavedRandom'),
-    )
-  } catch (e) {
-    Message.error(String(e))
-  } finally {
-    portBusy.value = false
-  }
-}
 
 // --- TUI working directory (issue #97) ----------------------------------------
 
@@ -242,7 +211,6 @@ onMounted(async () => {
   versionId.value = inst.version_id
   homeId.value = inst.home_id
   defaultProfile.value = inst.default_profile ?? undefined
-  portInput.value = inst.port ? String(inst.port) : ''
   tuiCwdInput.value = inst.tui_cwd ?? ''
   syncActiveProfile(inst)
   envRows.value = Object.entries(inst.env_overrides).map(([key, value]) => ({ key, value }))
@@ -2364,6 +2332,7 @@ const terminalRunning = ref(false)
     <aside class="edit-sidebar">
       <a-menu :selected-keys="[activeTab]" @menu-item-click="(key: string) => (activeTab = key as TabKey)">
         <a-menu-item key="basic">{{ t('instanceEdit.tabs.basic') }}</a-menu-item>
+        <a-menu-item v-if="networkInstance" key="network">{{ t('network.title') }}</a-menu-item>
         <a-menu-item key="env">{{ t('instanceEdit.tabs.env') }}</a-menu-item>
         <a-menu-item key="profiles">{{ t('instanceEdit.tabs.profiles') }}</a-menu-item>
         <a-menu-item key="plugins">{{ t('instanceEdit.tabs.plugins') }}</a-menu-item>
@@ -2453,25 +2422,6 @@ const terminalRunning = ref(false)
                 />
               </a-form-item>
 
-              <a-form-item v-if="editingId">
-                <template #label>
-                  {{ t('instanceEdit.port') }}
-                  <HintIcon :content="t('instanceEdit.portHint')" />
-                </template>
-                <a-space>
-                  <a-input
-                    v-model="portInput"
-                    :placeholder="t('instanceEdit.portPlaceholder')"
-                    allow-clear
-                    style="width: 200px"
-                    @press-enter="applyPort"
-                  />
-                  <a-button :loading="portBusy" @click="applyPort">
-                    {{ t('instanceEdit.portApply') }}
-                  </a-button>
-                </a-space>
-              </a-form-item>
-
               <a-form-item v-if="editingId && hasTuiProfile">
                 <template #label>
                   {{ t('instanceEdit.tuiCwd') }}
@@ -2517,6 +2467,8 @@ const terminalRunning = ref(false)
               <a-button size="large" @click="router.push({ name: 'home' })">{{ t('instanceEdit.cancel') }}</a-button>
             </div>
           </div>
+
+          <InstanceNetwork v-else-if="activeTab === 'network' && networkInstance" :key="networkInstance.id" :instance="networkInstance" />
 
           <!-- Environment overrides -->
           <div v-else-if="activeTab === 'env'" class="dl-card edit-card">

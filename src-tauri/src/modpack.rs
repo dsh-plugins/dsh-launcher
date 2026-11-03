@@ -2177,6 +2177,7 @@ async fn do_import_modpack(
             last_profile: None,
             icon: None,
             port: None,
+            web_access: Default::default(),
             tui_cwd: None,
         };
         cfg.instances.push(inst.clone());
@@ -2441,6 +2442,7 @@ async fn do_import_dshhome(
             last_profile: None,
             icon: None,
             port: None,
+            web_access: Default::default(),
             tui_cwd: None,
         };
         cfg.instances.push(inst.clone());

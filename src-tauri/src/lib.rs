@@ -27,6 +27,8 @@ mod tui;
 mod tui_cwd;
 mod update;
 mod update_window;
+mod web_access;
+mod web_launch;
 mod windows;
 mod wsl;
 
@@ -330,6 +332,10 @@ pub fn run() {
             commands::create_instance,
             commands::update_instance,
             commands::set_instance_port,
+            web_access::list_web_interfaces,
+            commands::set_instance_web_access,
+            commands::get_instance_share_url,
+            commands::open_instance_share_url,
             commands::set_instance_tui_cwd,
             commands::delete_instance,
             commands::copy_instance,

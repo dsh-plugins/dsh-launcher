@@ -41,6 +41,25 @@ export interface DshVersion {
   wsl?: string | null
 }
 
+/** Web Profile 对外提供服务的方式。 */
+export type WebMode = 'local' | 'lan' | 'direct' | 'proxy'
+
+/** 端口与本配置一起保存，运行状态另行记录本次启动使用的模式。 */
+export interface WebAccess {
+  mode: WebMode
+  address: string | null
+  networks: string[]
+  public_url: string | null
+  trusted_hosts: string[]
+  tls: { cert: string; key: string } | null
+}
+
+export interface WebInterface {
+  name: string
+  address: string
+  subnet: string
+}
+
 export interface DshInstance {
   id: string
   name: string
@@ -51,7 +70,8 @@ export interface DshInstance {
   last_profile: string | null
   /** http(s) URL, "local" (cropped PNG in the HOME), or null/undefined = launcher default. */
   icon?: string | null
-  /** Preferred web port (1-65535); null/undefined = random free port. */
+  web_access?: WebAccess
+  /** 指定监听端口，留空时由系统分配。 */
   port?: number | null
   /** TUI instance working directory; null/undefined = DSH_HOME (default behavior). */
   tui_cwd?: string | null
@@ -207,6 +227,8 @@ export interface EarlyLoadingContext {
 export interface InstanceStatus {
   id: string
   state: InstanceState
+  web_mode?: WebMode | null
+  allowed_networks?: string[]
   url: string | null
   profile: string | null
   exit_code: number | null

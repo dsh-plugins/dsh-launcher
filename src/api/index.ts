@@ -2,8 +2,11 @@
 // desktop shell, and falls back to a localStorage-backed mock in a plain
 // browser so the UI can be previewed without the Rust side.
 
+import { validNetworkRanges } from '@/utils/network-ranges'
 import type {
   CopyInstanceInput,
+  WebAccess,
+  WebInterface,
   DoctorReport,
   CompatibilityReport,
   DshHome,
@@ -234,6 +237,7 @@ const MOCK_CATALOG: CatalogProvider[] = [
 
 // Simple event emitter used by the mock to mimic Tauri events.
 type Listener<T> = (payload: T) => void
+const mockLaunches = new Map<string, string>()
 const statusListeners = new Set<Listener<InstanceStatus>>()
 const taskProgressListeners = new Set<Listener<TaskProgress>>()
 const taskLogListeners = new Set<Listener<TaskLog>>()
@@ -680,9 +684,44 @@ async function mockCall<T>(cmd: string, args?: Record<string, unknown>): Promise
     case 'update_instance': {
       const input = args?.input as DshInstance
       if (db.instances.some((i) => i.name === input.name && i.id !== input.id)) fail('同名实例已存在')
+      const current = db.instances.find((i) => i.id === input.id)
+      if (!current) fail('实例不存在')
+      input.web_access = current.web_access
+      input.port = current.port
       db.instances = db.instances.map((i) => (i.id === input.id ? input : i))
       saveDb(db)
       return input as T
+    }
+    case 'list_web_interfaces':
+      return [{ name: 'Ethernet', address: '192.168.1.10', subnet: '192.168.1.0/24' },
+        { name: 'Ethernet', address: 'fd00::10', subnet: 'fd00::/64' }] as T
+    case 'set_instance_web_access': {
+      const inst = db.instances.find((i) => i.id === args?.instance_id)
+      if (!inst) fail('实例不存在')
+      const access = args?.access as WebAccess
+      const port = args?.port as number | null
+      if (port !== null && (!Number.isInteger(port) || port < 1 || port > 65535)) { fail('固定端口无效') }
+      if (access.mode === 'proxy' && !port) { fail('反向代理需要固定端口') }
+      if (access.tls && [access.tls.cert, access.tls.key].some((p) => !/^(?:\/|[a-z]:[\\/]|\\\\)/i.test(p) || /-----BEGIN|[\u0000-\u001f\u007f]/.test(p))) {
+        fail('证书和私钥需要填写绝对路径')
+      }
+      if (access.mode === 'lan' && !validNetworkRanges(access.networks)) {
+        fail('局域网白名单必须包含有效网段，不能覆盖整个地址族')
+      }
+      if (access.mode === 'proxy') {
+        const raw = access.public_url ?? ''
+        if (!/^https?:\/\/[^/]+/i.test(raw) || /[?#@\\\s]/.test(raw)) {
+          fail('请输入不含凭据、查询参数和片段的 HTTP(S) 根地址')
+        }
+        const url = new URL(raw)
+        if (access.tls && url.protocol !== 'https:') fail('启用 TLS 时公开入口需要 HTTPS')
+        if (!url.pathname.endsWith('/')) url.pathname += '/'
+        access.public_url = url.href
+      }
+      inst.web_access = access
+      inst.port = port
+      saveDb(db)
+      return inst as T
     }
     case 'set_instance_port': {
       const id = String(args?.instance_id)
@@ -709,6 +748,7 @@ async function mockCall<T>(cmd: string, args?: Record<string, unknown>): Promise
     case 'delete_instance': {
       const id = String(args?.id)
       delete db.running[id]
+      mockLaunches.delete(id)
       db.instances = db.instances.filter((i) => i.id !== id)
       if (db.settings.last_instance_id === id) db.settings.last_instance_id = null
       saveDb(db)
@@ -741,6 +781,7 @@ async function mockCall<T>(cmd: string, args?: Record<string, unknown>): Promise
         env_overrides: { ...source.env_overrides },
         default_profile: source.default_profile,
         last_profile: null,
+        port: source.port ?? null,
       }
       db.instances.push(inst)
       saveDb(db)
@@ -910,17 +951,27 @@ async function mockCall<T>(cmd: string, args?: Record<string, unknown>): Promise
       const inst = db.instances.find((i) => i.id === id)
       if (!inst) fail('实例不存在')
       inst.last_profile = profile
-      const starting: InstanceStatus = { id, state: 'starting', url: null, profile, exit_code: null }
+      const run = uuid()
+      mockLaunches.set(id, run)
+      const isWeb = !profile.includes('tui')
+      const access = inst.web_access
+      const mode = isWeb ? access?.mode ?? 'local' : null
+      const port = inst.port ?? (30000 + Math.floor(Math.random() * 20000))
+      const host = access?.address?.includes(':') ? '[' + access.address + ']' : access?.address
+      const root = mode === 'proxy' ? access?.public_url : (access?.tls ? 'https://' : 'http://') + (host ?? '127.0.0.1') + ':' + port + '/'
+      const starting: InstanceStatus = { id, state: 'starting', url: null, web_mode: mode, profile, exit_code: null }
       db.running[id] = starting
       saveDb(db)
       emitStatus(starting)
       setTimeout(() => {
         const cur = loadDb()
-        if (cur.running[id]?.state !== 'starting') return
+        if (cur.running[id]?.state !== 'starting' || mockLaunches.get(id) !== run) return
         const running: InstanceStatus = {
           id,
           state: 'running',
-          url: `http://127.0.0.1:${30000 + Math.floor(Math.random() * 20000)}`,
+          url: isWeb ? root ?? null : null,
+          web_mode: mode,
+          allowed_networks: mode === 'lan' ? access?.networks : [],
           profile,
           exit_code: null,
         }
@@ -937,12 +988,24 @@ async function mockCall<T>(cmd: string, args?: Record<string, unknown>): Promise
     }
     case 'stop_instance': {
       const id = String(args?.id)
+      mockLaunches.delete(id)
       const stopped: InstanceStatus = { id, state: 'stopped', url: null, profile: null, exit_code: 0 }
       delete db.running[id]
       saveDb(db)
       emitStatus(stopped)
       return undefined as T
     }
+    case 'get_instance_share_url': {
+      const running = db.running[String(args?.id)]
+      if (!running?.url || running.state !== 'running') fail('实例未运行或尚未就绪')
+      const link = new URL(running.url)
+      const id = String(args?.id)
+      const generation = mockLaunches.get(id) ?? uuid()
+      mockLaunches.set(id, generation)
+      link.searchParams.set('token', 'preview-' + generation)
+      return link.href as T
+    }
+    case 'open_instance_share_url':
     case 'open_instance_window': {
       // Browser preview has no Tauri webview windows; deliberately do NOT
       // window.open here so the browser never navigates to a profile page.
@@ -1609,7 +1672,11 @@ export const api = {
   listInstances: () => call<DshInstance[]>('list_instances'),
   createInstance: (input: NewInstanceInput) => call<DshInstance>('create_instance', { input }),
   updateInstance: (input: DshInstance) => call<DshInstance>('update_instance', { input }),
-  /** Sets the instance's web port; null or out-of-range = random port. */
+  listWebInterfaces: () => call<WebInterface[]>('list_web_interfaces'),
+  setInstanceWebAccess: (instanceId: string, access: WebAccess, port: number | null) =>
+    call<DshInstance>('set_instance_web_access', { instance_id: instanceId, access, port }),
+  getInstanceShareUrl: (id: string) => call<string>('get_instance_share_url', { id }),
+  openInstanceShareUrl: (id: string) => call<void>('open_instance_share_url', { id }),
   setInstancePort: (instanceId: string, port: number | null) =>
     call<DshInstance>('set_instance_port', { instance_id: instanceId, port }),
   /** Sets the instance's TUI working directory; null or empty = DSH_HOME (issue #97). */

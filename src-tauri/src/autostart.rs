@@ -229,7 +229,7 @@ async fn start_one(
         let (published, alive) = {
             let running = state.running.lock().await;
             match running.get(&id) {
-                Some(r) => (r.url.clone().filter(|u| !u.is_empty()), true),
+                Some(r) => (r.desktop_url(), true),
                 None => (None, false),
             }
         };
@@ -276,6 +276,7 @@ mod tests {
             last_profile: last.map(str::to_string),
             icon: None,
             port: None,
+            web_access: Default::default(),
             tui_cwd: None,
         }
     }

@@ -566,6 +566,7 @@ fn apply_import(cfg: &mut crate::config::Config, input: &ImportScannedInput) -> 
                         last_profile: None,
                         icon: None,
                         port: None,
+                        web_access: Default::default(),
                         tui_cwd: None,
                     });
                     report.instances_added += 1;
@@ -582,6 +583,7 @@ fn apply_import(cfg: &mut crate::config::Config, input: &ImportScannedInput) -> 
                 last_profile: None,
                 icon: None,
                 port: None,
+                web_access: Default::default(),
                 tui_cwd: None,
             });
             report.instances_added += 1;
@@ -610,14 +612,12 @@ pub async fn import_scanned(
     Ok(report)
 }
 
-/// True when `port` on 127.0.0.1 answers a TCP connect within the timeout.
-/// Used to mark launcher-external running instances (issue #31, expectation
-/// 2). Best-effort: a refused/timed-out connect means "not detected".
-pub async fn probe_external_port(port: u16) -> bool {
+/// 检查实例在所选本机网卡上是否有其他进程监听固定端口。
+async fn probe_external_port(ip: std::net::IpAddr, port: u16) -> bool {
     use tokio::net::TcpStream;
     use tokio::time::{timeout, Duration};
     timeout(Duration::from_millis(250), async {
-        TcpStream::connect(("127.0.0.1", port)).await.is_ok()
+        TcpStream::connect((ip, port)).await.is_ok()
     })
     .await
     .unwrap_or(false)
@@ -643,6 +643,7 @@ pub async fn detect_external_running(
 ) -> Result<Vec<ExternalStatus>, String> {
     let cfg = state.config.lock().unwrap().clone();
     let mut out = Vec::new();
+    let local_interfaces = std::cell::OnceCell::new();
     for inst in &cfg.instances {
         let Some(port) = inst.port else { continue };
         if state.running.lock().await.contains_key(&inst.id) {
@@ -651,7 +652,20 @@ pub async fn detect_external_running(
         if state.tui_sessions.lock().await.contains_key(&inst.id) {
             continue;
         }
-        if probe_external_port(port).await {
+        let ip = inst
+            .web_access
+            .address
+            .unwrap_or(std::net::Ipv4Addr::LOCALHOST.into());
+        if !ip.is_loopback() {
+            let interfaces = local_interfaces
+                .get_or_init(crate::web_access::list_web_interfaces)
+                .as_ref()
+                .map_err(Clone::clone)?;
+            if !interfaces.iter().any(|interface| interface.address == ip) {
+                continue;
+            }
+        }
+        if probe_external_port(ip, port).await {
             out.push(ExternalStatus {
                 id: inst.id.clone(),
                 name: inst.name.clone(),

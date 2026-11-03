@@ -55,6 +55,8 @@ pub struct DshInstance {
     /// a random free port (`--port 0`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub port: Option<u16>,
+    #[serde(default)]
+    pub web_access: crate::web_access::WebAccess,
     /// TUI instance working directory (issue #97): a plain absolute path
     /// (never the Windows `\\?\` verbatim form); `None` uses DSH_HOME, which
     /// is also the default for configs written before this field existed.
@@ -481,6 +483,9 @@ pub struct InstanceStatus {
     pub id: String,
     pub state: InstanceState,
     pub url: Option<String>,
+    pub web_mode: Option<crate::web_access::WebMode>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub allowed_networks: Vec<ipnet::IpNet>,
     pub profile: Option<String>,
     pub exit_code: Option<i32>,
 }

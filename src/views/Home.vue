@@ -9,6 +9,7 @@ import markedFootnote from 'marked-footnote'
 import markedKatex from 'marked-katex-extension'
 import DOMPurify from 'dompurify'
 import { api } from '@/api'
+import InstanceAccessLinks from '@/components/InstanceAccessLinks.vue'
 import type { CompatibilityReport as CompatibilityReportType } from '@/api/types'
 import CompatibilityReport from '@/components/CompatibilityReport.vue'
 import { useLauncherStore } from '@/stores/launcher'
@@ -519,11 +520,6 @@ watch(selectedStatus, (st) => {
   void api.reportLaunchStage(id, 'opening-window')
 }, { flush: 'post' })
 
-function copyUrl(url: string) {
-  navigator.clipboard?.writeText(url)
-  Message.success(t('common.copied'))
-}
-
 function goEditSelected() {
   if (selectedInstanceId.value) {
     router.push({ name: 'instance-edit', params: { id: selectedInstanceId.value } })
@@ -545,14 +541,7 @@ function goEditSelected() {
         >
           {{ t(`home.status.${selectedStatus.state}`) }}
         </a-tag>
-        <div v-if="running && selectedStatus?.url" class="running-url">
-          <a-link class="url-link" :title="selectedStatus.url" @click="onOpenWindow">
-            {{ selectedStatus.url }}
-          </a-link>
-          <a-button size="mini" type="text" class="url-copy" @click="copyUrl(selectedStatus.url)">
-            {{ t('common.copy') }}
-          </a-button>
-        </div>
+        <InstanceAccessLinks v-if="running && selectedStatus?.url" :status="selectedStatus" @opened="onDshWindowOpened" />
         <a-tooltip v-if="sharedHome" :content="t('home.sharedHomeWarning')">
           <a-tag color="orangered" size="small">{{ t('home.sharedHome') }}</a-tag>
         </a-tooltip>
@@ -747,30 +736,6 @@ function goEditSelected() {
 .instance-name {
   font-size: 18px;
   font-weight: 600;
-}
-
-.running-url {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  font-size: 12px;
-  max-width: 100%;
-  min-width: 0;
-
-  // Token-bearing URLs are long; ellipsize the link and keep the full URL
-  // in the hover title / copy button.
-  .url-link {
-    flex: 1 1 auto;
-    min-width: 0;
-    display: block;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  .url-copy {
-    flex-shrink: 0;
-  }
 }
 
 .action-block {

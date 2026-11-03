@@ -391,6 +391,7 @@ async fn do_create_instance(
             icon: None,
 
             port: None,
+            web_access: Default::default(),
             tui_cwd: None,
         };
         cfg.instances.push(inst.clone());
@@ -903,6 +904,7 @@ async fn do_create_wsl_instance(
             last_profile: None,
             icon: None,
             port: None,
+            web_access: Default::default(),
             tui_cwd: None,
         };
         cfg.instances.push(inst.clone());
@@ -2017,6 +2019,7 @@ async fn do_copy_instance(
             last_profile: None,
             icon: source.icon.clone(),
             port: source.port,
+            web_access: Default::default(),
             tui_cwd,
         };
         cfg.instances.push(inst.clone());

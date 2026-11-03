@@ -256,7 +256,11 @@ fn current_instance_url(app: &AppHandle, instance_id: &str, fallback: &str) -> S
         .running
         .try_lock()
         .ok()
-        .and_then(|running| running.get(instance_id).and_then(|entry| entry.url.clone()))
+        .and_then(|running| {
+            running
+                .get(instance_id)
+                .and_then(|entry| entry.desktop_url())
+        })
         .or_else(|| state.window_urls.lock().unwrap().get(instance_id).cloned())
         .unwrap_or_else(|| fallback.to_string())
 }
@@ -376,7 +380,7 @@ pub fn open_instance_window(
             .unwrap_or(true);
         if stale {
             crate::log_info!("实例 {instance_id}：窗口已打开，重新导航到当前会话地址");
-            let parsed = url.parse().map_err(|e| format!("无效的 URL {url}: {e}"))?;
+            let parsed = url.parse().map_err(|e| format!("实例启动地址无效: {e}"))?;
             if let Err(e) = win.navigate(parsed) {
                 crate::log_warn!("实例 {instance_id}：重新导航失败: {e}");
             }
@@ -389,7 +393,7 @@ pub fn open_instance_window(
     if url.is_empty() {
         return Err("实例未在运行或尚未就绪".to_string());
     }
-    let parsed = WebviewUrl::External(url.parse().map_err(|e| format!("无效的 URL {url}: {e}"))?);
+    let parsed = WebviewUrl::External(url.parse().map_err(|e| format!("实例启动地址无效: {e}"))?);
     let builder = WebviewWindowBuilder::new(app, label, parsed)
         .title(format!("{name} — DSH"))
         .inner_size(1024.0, 576.0)

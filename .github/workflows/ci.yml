@@ -54,6 +54,8 @@ jobs:
         run: cargo test --manifest-path src-tauri/Cargo.toml --workspace --locked
       - name: 市场兼容性测试
         run: pnpm test:market
+      - name: 实例网络访问测试
+        run: pnpm test:network
       - name: Frontend build
         run: pnpm build
 

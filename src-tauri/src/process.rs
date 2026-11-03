@@ -1,4 +1,5 @@
 use crate::config::{Config, InstanceState, InstanceStatus};
+use crate::web_launch::{WebLaunch, WebLinks};
 use crate::AppState;
 use regex::Regex;
 use std::fs::OpenOptions;
@@ -18,15 +19,41 @@ pub struct RunningInstance {
     /// `stop_instance_process` never touches the child handle directly.
     pub kill: Arc<Notify>,
     pub profile: String,
-    pub url: Option<String>,
-    /// WSL inner process (distro + captured PID) for a clean stop (issue
-    /// #19): killing the local wsl.exe alone could orphan the inner node.
-    pub wsl: Option<(String, Arc<Mutex<Option<u32>>>)>,
+    pub links: Option<WebLinks>,
+    web: Option<WebLaunch>,
+    launch_failed: bool,
+    stopping: bool,
+}
+
+impl RunningInstance {
+    pub fn desktop_url(&self) -> Option<String> {
+        self.links.as_ref().map(|links| links.desktop.to_string())
+    }
+
+    fn status(&self, id: &str) -> InstanceStatus {
+        InstanceStatus {
+            id: id.to_string(),
+            state: if self.web.is_some() && self.links.is_none() {
+                InstanceState::Starting
+            } else {
+                InstanceState::Running
+            },
+            url: self.links.as_ref().map(WebLinks::display),
+            web_mode: self.web.as_ref().map(|web| web.mode),
+            allowed_networks: self
+                .web
+                .as_ref()
+                .map(|web| web.networks.clone())
+                .unwrap_or_default(),
+            profile: Some(self.profile.clone()),
+            exit_code: None,
+        }
+    }
 }
 
 fn url_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| Regex::new(r"dsh web: (https?://[^\s]+)").unwrap())
+    RE.get_or_init(|| Regex::new(r"^dsh web: (https?://[^\s]+)").unwrap())
 }
 
 pub fn npm() -> &'static str {
@@ -218,40 +245,6 @@ fn is_web_profile(home_path: &std::path::Path, profile: &str) -> bool {
     profile_kind(home_path, profile) == InstanceKind::Web
 }
 
-/// Whether the installed `dsh-web-app` bundle accepts `--no-open` (added in
-/// 0.1.0-rc.8). Feature-detect the flag in the bundle's startup script: the
-/// flag is a string literal in `lib/startup.js`, so presence is an exact
-/// signal that survives pre-release version-number formats. The bundle lives
-/// under pnpm's store; we scan `node_modules/.pnpm/**/@deepseek-ai/dsh-web-app/lib/startup.js`.
-fn web_app_supports_no_open(version_dir: &std::path::Path) -> bool {
-    // Source checkouts keep the bundle at its workspace path; npm trees hoist
-    // one canonical copy into the pnpm public store.
-    let startup = if is_repo_checkout(version_dir) {
-        version_dir
-            .join("packages")
-            .join("bundle")
-            .join("web-app")
-            .join("lib")
-            .join("startup.js")
-    } else {
-        // The pnpm hoisted "public" store keeps one canonical copy with a
-        // stable path; the hashed `.pnpm/<name>@<ver>_<hash>` layout would
-        // need a scan.
-        version_dir
-            .join("node_modules")
-            .join(".pnpm")
-            .join("node_modules")
-            .join("@deepseek-ai")
-            .join("dsh-web-app")
-            .join("lib")
-            .join("startup.js")
-    };
-    let Ok(raw) = std::fs::read_to_string(&startup) else {
-        return false;
-    };
-    raw.contains("--no-open") || raw.contains("no-open")
-}
-
 /// Spawns a DSH CLI process for the instance/profile and starts the watchers
 /// that parse the web URL, write logs and emit status events.
 pub async fn start_instance_process(
@@ -294,24 +287,47 @@ pub async fn start_instance_process(
 
     let env = build_env(&cfg, instance_id)?;
 
-    // WSL inner-PID capture (issue #19): shared with the stdout watcher and
-    // stop_instance_process.
-    let wsl_proc = wsl_distro
-        .clone()
-        .map(|d| (d, Arc::new(Mutex::new(Option::<u32>::None))));
-
-    // Web-app profiles (their bundle list includes @deepseek-ai/dsh-web-app)
-    // get a random free port; other profiles are managed purely as processes
-    // (no URL/webview). We detect the web bundle rather than relying on the
-    // profile being literally named "web" so user-named web profiles work.
-    let mut cmd = if let Some(distro) = &wsl_distro {
-        // WSL instance: run the distro-installed CLI through wsl.exe. The
-        // wrapper echoes the inner PID (marker), then execs node — stdout /
-        // stderr piping, URL capture and log files are unchanged. File
-        // probes go through the \\wsl$\ UNC share.
+    let (pid_sender, pid_receiver) = tokio::sync::oneshot::channel::<u32>();
+    let wsl_root = if let Some(distro) = &wsl_distro {
+        Some(crate::wsl::WslRoot::resolve(distro).await?)
+    } else {
+        None
+    };
+    let profile_dir = crate::wsl::home_fs_path(&home);
+    let is_web = is_web_profile(&profile_dir, profile)
+        || (profile == "web" && !profile_dir.join("profiles/web/package.json").exists());
+    let mut cli_args = vec!["--profile".to_string(), profile.to_string()];
+    let web = if is_web {
+        let startup = crate::web_launch::startup_script(
+            &crate::wsl::version_fs_path(version),
+            &profile_dir.join("profiles").join(profile),
+        );
+        let wsl = if let (Some(distro), Some(root)) = (&wsl_distro, &wsl_root) {
+            Some(
+                crate::web_launch::WslWeb::resolve(
+                    distro.clone(),
+                    root.node_exe(),
+                    &inst.web_access,
+                    inst.port,
+                )
+                .await?,
+            )
+        } else {
+            None
+        };
+        let plan = WebLaunch::prepare(inst.web_access.clone(), inst.port, &startup, wsl)
+            .await
+            .map_err(|e| format!("实例 {}（DSH {}）: {e}", inst.name, version.version))?;
+        plan.check_native_port()?;
+        cli_args.extend_from_slice(&plan.args);
+        Some(plan)
+    } else {
+        None
+    };
+    let mut cmd = if let (Some(distro), Some(root)) = (&wsl_distro, &wsl_root) {
         let bin_linux = format!(
             "{}/node_modules/@deepseek-ai/dsh/lib/bin.js",
-            version.dir.to_string_lossy()
+            version.dir.display()
         );
         if !crate::wsl::wsl_test(distro, "-f", &bin_linux).await {
             return Err(format!(
@@ -319,123 +335,72 @@ pub async fn start_instance_process(
                 version.version
             ));
         }
-        let root = crate::wsl::WslRoot::resolve(distro).await?;
-        let home_linux = home.path.to_string_lossy().to_string();
-        let is_web =
-            is_web_profile(&crate::wsl::unc_path(distro, &home_linux), profile) || profile == "web";
-        let mut cli_args = vec!["--profile".to_string(), profile.to_string()];
-        if is_web {
-            // Issue #21: a pinned port (1-65535) is used verbatim; otherwise
-            // 0 binds a random free port.
-            let port = inst
-                .port
-                .map(|p| p.to_string())
-                .unwrap_or_else(|| "0".to_string());
-            cli_args.extend([
-                "--host".to_string(),
-                "127.0.0.1".to_string(),
-                "--port".to_string(),
-                port,
-            ]);
-            if web_app_supports_no_open(&crate::wsl::unc_path(
-                distro,
-                &version.dir.to_string_lossy(),
-            )) {
-                cli_args.push("--no-open".to_string());
-            }
-        }
         crate::wsl::wsl_bash(
             distro,
-            &crate::wsl::launch_script(&home_linux, &root.node_exe(), &bin_linux, &env, &cli_args),
+            &crate::wsl::launch_script(
+                &home.path.to_string_lossy(),
+                &root.node_exe(),
+                &bin_linux,
+                &env,
+                &cli_args,
+            ),
         )
     } else {
         let bin = version_bin(&version.dir);
         if !version_bin_ready(&version.dir) {
-            return Err(format!(
-                "版本 {} 安装不完整（缺少 {}），请重新安装",
-                version.version,
-                bin.display()
-            ));
+            return Err(version_missing_message(&version.version, &bin));
         }
         let mut cmd = Command::new(node());
         hide_console(&mut cmd);
-        cmd.arg(&bin).arg("--profile").arg(profile);
-        let is_web = is_web_profile(&home.path, profile);
-        if is_web {
-            // Issue #21: a pinned port (1-65535) is used verbatim; otherwise 0
-            // binds a random free port so several instances don't collide.
-            let port = inst
-                .port
-                .map(|p| p.to_string())
-                .unwrap_or_else(|| "0".to_string());
-            cmd.arg("--host").arg("127.0.0.1").arg("--port").arg(port);
-            // `--no-open` was added to dsh-web-app in 0.1.0-rc.8: the launcher
-            // embeds the UI in its own webview, so the app must not open the
-            // system browser. Feature-detect the flag in the installed bundle's
-            // startup.js rather than comparing pre-release versions.
-            if web_app_supports_no_open(&version.dir) {
-                cmd.arg("--no-open");
-            }
-        }
         let mut env = env;
         crate::runtime::apply_instance_pnpm_env(&state.data_dir, &mut env)?;
-        for (k, v) in env {
-            cmd.env(k, v);
-        }
+        cmd.arg(bin).args(cli_args).envs(env);
         cmd
     };
 
     cmd.stdout(std::process::Stdio::piped());
     cmd.stderr(std::process::Stdio::piped());
 
-    let mut child = cmd.spawn().map_err(|e| format!("启动进程失败: {e}"))?;
-    crate::log_info!("实例 {instance_id} 进程已拉起（profile: {profile}）");
-
-    // Take the pipes before wrapping the child (the waiter takes ownership of
-    // the child itself).
-    let stdout = child.stdout.take();
-    let stderr = child.stderr.take();
-
     let log_dir = state.data_dir.join("logs");
-    std::fs::create_dir_all(&log_dir).ok();
-    let log_path = log_dir.join(format!("{instance_id}.log"));
+    std::fs::create_dir_all(&log_dir).map_err(|e| format!("创建实例日志目录失败: {e}"))?;
     let log_file = Arc::new(Mutex::new(
         OpenOptions::new()
             .create(true)
             .append(true)
-            .open(&log_path)
-            .unwrap_or_else(|_| {
-                // Fallback: discard output if logging fails.
-                OpenOptions::new()
-                    .write(true)
-                    .open(std::path::Path::new("NUL"))
-                    .unwrap_or_else(|_| panic!("cannot open log file"))
-            }),
+            .open(log_dir.join(format!("{instance_id}.log")))
+            .map_err(|e| format!("打开实例日志失败: {e}"))?,
     ));
-
     let kill_switch = Arc::new(Notify::new());
-
-    emit_status(
-        app,
-        &InstanceStatus {
-            id: instance_id.to_string(),
-            state: InstanceState::Starting,
-            url: None,
-            profile: Some(profile.to_string()),
-            exit_code: None,
-        },
-    );
-
-    // Register the running entry (stop_instance reaches it through the map).
-    state.running.lock().await.insert(
-        instance_id.to_string(),
-        RunningInstance {
-            kill: kill_switch.clone(),
-            profile: profile.to_string(),
-            url: None,
-            wsl: wsl_proc.clone(),
-        },
-    );
+    let mut running = state.running.lock().await;
+    if running.contains_key(instance_id) {
+        return Err("实例已在运行".into());
+    }
+    if state.launch_cancels.lock().unwrap().contains(instance_id) {
+        return Err("启动已取消".into());
+    }
+    let mut child = cmd
+        .kill_on_drop(true)
+        .spawn()
+        .map_err(|e| format!("启动进程失败: {e}"))?;
+    let stdout = child.stdout.take();
+    let stderr = child.stderr.take();
+    crate::log_info!("实例 {instance_id} 进程已拉起（profile: {profile}）");
+    let needs_announcement = web
+        .as_ref()
+        .is_some_and(|plan| plan.mode != crate::web_access::WebMode::Local);
+    let entry = RunningInstance {
+        kill: kill_switch.clone(),
+        profile: profile.to_string(),
+        links: None,
+        web,
+        launch_failed: false,
+        stopping: false,
+    };
+    let mut status = entry.status(instance_id);
+    status.state = InstanceState::Starting;
+    running.insert(instance_id.to_string(), entry);
+    emit_status(app, &status);
+    drop(running);
     crate::tray::sync_tray_icons(app).await;
 
     // Waiter: owns the child, awaits exit or a kill request, then cleans up
@@ -446,18 +411,34 @@ pub async fn start_instance_process(
         let waiter_id = instance_id.to_string();
         let waiter_profile = profile.to_string();
         let waiter_kill = kill_switch.clone();
+        let waiter_wsl = wsl_distro.clone();
         let mut child = child;
         tauri::async_runtime::spawn(async move {
             let state = waiter_app.state::<AppState>();
             let (code, stopped) = tokio::select! {
                 status = child.wait() => (status.ok().and_then(|s| s.code()), false),
                 _ = waiter_kill.notified() => {
+                    if let Some(distro) = &waiter_wsl {
+                        if let Ok(Ok(pid)) = tokio::time::timeout(std::time::Duration::from_secs(3), pid_receiver).await {
+                            if let Err(e) = crate::wsl::wsl_output(distro, &["kill".into(), pid.to_string()]).await {
+                                crate::log_warn!("终止 WSL 实例 {waiter_id} 失败: {e}");
+                            }
+                        }
+                    }
                     let _ = child.kill().await;
                     let code = child.wait().await.ok().and_then(|s| s.code());
                     (code, true)
                 }
             };
-            state.running.lock().await.remove(&waiter_id);
+            let mut running = state.running.lock().await;
+            let Some(mut entry) = running.remove(&waiter_id) else {
+                return;
+            };
+            if let Some(web) = &mut entry.web {
+                web.close().await;
+            }
+            let stopped = stopped && !entry.launch_failed;
+            state.window_urls.lock().unwrap().remove(&waiter_id);
             if stopped {
                 crate::log_info!("实例 {waiter_id} 已停止（exit code: {code:?}）");
             } else {
@@ -473,15 +454,18 @@ pub async fn start_instance_process(
                         InstanceState::Exited
                     },
                     url: None,
+                    web_mode: None,
+                    allowed_networks: Vec::new(),
                     profile: Some(waiter_profile),
                     exit_code: code,
                 },
             );
-            crate::tray::sync_tray_icons(&waiter_app).await;
             crate::windows::close_instance_window(&waiter_app, &waiter_id);
             // A crash during launch must not strand the early-loading window
             // (a normal launch already closed it when the DSH window opened).
             crate::early_loading::close_early_loading(&waiter_app, &waiter_id);
+            drop(running);
+            crate::tray::sync_tray_icons(&waiter_app).await;
         });
     }
 
@@ -489,50 +473,93 @@ pub async fn start_instance_process(
     if let Some(out) = stdout {
         let reader_app = app.clone();
         let reader_id = instance_id.to_string();
-        let reader_profile = profile.to_string();
+        let reader_kill = kill_switch.clone();
         let reader_log = log_file.clone();
-        let reader_wsl = wsl_proc.clone();
+        let mut reader_pid = wsl_distro.as_ref().map(|_| pid_sender);
         tauri::async_runtime::spawn(async move {
             let state = reader_app.state::<AppState>();
             let mut reader = BufReader::new(out);
             let mut buf = Vec::new();
+            let mut waiting = needs_announcement;
+            let deadline = tokio::time::sleep(std::time::Duration::from_secs(120));
+            tokio::pin!(deadline);
             loop {
-                let line = match read_line_lossy(&mut reader, &mut buf).await {
+                let result = tokio::select! {
+                    _ = &mut deadline, if waiting => {
+                        fail_web_start(&state, &reader_id, &reader_kill, &reader_log, "等待 DSH 公布启动地址超时，请检查 Web Profile 的 printUrl 设置").await;
+                        break;
+                    }
+                    line = read_line_lossy(&mut reader, &mut buf) => line,
+                };
+                let line = match result {
                     Ok(Some(line)) => line,
-                    Ok(None) => break,
+                    Ok(None) => {
+                        if waiting {
+                            fail_web_start(
+                                &state,
+                                &reader_id,
+                                &reader_kill,
+                                &reader_log,
+                                "DSH 在公布启动地址前关闭了标准输出",
+                            )
+                            .await;
+                        }
+                        break;
+                    }
                     Err(e) => {
                         crate::log_warn!("实例 {reader_id} stdout 读取终止: {e}");
+                        if waiting {
+                            fail_web_start(
+                                &state,
+                                &reader_id,
+                                &reader_kill,
+                                &reader_log,
+                                "读取 DSH 启动地址失败",
+                            )
+                            .await;
+                        }
                         break;
                     }
                 };
                 // WSL launch wrapper marker: capture the inner PID, keep it
                 // out of the instance log.
-                if let Some((_, pid_slot)) = &reader_wsl {
-                    if let Some(p) = crate::wsl::parse_pid_marker(&line) {
-                        *pid_slot.lock().await = Some(p);
-                        continue;
+                if let Some(pid) = crate::wsl::parse_pid_marker(&line).filter(|p| *p > 1) {
+                    if let Some(sender) = reader_pid.take() {
+                        let _ = sender.send(pid);
                     }
+                    continue;
                 }
                 log_line(&reader_log, &line).await;
                 if let Some(cap) = url_re().captures(&line) {
-                    let url = cap[1].to_string();
-                    crate::log_info!("实例 {reader_id} 已就绪：{url}");
-                    {
-                        let mut running = state.running.lock().await;
-                        if let Some(entry) = running.get_mut(&reader_id) {
-                            entry.url = Some(url.clone());
+                    let mut running = state.running.lock().await;
+                    let Some(entry) = running.get_mut(&reader_id) else {
+                        break;
+                    };
+                    if !Arc::ptr_eq(&entry.kill, &reader_kill) {
+                        break;
+                    }
+                    if entry.links.is_some() || entry.launch_failed || entry.stopping {
+                        continue;
+                    }
+                    let links = match &mut entry.web {
+                        Some(web) => web.ready(&cap[1]),
+                        None => WebLinks::local_output(&cap[1]),
+                    };
+                    match links {
+                        Ok(links) => {
+                            crate::log_info!("实例 {reader_id} 已就绪：{}", links.display());
+                            waiting = false;
+                            entry.links = Some(links);
+                            emit_status(&reader_app, &entry.status(&reader_id));
+                        }
+                        Err(error) => {
+                            entry.launch_failed = true;
+                            entry.kill.notify_one();
+                            drop(running);
+                            crate::log_error!("实例 {reader_id} 启动失败: {error}");
+                            log_line(&reader_log, &error).await;
                         }
                     }
-                    emit_status(
-                        &reader_app,
-                        &InstanceStatus {
-                            id: reader_id.clone(),
-                            state: InstanceState::Running,
-                            url: Some(url),
-                            profile: Some(reader_profile.clone()),
-                            exit_code: None,
-                        },
-                    );
                 }
             }
         });
@@ -572,12 +599,21 @@ pub async fn stop_instance_process(
     instance_id: &str,
 ) -> Result<(), String> {
     let entry = {
-        let running = state.running.lock().await;
-        running
-            .get(instance_id)
-            .map(|r| (r.kill.clone(), r.wsl.clone()))
+        let mut running = state.running.lock().await;
+        if let Some(entry) = running.get_mut(instance_id) {
+            entry.stopping = true;
+            entry.links = None;
+            state.window_urls.lock().unwrap().remove(instance_id);
+            entry.kill.notify_one();
+            if let Some(web) = &mut entry.web {
+                web.close().await;
+            }
+            true
+        } else {
+            false
+        }
     };
-    let Some((kill, wsl)) = entry else {
+    if !entry {
         crate::log_debug!("停止实例 {instance_id}：注册表无记录，补发 stopped 状态");
         emit_status(
             app,
@@ -585,23 +621,15 @@ pub async fn stop_instance_process(
                 id: instance_id.to_string(),
                 state: InstanceState::Stopped,
                 url: None,
+                web_mode: None,
+                allowed_networks: Vec::new(),
                 profile: None,
                 exit_code: None,
             },
         );
         return Ok(());
-    };
-    crate::log_info!("收到停止实例 {instance_id} 的请求");
-    // WSL instance: SIGTERM the inner node process first — killing the local
-    // wsl.exe wrapper alone could leave it running.
-    if let Some((distro, pid_slot)) = &wsl {
-        if let Some(pid) = *pid_slot.lock().await {
-            let _ = crate::wsl::wsl_output(distro, &["kill".into(), pid.to_string()]).await;
-            // Give node a moment to shut down cleanly before the wrapper goes.
-            tokio::time::sleep(std::time::Duration::from_millis(300)).await;
-        }
     }
-    kill.notify_one();
+    crate::log_info!("收到停止实例 {instance_id} 的请求");
     // Wait for the waiter task to finish cleanup so callers (e.g. the restart
     // flow) observe a clean registry on return.
     for _ in 0..100 {
@@ -617,29 +645,46 @@ pub async fn stop_instance_process(
 /// Kills every running instance (called on launcher exit). Best-effort: the
 /// waiter tasks reap the children asynchronously as the runtime shuts down.
 pub fn kill_all(state: &AppState) {
-    let running = state.running.blocking_lock();
-    for entry in running.values() {
+    let mut running = state.running.blocking_lock();
+    for entry in running.values_mut() {
+        entry.stopping = true;
         entry.kill.notify_one();
     }
 }
 
 pub async fn list_statuses(state: &State<'_, AppState>) -> Vec<InstanceStatus> {
     let running = state.running.lock().await;
-    running
-        .iter()
-        .map(|(id, entry)| InstanceStatus {
-            id: id.clone(),
-            state: InstanceState::Running,
-            url: entry.url.clone(),
-            profile: Some(entry.profile.clone()),
-            exit_code: None,
-        })
-        .collect()
+    running.iter().map(|(id, entry)| entry.status(id)).collect()
+}
+
+async fn fail_web_start(
+    state: &AppState,
+    id: &str,
+    generation: &Arc<Notify>,
+    log: &Arc<Mutex<std::fs::File>>,
+    message: &str,
+) {
+    let mut running = state.running.lock().await;
+    let Some(entry) = running.get_mut(id) else {
+        return;
+    };
+    if !Arc::ptr_eq(&entry.kill, generation)
+        || entry.stopping
+        || entry.links.is_some()
+        || entry.launch_failed
+    {
+        return;
+    }
+    entry.launch_failed = true;
+    entry.kill.notify_one();
+    drop(running);
+    crate::log_error!("实例 {id}: {message}");
+    log_line(log, message).await;
 }
 
 async fn log_line(log: &Arc<Mutex<std::fs::File>>, line: &str) {
     let mut f = log.lock().await;
-    let _ = writeln!(f, "{line}");
+    let _ = writeln!(f, "{}", crate::web_launch::redact_tokens(line));
     let _ = f.flush();
 }
 
@@ -709,6 +754,7 @@ mod tests {
             last_profile: None,
             icon: None,
             port: None,
+            web_access: Default::default(),
             tui_cwd: None,
         });
         cfg
@@ -857,7 +903,7 @@ mod tests {
             .join("dsh-web-app")
             .join("lib");
         // No startup.js yet -> false.
-        assert!(!web_app_supports_no_open(&dir));
+        assert!(!crate::web_launch::startup_script(&dir, &dir).contains("no-open"));
         std::fs::create_dir_all(&startup_dir).unwrap();
         // Old bundle without the flag (<= 0.1.0-rc.7) -> false.
         std::fs::write(
@@ -865,14 +911,14 @@ mod tests {
             "const p = new Command().option('--host <host>').option('--port <port>')",
         )
         .unwrap();
-        assert!(!web_app_supports_no_open(&dir));
+        assert!(!crate::web_launch::startup_script(&dir, &dir).contains("no-open"));
         // New bundle with the flag (>= 0.1.0-rc.8) -> true.
         std::fs::write(
             startup_dir.join("startup.js"),
             "const p = new Command().option('--no-open', 'do not open the Web UI in the default browser')",
         )
         .unwrap();
-        assert!(web_app_supports_no_open(&dir));
+        assert!(crate::web_launch::startup_script(&dir, &dir).contains("no-open"));
         std::fs::remove_dir_all(&dir).ok();
     }
 
@@ -910,14 +956,14 @@ mod tests {
             .join("bundle")
             .join("web-app")
             .join("lib");
-        assert!(!web_app_supports_no_open(&dir));
+        assert!(!crate::web_launch::startup_script(&dir, &dir).contains("no-open"));
         std::fs::create_dir_all(&lib).unwrap();
         std::fs::write(
             lib.join("startup.js"),
             "const p = new Command().option('--no-open', 'x')",
         )
         .unwrap();
-        assert!(web_app_supports_no_open(&dir));
+        assert!(crate::web_launch::startup_script(&dir, &dir).contains("no-open"));
         std::fs::remove_dir_all(&dir).ok();
     }
 }

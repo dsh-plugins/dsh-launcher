@@ -4,6 +4,7 @@ import { useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { Message } from '@arco-design/web-vue'
 import { api } from '@/api'
+import InstanceAccessLinks from '@/components/InstanceAccessLinks.vue'
 import { useLauncherStore } from '@/stores/launcher'
 import type { DshInstance, InstanceState } from '@/api/types'
 import ModpackImportDialog from '@/components/ModpackImportDialog.vue'
@@ -150,18 +151,6 @@ async function confirmCopy() {
   }
 }
 
-function copyUrl(url: string) {
-  navigator.clipboard?.writeText(url)
-  Message.success(t('common.copied'))
-}
-
-async function onOpenWindow(id: string) {
-  try {
-    await api.openInstanceWindow(id)
-  } catch (e) {
-    Message.error(String(e))
-  }
-}
 </script>
 
 <template>
@@ -215,18 +204,7 @@ async function onOpenWindow(id: string) {
               {{ t('home.statusExternal') }} :{{ store.externalOf(record.id)!.port }}
             </a-tag>
           </a-tooltip>
-          <template v-if="store.statusOf(record.id).url">
-            <a-link
-              class="status-url"
-              :title="store.statusOf(record.id).url!"
-              @click="onOpenWindow(record.id)"
-            >
-              {{ store.statusOf(record.id).url }}
-            </a-link>
-            <a-button size="mini" type="text" @click="copyUrl(store.statusOf(record.id).url!)">
-              {{ t('common.copy') }}
-            </a-button>
-          </template>
+          <InstanceAccessLinks :status="store.statusOf(record.id)" />
           </span>
         </template>
         <template #actions="{ record }">
@@ -374,18 +352,6 @@ async function onOpenWindow(id: string) {
   flex-shrink: 0;
 }
 
-.status-url {
-  margin-left: 8px;
-  font-size: 12px;
-  // Token-bearing URLs are long; ellipsize inside the table cell and keep
-  // the full URL in the hover title / copy button.
-  display: inline-block;
-  max-width: 240px;
-  vertical-align: middle;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
 
 .empty-title {
   font-size: 15px;

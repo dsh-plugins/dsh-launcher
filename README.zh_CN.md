@@ -48,6 +48,12 @@ Tauri 2 + Vue 3 + TypeScript + Sass + vue-router + vue-i18n + Arco Design Vue。
 - **i18n**：简体中文 / English，JSON 语言文件由 `@intlify/unplugin-vue-i18n` 经 Vite 发现、热重载并预编译。
 - **WSL2 实例（实验性）**：在 WSL2 发行版内创建 DSH 实例——自动安装发行版内 Node.js / pnpm / 指定版本，实例的 DSH_HOME 位于发行版 `~/.dsh-launcher/homes` 下；创建后可像本地实例一样操作 HOME（Profile 增删改、插件安装/启停/卸载、Skills、MCP、图标、日志、整合包导入导出、内置终端），文件访问经 `\\wsl$\` UNC 共享，发行版未运行时自动启动。
 
+## 实例网络访问
+
+在「实例设置 → 网络访问」选择 Web Profile 的访问方式。仅本机使用回环地址。仅局域网使用所选网卡和 CIDR 白名单，可以添加多个 IPv4 或 IPv6 网段。公开直连通过所选网卡 IP 提供服务。两种跨设备入口都支持 HTTP 和自备证书的 HTTPS，HTTP 会明文传输登录令牌。
+
+反向代理需要固定后端端口和浏览器访问的公开根地址，例如 `https://dsh.example/ui/`。代理应保留 Host、剥离挂载前缀、转发 WebSocket 升级，并按外部路径和 HTTPS 设置 Cookie。桌面窗口使用本机入口，其他设备可使用「复制访问链接」。含令牌的链接仅对本次运行有效。[DSH 公开部署指南](https://deepseek-harness.github.io/deepseek-harness/guide/public-deployments)
+
 ## 界面
 
 - **启动页**：左侧面板（实例状态 → 实例/Profile 联动下拉 → 大启动按钮 → 实例列表/实例设置），右侧预留新闻区域。

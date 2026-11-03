@@ -10,6 +10,7 @@
     "build": "vue-tsc --noEmit && vite build",
     "tauri": "tauri",
     "tauri-dev": "tauri dev",
+    "test:network": "node --experimental-strip-types --test ci/network-access.test.mjs",
     "test:release-notes": "node --test ci/release-notes.test.mjs",
     "test:market": "node --experimental-strip-types --test ci/version-range.test.mjs ci/market.test.mjs ci/market-fetch.test.mjs",
     "test:compatibility-ui": "node --experimental-strip-types --test ci/latest-request.test.mjs"
