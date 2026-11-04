@@ -20,7 +20,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use crate::{process, AppState};
+use crate::AppState;
 use tauri::image::Image;
 use tauri::menu::{Menu, MenuItem, PredefinedMenuItem, Submenu};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
@@ -553,10 +553,7 @@ fn show_launcher(app: &AppHandle) {
 
 fn quit(app: &AppHandle) {
     crate::log_info!("收到退出启动器的托盘请求");
-    let state = app.state::<AppState>();
-    process::kill_all(&state);
-    crate::tui::kill_all(&state);
-    app.exit(0);
+    crate::exit_protection::request_quit(app);
 }
 
 fn open_instance_from_tray(app: &AppHandle, instance_id: &str) {
@@ -591,12 +588,7 @@ fn stop_instance_from_tray(app: &AppHandle, instance_id: &str) {
     let app = app.clone();
     let id = instance_id.to_string();
     tauri::async_runtime::spawn(async move {
-        let state = app.state::<AppState>();
-        let result = if state.tui_sessions.lock().await.contains_key(&id) {
-            crate::tui::stop_tui_session(&app, &state, &id).await
-        } else {
-            process::stop_instance_process(&app, &state, &id).await
-        };
+        let result = crate::exit_protection::stop_instance(&app, &id).await;
         if let Err(error) = result {
             crate::log_error!("托盘终止实例 {id} 失败: {error}");
         }

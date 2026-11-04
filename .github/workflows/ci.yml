@@ -58,6 +58,12 @@ jobs:
         run: pnpm test:network
       - name: Frontend build
         run: pnpm build
+      - name: Build Windows release Office host
+        if: matrix.platform == 'windows'
+        run: cargo build --manifest-path src-tauri/Cargo.toml --release --locked -p dsh-launcher
+      - name: Smoke test Windows GUI-subsystem Office stdio
+        if: matrix.platform == 'windows'
+        run: node ci/office-launcher-smoke.mjs src-tauri/target/release/dsh-launcher.exe
 
   integration:
     name: Integration checks
@@ -79,6 +85,8 @@ jobs:
         run: node --test ci/release-notes.test.mjs
       - name: Bump-version tests
         run: node --test ci/bump-version.test.mjs
+      - name: Host exit inspection tests
+        run: node --test ci/exit-inspector.test.mjs
 
   prepare:
     needs: [quality, integration]

@@ -103,9 +103,9 @@ async function onClose() {
 async function onCancel() {
   if (cancelling.value || terminal.value) return
   cancelling.value = true
-  stage.value = 'cancelled'
   try {
     await api.cancelInstanceLaunch(props.instanceId)
+    stage.value = 'cancelled'
   } catch (e) {
     Message.error(String(e))
   } finally {

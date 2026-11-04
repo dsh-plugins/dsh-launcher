@@ -12,6 +12,7 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
+dsh-office = { path = "crates/dsh-office" }
 tauri = { version = "2", features = ["tray-icon", "image-png"] }
 tauri-plugin-dialog = "2"
 tauri-plugin-autostart = "2"
@@ -46,3 +47,7 @@ codegen-units = 1
 lto = true
 opt-level = "s"
 strip = true
+
+[workspace]
+members = ["crates/dsh-office"]
+resolver = "2"

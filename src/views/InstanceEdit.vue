@@ -996,6 +996,28 @@ const mcpFormValid = computed(
 /** Names listed in the dialog's preserved-config notice. */
 const mcpExtraKeys = computed(() => Object.keys(mcpForm.value.extra ?? {}))
 
+const officePresetBusy = ref(false)
+
+async function openOfficePreset() {
+  if (!homeId.value || officePresetBusy.value) return
+  const targetHome = homeId.value
+  const targetScope = mcpScope.value
+  officePresetBusy.value = true
+  try {
+    const { open } = await import('@tauri-apps/plugin-dialog')
+    const workspace = await open({ directory: true, multiple: false, title: t('instanceEdit.officeWorkspace') })
+    if (typeof workspace !== 'string') return
+    const preset = await api.officeMcpPreset(targetHome, workspace)
+    if (homeId.value !== targetHome || mcpScope.value !== targetScope || activeTab.value !== 'mcp') return
+    openMcpCreate()
+    mcpForm.value = { ...preset }
+  } catch (error) {
+    Message.error(String(error))
+  } finally {
+    officePresetBusy.value = false
+  }
+}
+
 function openMcpCreate() {
   mcpOriginalId.value = ''
   mcpForm.value = emptyMcpForm()
@@ -2950,12 +2972,16 @@ const terminalRunning = ref(false)
                 <a-button type="primary" @click="openMcpCreate">
                   {{ t('instanceEdit.mcpAdd') }}
                 </a-button>
+                <a-button v-if="api.isTauri" :disabled="isWsl" :loading="officePresetBusy" @click="openOfficePreset">
+                  {{ t('instanceEdit.officePreset') }}
+                </a-button>
                 <a-button type="text" :loading="mcpLoading" @click="loadMcpServers">
                   ⟳
                 </a-button>
               </div>
               <p class="mcp-path">{{ t('instanceEdit.mcpScopePath', { path: mcpScopePath }) }}</p>
               <p class="mcp-path">{{ t('instanceEdit.mcpPasteTip') }}</p>
+              <p class="mcp-path">{{ t('instanceEdit.officeHint') }}</p>
 
               <div class="table-scroll">
                 <a-table

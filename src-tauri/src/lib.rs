@@ -6,12 +6,14 @@ mod config;
 mod credentials;
 mod doctor;
 mod early_loading;
+mod exit_protection;
 mod icons;
 mod links;
 mod market_index;
 mod mcp;
 mod migrate;
 mod modpack;
+mod office;
 mod plugins;
 mod process;
 mod providers;
@@ -233,6 +235,7 @@ pub fn run() {
                 data_dir.display()
             );
 
+            app.manage(exit_protection::ExitProtection::default());
             app.manage(AppState {
                 config_path,
                 data_dir: data_dir.clone(),
@@ -295,6 +298,9 @@ pub fn run() {
                         if minimize {
                             api.prevent_close();
                             let _ = win2.hide();
+                        } else {
+                            api.prevent_close();
+                            exit_protection::request_quit(&handle);
                         }
                     }
                 });
@@ -308,6 +314,7 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            office::office_mcp_preset,
             commands::list_homes,
             commands::create_home,
             commands::default_dedicated_home_path,
@@ -435,6 +442,12 @@ pub fn run() {
         .run(|app_handle, event| {
             // Terminate child processes when the launcher exits so no DSH
             // instance is left orphaned.
+            if let tauri::RunEvent::ExitRequested { ref api, .. } = event {
+                if !exit_protection::approved(app_handle) {
+                    api.prevent_exit();
+                    exit_protection::request_quit(app_handle);
+                }
+            }
             if let tauri::RunEvent::Exit = event {
                 let state = app_handle.state::<AppState>();
                 process::kill_all(&state);
