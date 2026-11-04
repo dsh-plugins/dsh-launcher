@@ -191,26 +191,30 @@ pub fn report_launch_compat(
         .map_err(|e| e.to_string())
 }
 
-/// Cancels a launch in progress: records the cancel intent (so a late
-/// `open_instance_window` from the launch driver is refused), then stops the
-/// instance if it is already spawned. The early-loading window stays open —
-/// the process waiter closes it once the stop has actually converged, and
-/// its own close button remains available as an escape hatch.
+/// Cancels a launch without treating a still-visible loading window as proof
+/// that the Host has no work. Record intent only after exit admission succeeds.
 #[tauri::command(rename_all = "snake_case")]
 pub async fn cancel_instance_launch(
     app: AppHandle,
     state: tauri::State<'_, AppState>,
     instance_id: String,
 ) -> Result<(), String> {
-    crate::log_info!("用户取消启动实例 {instance_id}");
+    let _start_guard = state.tui_start_lock.lock().await;
+    crate::exit_protection::stop_instance(&app, &instance_id).await?;
+    // Spawn checks launch_cancels while holding this same running lock. Thus a
+    // not-yet-spawned launch cannot slip between this check and cancellation.
+    let running = state.running.lock().await;
+    if running.contains_key(&instance_id) {
+        return Err("实例状态已改变，请重新确认取消启动".into());
+    }
     state
         .launch_cancels
         .lock()
         .unwrap()
         .insert(instance_id.clone());
-    // Forget any pending compatibility-TUI handoff, then stop the process
-    // (idempotent: a not-yet-spawned instance just logs a debug line and
-    // re-emits `stopped`, which the waiter-style cleanup handles).
+    drop(running);
     state.tui_compat.lock().await.remove(&instance_id);
-    crate::process::stop_instance_process(&app, &state, &instance_id).await
+    crate::log_info!("用户取消启动实例 {instance_id}");
+    close_early_loading(&app, &instance_id);
+    Ok(())
 }

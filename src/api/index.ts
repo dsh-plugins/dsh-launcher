@@ -1750,6 +1750,9 @@ export const api = {
    * MCP servers of one scope: `profile: null` reads `<HOME>/cordis.patch.yml`,
    * a profile name reads `<HOME>/profiles/<profile>/cordis.patch.yml`.
    */
+  /** Returns a reviewable Rust Office preset; does not save or enable it. */
+  officeMcpPreset: (homeId: string, workspace: string) =>
+    call<McpServer>('office_mcp_preset', { homeId, workspace }),
   listMcpServers: (homeId: string, profile: string | null) =>
     call<McpServer[]>('list_mcp_servers', { homeId, profile }),
   /**

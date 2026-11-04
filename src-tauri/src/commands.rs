@@ -597,15 +597,15 @@ pub async fn delete_instance(
     state: State<'_, AppState>,
     id: String,
 ) -> Result<(), String> {
-    if state.running.lock().await.contains_key(&id) {
-        process::stop_instance_process(&app, &state, &id).await?;
+    let _start_guard = state.tui_start_lock.lock().await;
+    crate::exit_protection::stop_instance(&app, &id).await?;
+    // Fence the final removal against a new spawn. Native spawn checks the
+    // live config under this same running lock; TUI start is serialized above.
+    let running = state.running.lock().await;
+    let tui = state.tui_sessions.lock().await;
+    if running.contains_key(&id) || tui.contains_key(&id) {
+        return Err("实例状态已改变，请重新确认删除".into());
     }
-    if state.tui_sessions.lock().await.contains_key(&id) {
-        crate::tui::stop_tui_session(&app, &state, &id).await?;
-    }
-    // Drop the instance's WebView2 store: it holds a browser-session cookie
-    // signed by this process only, so nothing can reuse it afterwards.
-    crate::windows::clear_instance_webview_data(&state, &id);
     {
         let mut cfg = state.config.lock().unwrap();
         cfg.instances.retain(|i| i.id != id);
@@ -617,6 +617,11 @@ pub async fn delete_instance(
             .retain(|a| a.instance_id != id);
         save_state(&state, &cfg)?;
     }
+    drop(tui);
+    drop(running);
+    // Drop the instance's WebView2 store: it holds a browser-session cookie
+    // signed by this process only, so nothing can reuse it afterwards.
+    crate::windows::clear_instance_webview_data(&state, &id);
     crate::tray::sync_tray_icons(&app).await;
     Ok(())
 }
@@ -1659,12 +1664,9 @@ pub async fn stop_instance(
     id: String,
 ) -> Result<(), String> {
     let _tui_start_guard = state.tui_start_lock.lock().await;
+    crate::exit_protection::stop_instance(&app, &id).await?;
     state.tui_compat.lock().await.remove(&id);
-    // A TUI instance lives in its own session map, not `state.running`.
-    if state.tui_sessions.lock().await.contains_key(&id) {
-        return crate::tui::stop_tui_session(&app, &state, &id).await;
-    }
-    process::stop_instance_process(&app, &state, &id).await
+    Ok(())
 }
 
 #[tauri::command]

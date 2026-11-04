@@ -101,6 +101,9 @@ pub async fn start_tui_session(
 ) -> Result<(), String> {
     let _start_guard = state.tui_start_lock.lock().await;
     let id = input.instance_id.clone();
+    if state.launch_cancels.lock().unwrap().contains(&id) {
+        return Err("启动已取消".into());
+    }
     let result = start_tui_session_inner(&app, &state, input).await;
     if let Some((_, _, mut report)) = state.tui_compat.lock().await.remove(&id) {
         report.handoff_pending = false;
@@ -586,11 +589,18 @@ pub async fn stop_tui_session(
     app: &AppHandle,
     state: &State<'_, AppState>,
     instance_id: &str,
+    expected: &Arc<Notify>,
 ) -> Result<(), String> {
     // Notify first, then drop the killer as backup (the waiter takes the
     // killer before selecting, so either path reaches it).
     let kill = {
         let map = state.tui_sessions.lock().await;
+        if map
+            .get(instance_id)
+            .is_some_and(|session| !Arc::ptr_eq(&session.kill, expected))
+        {
+            return Err("实例已重新启动，请重新确认停止".into());
+        }
         map.get(instance_id).map(|s| s.kill.clone())
     };
     if let Some(kill) = kill {
