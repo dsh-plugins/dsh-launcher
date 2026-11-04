@@ -1,4 +1,4 @@
-use crate::{docx, workspace::Workspace, xlsx};
+use crate::{docx, preview, workspace::Workspace, xlsx};
 use serde::Deserialize;
 use serde_json::{json, Value};
 
@@ -14,6 +14,12 @@ pub(crate) const MAX_CELLS: usize = 20_000;
 #[serde(deny_unknown_fields)]
 pub(crate) struct PathArgs {
     pub path: String,
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct PreviewArgs {
+    pub path: String,
+    pub output: String,
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -40,7 +46,12 @@ struct EmptyArgs {}
 pub(crate) fn has_tool(name: &str) -> bool {
     matches!(
         name,
-        "office_info" | "docx_create" | "docx_read" | "xlsx_create" | "xlsx_read"
+        "office_info"
+            | "office_preview"
+            | "docx_create"
+            | "docx_read"
+            | "xlsx_create"
+            | "xlsx_read"
     )
 }
 
@@ -52,12 +63,15 @@ pub(crate) fn call(workspace: &Workspace, name: &str, arguments: Value) -> Resul
             Ok(
                 json!({"runtime":"rust","formats":["docx","xlsx"],"create_policy":"new files only; existing parent directories required",
                 "path_policy":"relative paths under the explicitly selected workspace; no symlink paths",
-                "unsupported":["PPTX","formula evaluation","rendering/PDF export","full-fidelity editing","macros","embedded objects","external relationships","encrypted files","non-UTF-8 XML"],
+                "preview":{"format":"html","mode":"semantic","tool":"office_preview","scripts":false,"external_assets":false,"layout":"paragraphs or sparse typed-cell tables; not an Office page layout"},
+                "unsupported":["PPTX","formula evaluation","full-fidelity rendering/PDF export","full-fidelity editing","macros","embedded objects","external relationships","encrypted files","non-UTF-8 XML"],
                 "limits":{"request_bytes":crate::MAX_REQUEST_BYTES,"response_bytes":crate::MAX_RESPONSE_BYTES,"file_bytes":crate::workspace::MAX_FILE_BYTES,
+                    "preview_bytes":preview::MAX_PREVIEW_BYTES,
                     "zip_entries":256,"expanded_zip_bytes":32*1024*1024,"xml_part_bytes":crate::package::MAX_XML_BYTES,"xml_nodes_per_part":100000,"xml_nesting":128,"xml_attributes_per_element":64,"xml_namespace_declarations_per_part":128,"excel_cell_utf16_units":32767,"excel_numeric_significant_digits":15,
                     "text_bytes":MAX_TEXT_BYTES,"string_bytes":MAX_STRING_BYTES,"paragraphs":MAX_PARAGRAPHS,"sheets":MAX_SHEETS,"rows_per_sheet":MAX_ROWS,"columns_per_sheet":MAX_COLUMNS,"cells_per_workbook":MAX_CELLS}}),
             )
         }
+        "office_preview" => preview::create(workspace, decode(arguments)?),
         "docx_create" => docx::create(workspace, decode(arguments)?),
         "docx_read" => docx::read(workspace, decode(arguments)?),
         "xlsx_create" => xlsx::create(workspace, decode(arguments)?),
@@ -85,6 +99,7 @@ pub(crate) fn tool_definitions() -> Vec<Value> {
     let read_schema = json!({"type":"object","properties":{"path":path},"required":["path"],"additionalProperties":false});
     vec![
         tool("office_info", "Describe supported Rust-only Office operations, hard limits, and unsupported features.", json!({"type":"object","properties":{},"additionalProperties":false}), true),
+        tool("office_preview", "Create a new self-contained semantic HTML preview from bounded DOCX paragraphs or XLSX sparse typed cells. No scripts, external assets, formula evaluation, full-fidelity Office rendering or PDF export. Formula caches may be stale; formatting is omitted. Never overwrites.", json!({"type":"object","properties":{"path":path,"output":{"type":"string","minLength":1,"maxLength":1024,"description":"New workspace-relative .html file; existing parent directories required. Never overwrites."}},"required":["path","output"],"additionalProperties":false}), false),
         tool("docx_create", "Create a new DOCX from plain paragraph text. Never overwrites. No formatting or active content.", json!({"type":"object","properties":{"path":path,"paragraphs":{"type":"array","minItems":1,"maxItems":MAX_PARAGRAPHS,"items":{"type":"string","maxLength":MAX_STRING_BYTES}}},"required":["path","paragraphs"],"additionalProperties":false}), false),
         tool("docx_read", "Extract main-body paragraph text from bounded UTF-8 DOCX. Formatting is not preserved; external relationships are rejected.", read_schema.clone(), true),
         tool("xlsx_create", "Create a new XLSX with named sheets and string/number/boolean/null cells (numbers limited to 15 significant decimal digits). Strings, including '=' prefixes, remain literal text. No formulas or overwriting.", json!({"type":"object","properties":{"path":path,"sheets":{"type":"array","minItems":1,"maxItems":MAX_SHEETS,"items":{"type":"object","properties":{"name":{"type":"string","minLength":1,"maxLength":31},"rows":{"type":"array","maxItems":MAX_ROWS,"items":{"type":"array","maxItems":MAX_COLUMNS,"items":{"type":["string","number","boolean","null"]}}}},"required":["name","rows"],"additionalProperties":false}}},"required":["path","sheets"],"additionalProperties":false}), false),

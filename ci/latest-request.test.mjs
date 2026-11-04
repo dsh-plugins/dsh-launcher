@@ -17,3 +17,23 @@ test('editing plugins invalidates an in-flight check', () => {
   requests.invalidate()
   assert.equal(requests.isCurrent(check), false)
 })
+
+test('leaving a scope and returning cannot revive its abandoned request', () => {
+  const requests = latestRequest()
+  const original = requests.begin()
+  requests.invalidate() // Leave the scope/tab.
+  requests.invalidate() // Return to the same selected value.
+  assert.equal(requests.isCurrent(original), false)
+})
+
+test('an old request finally block cannot clear a newer request busy state', () => {
+  const requests = latestRequest()
+  const first = requests.begin()
+  requests.invalidate()
+  const second = requests.begin()
+  let busy = true
+  if (requests.isCurrent(first)) busy = false
+  assert.equal(busy, true)
+  if (requests.isCurrent(second)) busy = false
+  assert.equal(busy, false)
+})

@@ -18,7 +18,7 @@ Tauri 2 + Vue 3 + TypeScript + Sass + vue-router + vue-i18n + Arco Design Vue.
 
 ## Features
 
-- **Experimental Rust Office**: opt-in workspace-scoped DOCX/XLSX MCP tools, with no Python or Node runtime. See [setup and limitations](docs/RUST_OFFICE.md).
+- **Experimental Rust Office**: opt-in workspace-scoped DOCX/XLSX MCP tools and semantic HTML previews, with no Python or Node runtime. See [setup and limitations](docs/RUST_OFFICE.md).
 
 - **Multi-version installs**: query the npm registry and install multiple `@deepseek-ai/dsh` versions into isolated directories that never interfere with each other.
 - **Multi-instance management**: create several instances per version, each with its own name, profile, and runtime environment variables.

@@ -1,12 +1,14 @@
 //! A deliberately small, GUI-independent Office MCP server.
 //!
 //! This library creates new DOCX paragraph documents and XLSX typed-cell
-//! workbooks and extracts bounded text/cell data. It does not render documents,
-//! evaluate formulas, execute active content, or edit existing Office packages.
+//! workbooks, extracts bounded text/cell data, and creates inert semantic HTML
+//! previews. It does not perform full-fidelity rendering, evaluate formulas,
+//! execute active content, or edit existing Office packages.
 
 mod docx;
 mod office;
 mod package;
+mod preview;
 mod workspace;
 mod xlsx;
 
@@ -145,7 +147,7 @@ fn dispatch(workspace: &Workspace, state: &mut State, request: Value) -> Option<
             *state = State::Initializing;
             json!({"protocolVersion":version,"capabilities":{"tools":{"listChanged":false}},
                 "serverInfo":{"name":"dsh-office","version":env!("CARGO_PKG_VERSION")},
-                "instructions":"Local Rust-only Office tools. Paths are relative to the selected workspace. Creates never overwrite. Text/cells only: no formula evaluation, rendering, macros, external relationships, or full-fidelity editing."})
+                "instructions":"Local Rust-only Office tools. Paths are relative to the selected workspace. Creates never overwrite. Read text/cells or use office_preview to create an inert semantic HTML preview. Previews omit Office formatting and page layout; formula caches may be stale. No formula evaluation, full-fidelity rendering, PDF export, macros, external relationships, or full-fidelity editing."})
         }
         "ping" => json!({}),
         _ if *state != State::Ready => {

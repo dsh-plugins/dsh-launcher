@@ -14,6 +14,7 @@ mod mcp;
 mod migrate;
 mod modpack;
 mod office;
+mod office_probe;
 mod plugins;
 mod process;
 mod providers;

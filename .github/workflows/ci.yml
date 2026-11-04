@@ -52,8 +52,14 @@ jobs:
         run: cargo clippy --manifest-path src-tauri/Cargo.toml --workspace --all-targets --locked -- -D warnings
       - name: Rust tests
         run: cargo test --manifest-path src-tauri/Cargo.toml --workspace --locked
+      - name: Install pinned official DSH smoke dependencies
+        run: npm --prefix ci/office-dsh ci --ignore-scripts --no-audit --no-fund
+      - name: Discover and call Office through official DSH
+        run: node ci/office-dsh/smoke.mjs src-tauri/target/debug/dsh-office${{ matrix.platform == 'windows' && '.exe' || '' }} --standalone
       - name: 市场兼容性测试
         run: pnpm test:market
+      - name: Async UI request lifecycle tests
+        run: pnpm test:compatibility-ui
       - name: 实例网络访问测试
         run: pnpm test:network
       - name: Frontend build
@@ -64,6 +70,9 @@ jobs:
       - name: Smoke test Windows GUI-subsystem Office stdio
         if: matrix.platform == 'windows'
         run: node ci/office-launcher-smoke.mjs src-tauri/target/release/dsh-launcher.exe
+      - name: Discover release Launcher Office through official DSH
+        if: matrix.platform == 'windows'
+        run: node ci/office-dsh/smoke.mjs src-tauri/target/release/dsh-launcher.exe
 
   integration:
     name: Integration checks

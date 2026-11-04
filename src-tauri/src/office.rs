@@ -40,7 +40,7 @@ fn preset(executable: &Path, workspace: &Path) -> Result<McpServer, String> {
 
 /// Returns a reviewable form only. The normal MCP Save action persists it.
 #[tauri::command]
-pub fn office_mcp_preset(
+pub async fn office_mcp_preset(
     state: State<'_, AppState>,
     home_id: String,
     workspace: String,
@@ -67,7 +67,12 @@ pub fn office_mcp_preset(
     if !executable.is_absolute() || !executable.is_file() {
         return Err("Cannot locate the Office host executable".into());
     }
-    preset(&executable, Path::new(&workspace))
+    let server = preset(&executable, Path::new(&workspace))?;
+    // Probe the current inner binary, not an AppImage launcher wrapper that
+    // may spawn its own mount/helper processes. Persist the outer path above.
+    let probe_executable = std::env::current_exe().map_err(|e| e.to_string())?;
+    crate::office_probe::check(&probe_executable, &server.args, Path::new(&server.cwd)).await?;
+    Ok(server)
 }
 
 #[cfg(test)]

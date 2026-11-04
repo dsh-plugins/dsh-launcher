@@ -13,7 +13,11 @@ request Python are **not** made Python-free by installing this server.
 2. Choose **Add Rust Office (experimental)** and select a dedicated existing
    directory. The server can read supported files and create new files there;
    do not select your home directory or another folder containing secrets.
-3. Review the generated stdio command, arguments and directory in the normal
+3. Wait for the local runtime self-check (handshake, tool discovery and capability
+   query only, no document reads or writes). It has a 15-second deadline and
+   64 KiB per-output-stream limit. A failed check reports an error without saving.
+   AppImage checks its current inner binary, not the outer mount wrapper.
+   Review the generated stdio command, arguments and directory in the normal
    MCP form. Save explicitly, then restart DSH. Canceling the form writes no
    configuration. If the name already exists, choose a distinct server name.
 4. Ask DSH to use the `office-rust` MCP tools for the supported operations. Tool
@@ -53,9 +57,11 @@ mount path. Moving/removing the launcher requires updating the saved command.
 - Capabilities and explicit limits through `office_info`.
 - Basic DOCX creation from paragraphs and bounded text extraction.
 - Basic XLSX creation from typed cells and bounded workbook reading.
+- Semantic HTML preview of the supported paragraph/typed-cell content. This is
+  not Office page-layout rendering; see the limitations below.
 - New files only; existing documents are never edited or overwritten.
 
-Unsupported: PPTX, PDF import/export, visual rendering or layout guarantees,
+Unsupported: PPTX, PDF import/export, original Office layout rendering or layout guarantees,
 formula calculation, full-fidelity round-trip editing, charts, embedded objects,
 macros, encrypted documents, and arbitrary scripts. The reader intentionally
 accepts a conservative subset: it rejects all `.bin` package parts (including
@@ -63,7 +69,11 @@ otherwise benign printer settings), all external relationships (including ordina
 hyperlinks), percent-encoded relationship targets and non-UTF-8 XML. A valid
 Office document can therefore be unsupported; rejection does not mean the
 original document is corrupt. Formula text read from a
-workbook is not a calculated result. No fallback engine is silently invoked.
+workbook is not a calculated result. No fallback engine is silently invoked. HTML previews contain no scripts, remote
+resources, navigable links or embedded active document content; a restrictive
+CSP provides additional protection. They deliberately list sparse XLSX cells
+with coordinates/types, rather than pretending to reproduce the original grid
+layout, formatting, charts or print pagination.
 
 ## Security boundary
 
@@ -81,7 +91,12 @@ into the generic MCP form. Review MCP changes as executable configuration.
 ## Verification and development status
 
 Existing CI's Rust workspace format, clippy and test steps cover this crate as
-well as the launcher. Before release, verify a real MCP handshake and round-trip
+well as the launcher. The isolated [official DSH bridge smoke](../ci/office-dsh/README.md)
+uses pinned published DSH 0.2.2-rc.1 packages, the actual tool runtime and native
+executor to discover tools in the assembled model prompt and execute them. It
+uses no API keys or inference, and does not claim to test model tool selection
+or the complete DSH agent/session UI. CI runs the standalone route on each
+platform and the release Launcher route on Windows. Before release, verify a real MCP handshake and round-trip
 through DSH on Windows, macOS, Linux and AppImage; validate generated documents
 in Office/LibreOffice separately. A ZIP/XML round-trip is not visual rendering QA.
 
@@ -125,3 +140,30 @@ server reports that possibility and never deletes or overwrites it automatically
 XLSX strings also respect Excel's 32,767 UTF-16-unit cell limit. Numeric creation
 rejects values beyond Excel's finite normal numeric range or 15 significant
 decimal digits; provide long identifiers and precision-sensitive values as text.
+
+### Semantic preview example
+
+Call `office_preview` with:
+
+```json
+{"path":"notes.docx","output":"notes-preview.html"}
+```
+
+The source may also be an XLSX file. Open the new HTML file in a browser for a
+readable content check. Paragraph whitespace and sparse cell coordinates/types
+are retained; formula text is visibly inert and cached values may be stale.
+This does not certify the source's Office pagination or appearance. Preview
+creation uses the same capability-confined, create-new filesystem operations
+as document creation, has a 16 MiB output cap, and launches no browser or
+external process. The tool only returns the output path and descriptive metadata.
+
+### Future layout-rendering boundary
+
+The official Node LibreOffice Kit can provide real PNG/PDF output, but it is not
+loaded by this Rust server. A child Node/native engine does not inherit Rust
+capability-based filesystem confinement. Enabling one safely requires an
+explicit sandbox/resource boundary, trusted staged input/output, bounded font
+access, and process-tree cancellation tests. Native helpers and Linux WASM also
+have different lifetime requirements. Existing DSH preview services may be used
+through their normal authorization flow; semantic HTML here is not a substitute
+for that layout-rendering engine.

@@ -127,7 +127,20 @@ fn lifecycle_and_tool_schema() {
     assert_eq!(messages[0]["error"]["code"], -32002);
     assert_eq!(messages[1]["result"]["protocolVersion"], "2025-06-18");
     assert_eq!(messages[2]["error"]["code"], -32002);
-    assert_eq!(messages[3]["result"]["tools"].as_array().unwrap().len(), 5);
+    let definitions = messages[3]["result"]["tools"].as_array().unwrap();
+    assert_eq!(definitions.len(), 6);
+    let preview = definitions
+        .iter()
+        .find(|tool| tool["name"] == "office_preview")
+        .unwrap();
+    assert_eq!(
+        preview["inputSchema"]["required"],
+        json!(["path", "output"])
+    );
+    assert_eq!(preview["inputSchema"]["additionalProperties"], false);
+    assert_eq!(preview["annotations"]["readOnlyHint"], false);
+    assert_eq!(preview["annotations"]["destructiveHint"], false);
+    assert_eq!(preview["annotations"]["openWorldHint"], false);
     assert_eq!(messages[4]["id"], "p");
     assert_eq!(messages[4]["result"], json!({}));
     assert_eq!(messages[5]["error"]["code"], -32601);
@@ -675,4 +688,359 @@ fn excel_numeric_range_rejects_overflow_and_subnormals() {
             "finite normal range",
         );
     }
+}
+
+fn preview(workspace: &Workspace, path: &str, output: &str) -> (Value, String) {
+    let result = data(&tool(
+        workspace,
+        "office_preview",
+        json!({"path":path,"output":output}),
+    ));
+    let html = fs::read_to_string(workspace.0.join(output)).unwrap();
+    assert_eq!(result["path"], output);
+    assert_eq!(result["source"], path);
+    assert_eq!(result["format"], "html");
+    assert_eq!(result["mode"], "semantic");
+    assert_eq!(result["bytes"], html.len());
+    assert!(html.starts_with("<!doctype html>"));
+    assert!(html.ends_with("</main></body></html>"));
+    assert!(html.contains("<meta charset=\"utf-8\">"));
+    assert!(html.contains(
+        "default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'"
+    ));
+    assert!(html.contains("Semantic preview"));
+    assert!(html.contains("not full-fidelity Office rendering or PDF export"));
+    assert!(html.contains("16 MiB of HTML"));
+    assert!(html.contains("rejected rather than silently truncated"));
+    for tag in [
+        "<script", "<img", "<iframe", "<object", "<embed", "<a ", "<base ", "<link", "<form",
+    ] {
+        assert!(!html.contains(tag), "active markup: {tag}");
+    }
+    (result, html)
+}
+
+#[test]
+fn info_describes_semantic_preview_and_hard_output_limit() {
+    let workspace = Workspace::new();
+    let info = data(&tool(&workspace, "office_info", json!({})));
+    assert_eq!(info["preview"]["tool"], "office_preview");
+    assert_eq!(info["preview"]["format"], "html");
+    assert_eq!(info["preview"]["mode"], "semantic");
+    assert_eq!(info["preview"]["scripts"], false);
+    assert_eq!(info["preview"]["external_assets"], false);
+    assert_eq!(info["limits"]["preview_bytes"], 16 * 1024 * 1024);
+    assert!(info["unsupported"]
+        .as_array()
+        .unwrap()
+        .contains(&json!("full-fidelity rendering/PDF export")));
+}
+
+#[test]
+fn docx_preview_escapes_content_and_source_title_preserving_unicode() {
+    let workspace = Workspace::new();
+    fs::create_dir(workspace.0.join("nested")).unwrap();
+    let path = "nested/A & ' 世界.docx";
+    let payload = "</title><script>alert(1)</script><img src=x onerror=alert(2)> & \" ' 中文😀";
+    data(&tool(
+        &workspace,
+        "docx_create",
+        json!({"path":path,"paragraphs":[payload,"  two spaces\nnext\ttab\rreturn",""]}),
+    ));
+    let original = fs::read(workspace.0.join(path)).unwrap();
+    let (result, html) = preview(&workspace, path, "nested/preview.html");
+    assert_eq!(result["source_format"], "docx");
+    assert_eq!(result["paragraphs"], 3);
+    assert!(html.contains("&lt;/title&gt;&lt;script&gt;alert(1)&lt;/script&gt;&lt;img src=x onerror=alert(2)&gt; &amp; &quot; &#39; 中文😀"));
+    assert!(html.contains("<title>Semantic preview: nested/A &amp; &#39; 世界.docx</title>"));
+    assert!(html.contains("  two spaces\nnext\ttab\\u{000D}return"));
+    assert!(html.contains("[Empty paragraph]"));
+    assert!(html.contains("Formatting, numbering, fields, revision semantics"));
+    assert_eq!(original, fs::read(workspace.0.join(path)).unwrap());
+}
+
+#[test]
+fn xlsx_preview_preserves_types_empty_strings_and_inert_formula_caches() {
+    let workspace = Workspace::new();
+    data(&tool(
+        &workspace,
+        "xlsx_create",
+        json!({"path":"typed.xlsx","sheets":[{"name":"\"<&' 世界","rows":[["<script>alert(1)</script><img src=x onerror=alert(2)>","=SUM(A1:A2)",1,true,"",null,"42"]]},{"name":"Empty","rows":[]}]}),
+    ));
+    rewrite(&workspace, "typed.xlsx", |name, text| {
+        if name == "xl/worksheets/sheet1.xml" {
+            *text = text.replace(
+                "<c r=\"C1\"><v>1</v></c>",
+                "<c r=\"C1\"><f t=\"array\" ref=\"C1:C2\">999+1 &amp; &lt;script&gt;</f><v>7</v></c><c r=\"H1\"><f t=\"shared\" si=\"9\"/></c><c r=\"I1\" t=\"b\"/><c r=\"J1\" t=\"e\"><v>#DIV/0!</v></c><c r=\"K1\" t=\"d\"><v>2026-11-04</v></c>",
+            );
+        }
+    });
+    let (result, html) = preview(&workspace, "typed.xlsx", "typed.html");
+    assert_eq!(result["source_format"], "xlsx");
+    assert_eq!(result["sheets"], 2);
+    assert_eq!(result["cells"], 10);
+    assert_eq!(result["formula_cells"], 2);
+    assert!(html.contains("Worksheet: &quot;&lt;&amp;&#39; 世界</h2>"));
+    assert!(
+        html.contains("&lt;script&gt;alert(1)&lt;/script&gt;&lt;img src=x onerror=alert(2)&gt;")
+    );
+    assert!(html.contains("<pre>&quot;=SUM(A1:A2)&quot;</pre>"));
+    assert!(html.contains("<td>string</td><td><pre>&quot;42&quot;</pre>"));
+    assert!(html.contains("<td>string</td><td><pre>&quot;&quot;</pre>"));
+    assert!(html.contains("<td>boolean</td><td><pre>true</pre>"));
+    assert!(html.contains("<td>boolean</td><td><p class=\"note\">No stored value</p>"));
+    assert!(html.contains("<td>error</td><td><pre>&quot;#DIV/0!&quot;</pre>"));
+    assert!(html.contains("<td>date</td><td><pre>&quot;2026-11-04&quot;</pre>"));
+    assert!(html.contains("Cached value (may be stale)</span><pre>7</pre>"));
+    assert!(html.contains("999+1 &amp; &lt;script&gt;"));
+    assert!(!html.contains("<pre>1000</pre>"));
+    assert!(html.contains("Kind: array; reference: C1:C2"));
+    assert!(html.contains("No formula text stored; shared/array formulas are not expanded."));
+    assert!(html.contains("Kind: shared; shared index: 9"));
+    assert!(html.contains("Numeric dates are returned as raw serials."));
+    assert!(html.contains("No stored cells in this worksheet."));
+    assert!(html.contains("Unlisted coordinates have no stored cell"));
+}
+
+#[test]
+fn preview_escapes_formula_metadata_and_decoded_office_control_characters() {
+    let workspace = Workspace::new();
+    make_book(&workspace, "hostile.xlsx");
+    rewrite(&workspace, "hostile.xlsx", |name, text| {
+        if name == "xl/worksheets/sheet1.xml" {
+            *text = text.replace("Hello", "_x0000__x000D_").replace(
+                "<c r=\"B1\"><v>1</v></c>",
+                "<c r=\"B1\"><f t=\"&lt;img src=x onerror=alert(1)&gt;\" si=\"&quot;&lt;script&gt;\" ref=\"&lt;iframe&gt;\">&lt;/pre&gt;&lt;script&gt;</f><v>1</v></c>",
+            );
+        }
+    });
+    let (_, html) = preview(&workspace, "hostile.xlsx", "hostile.html");
+    assert!(html.contains("<pre>&quot;\\u0000\\r&quot;</pre>"));
+    assert!(!html.contains('\0'));
+    assert!(html.contains("&lt;/pre&gt;&lt;script&gt;"));
+    assert!(html.contains("Kind: &lt;img src=x onerror=alert(1)&gt;; shared index: &quot;&lt;script&gt;; reference: &lt;iframe&gt;"));
+}
+
+#[test]
+fn sparse_preview_never_expands_coordinates_into_dense_grid() {
+    let workspace = Workspace::new();
+    make_book(&workspace, "sparse.xlsx");
+    rewrite(&workspace, "sparse.xlsx", |name, text| {
+        if name == "xl/worksheets/sheet1.xml" {
+            *text = "<worksheet xmlns=\"http://schemas.openxmlformats.org/spreadsheetml/2006/main\"><sheetData><row r=\"1000\"><c r=\"IV1000\"><v>42</v></c></row></sheetData></worksheet>".into();
+        }
+    });
+    let (result, html) = preview(&workspace, "sparse.xlsx", "sparse.html");
+    assert_eq!(result["cells"], 1);
+    assert_eq!(html.matches("<tr>").count(), 2); // Header plus one stored cell.
+    assert!(html.contains("<th scope=\"row\">IV1000</th><td>number</td>"));
+    assert!(html.len() < 10_000);
+}
+
+#[test]
+fn preview_rejects_bad_paths_missing_parents_overwriting_and_unknown_fields() {
+    let workspace = Workspace::new();
+    make_doc(&workspace, "source.docx");
+    for output in [
+        "../escape.html",
+        "/tmp/escape.html",
+        "./x.html",
+        "a//x.html",
+        "a/../x.html",
+        "C:\\x.html",
+        "a:stream.html",
+        "NUL.html",
+        "a./x.html",
+        "a\\x.html",
+        "x.html.",
+        "x.html ",
+        "bad\n.html",
+        "wrong.txt",
+        "missing/x.html",
+    ] {
+        assert_eq!(
+            tool(
+                &workspace,
+                "office_preview",
+                json!({"path":"source.docx","output":output})
+            )["result"]["isError"],
+            true,
+            "{output}"
+        );
+    }
+    assert_eq!(fs::read_dir(&workspace.0).unwrap().count(), 1);
+    preview(&workspace, "source.docx", "preview.html");
+    let before = fs::read(workspace.0.join("preview.html")).unwrap();
+    fails(
+        tool(
+            &workspace,
+            "office_preview",
+            json!({"path":"source.docx","output":"preview.html"}),
+        ),
+        "overwriting",
+    );
+    assert_eq!(before, fs::read(workspace.0.join("preview.html")).unwrap());
+    fails(
+        tool(
+            &workspace,
+            "office_preview",
+            json!({"path":"source.docx","output":"new.html","overwrite":true}),
+        ),
+        "unknown field",
+    );
+    fails(
+        tool(
+            &workspace,
+            "office_preview",
+            json!({"path":"source.docx","output":"new.html","format":"pdf"}),
+        ),
+        "unknown field",
+    );
+    fails(
+        tool(&workspace, "office_preview", json!({"path":"source.docx"})),
+        "missing field",
+    );
+    fails(
+        tool(
+            &workspace,
+            "office_preview",
+            json!({"path":"source.pptx","output":"new.html"}),
+        ),
+        "only .docx and .xlsx",
+    );
+    assert!(!workspace.0.join("new.html").exists());
+}
+
+#[cfg(unix)]
+#[test]
+fn preview_rejects_symlink_inputs_outputs_and_parents() {
+    use std::os::unix::fs::symlink;
+    let workspace = Workspace::new();
+    let outside = Workspace::new();
+    make_doc(&outside, "outside.docx");
+    make_doc(&workspace, "source.docx");
+    fs::write(outside.0.join("existing.html"), "untouched").unwrap();
+    symlink(
+        outside.0.join("outside.docx"),
+        workspace.0.join("link.docx"),
+    )
+    .unwrap();
+    symlink(
+        outside.0.join("existing.html"),
+        workspace.0.join("link.html"),
+    )
+    .unwrap();
+    symlink(
+        outside.0.join("missing.html"),
+        workspace.0.join("dangling.html"),
+    )
+    .unwrap();
+    symlink(&outside.0, workspace.0.join("linked")).unwrap();
+    for output in ["link.html", "dangling.html", "linked/new.html"] {
+        fails(
+            tool(
+                &workspace,
+                "office_preview",
+                json!({"path":"source.docx","output":output}),
+            ),
+            "symlink",
+        );
+    }
+    for path in ["link.docx", "linked/outside.docx"] {
+        fails(
+            tool(
+                &workspace,
+                "office_preview",
+                json!({"path":path,"output":"new.html"}),
+            ),
+            "symlink",
+        );
+    }
+    assert_eq!(
+        fs::read_to_string(outside.0.join("existing.html")).unwrap(),
+        "untouched"
+    );
+    assert!(!outside.0.join("new.html").exists());
+    assert!(!outside.0.join("missing.html").exists());
+    assert!(!workspace.0.join("new.html").exists());
+}
+
+#[test]
+fn preview_reuses_readers_to_reject_external_active_and_oversized_sources() {
+    let workspace = Workspace::new();
+    make_doc(&workspace, "external.docx");
+    rewrite(&workspace, "external.docx", |name, text| {
+        if name == "_rels/.rels" {
+            *text = text.replace("Target=", "TargetMode=\"External\" Target=");
+        }
+    });
+    fails(
+        tool(
+            &workspace,
+            "office_preview",
+            json!({"path":"external.docx","output":"external.html"}),
+        ),
+        "external relationships",
+    );
+    assert!(!workspace.0.join("external.html").exists());
+    make_doc(&workspace, "macro.docx");
+    rewrite(&workspace, "macro.docx", |name, text| {
+        if name == "[Content_Types].xml" {
+            *text = text.replace(
+                "wordprocessingml.document.main+xml",
+                "word.macroEnabled.main+xml",
+            );
+        }
+    });
+    fails(
+        tool(
+            &workspace,
+            "office_preview",
+            json!({"path":"macro.docx","output":"macro.html"}),
+        ),
+        "active Office",
+    );
+    assert!(!workspace.0.join("macro.html").exists());
+    let file = fs::File::create(workspace.0.join("huge.xlsx")).unwrap();
+    file.set_len(16 * 1024 * 1024 + 1).unwrap();
+    fails(
+        tool(
+            &workspace,
+            "office_preview",
+            json!({"path":"huge.xlsx","output":"huge.html"}),
+        ),
+        "16 MiB",
+    );
+    assert!(!workspace.0.join("huge.html").exists());
+}
+
+#[test]
+fn preview_output_expansion_limit_fails_before_creating_file() {
+    let workspace = Workspace::new();
+    let sheets: Vec<Value> = (0..5)
+        .map(|index| json!({"name":format!("Sheet{index}"),"rows":[]}))
+        .collect();
+    data(&tool(
+        &workspace,
+        "xlsx_create",
+        json!({"path":"expansion.xlsx","sheets":sheets}),
+    ));
+    // Each part stays below the reader's 2 MiB XML limit, and the complete
+    // package is below its 16 MiB input limit. Formula metadata is untrusted
+    // text too: apostrophe escaping expands this beyond the HTML output cap.
+    let metadata = "'".repeat(800_000);
+    rewrite(&workspace, "expansion.xlsx", |name, text| {
+        if name.starts_with("xl/worksheets/sheet") {
+            *text = format!("<worksheet xmlns=\"http://schemas.openxmlformats.org/spreadsheetml/2006/main\"><sheetData><row r=\"1\"><c r=\"A1\"><f t=\"{metadata}\">1</f><v>1</v></c></row></sheetData></worksheet>");
+        }
+    });
+    fails(
+        tool(
+            &workspace,
+            "office_preview",
+            json!({"path":"expansion.xlsx","output":"expansion.html"}),
+        ),
+        "preview exceeds 16 MiB",
+    );
+    assert!(!workspace.0.join("expansion.html").exists());
 }

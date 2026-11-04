@@ -997,24 +997,35 @@ const mcpFormValid = computed(
 const mcpExtraKeys = computed(() => Object.keys(mcpForm.value.extra ?? {}))
 
 const officePresetBusy = ref(false)
+const officePresetRequests = latestRequest()
+
+function invalidateOfficePreset() {
+  officePresetRequests.invalidate()
+  officePresetBusy.value = false
+}
+
+watch([homeId, mcpScope, activeTab, mcpEditVisible], invalidateOfficePreset, { flush: 'sync' })
+onBeforeUnmount(invalidateOfficePreset)
 
 async function openOfficePreset() {
-  if (!homeId.value || officePresetBusy.value) return
+  if (!homeId.value || officePresetBusy.value || activeTab.value !== 'mcp') return
+  const request = officePresetRequests.begin()
   const targetHome = homeId.value
-  const targetScope = mcpScope.value
   officePresetBusy.value = true
   try {
     const { open } = await import('@tauri-apps/plugin-dialog')
+    if (!officePresetRequests.isCurrent(request)) return
     const workspace = await open({ directory: true, multiple: false, title: t('instanceEdit.officeWorkspace') })
-    if (typeof workspace !== 'string') return
+    if (!officePresetRequests.isCurrent(request) || typeof workspace !== 'string') return
     const preset = await api.officeMcpPreset(targetHome, workspace)
-    if (homeId.value !== targetHome || mcpScope.value !== targetScope || activeTab.value !== 'mcp') return
+    if (!officePresetRequests.isCurrent(request) || mcpEditVisible.value) return
     openMcpCreate()
     mcpForm.value = { ...preset }
+    Message.success(t('instanceEdit.officeReady'))
   } catch (error) {
-    Message.error(String(error))
+    if (officePresetRequests.isCurrent(request)) Message.error(String(error))
   } finally {
-    officePresetBusy.value = false
+    if (officePresetRequests.isCurrent(request)) officePresetBusy.value = false
   }
 }
 
@@ -2969,7 +2980,7 @@ const terminalRunning = ref(false)
                     {{ t('instanceEdit.mcpScopeProfile') }} · {{ p }}
                   </a-option>
                 </a-select>
-                <a-button type="primary" @click="openMcpCreate">
+                <a-button type="primary" :disabled="officePresetBusy" @click="openMcpCreate">
                   {{ t('instanceEdit.mcpAdd') }}
                 </a-button>
                 <a-button v-if="api.isTauri" :disabled="isWsl" :loading="officePresetBusy" @click="openOfficePreset">
