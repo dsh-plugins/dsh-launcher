@@ -24,7 +24,7 @@ jobs:
             platform: linux
           - runner: windows-latest
             platform: windows
-          - runner: macos-14
+          - runner: macos-15
             platform: macos
     runs-on: ${{ matrix.runner }}
     steps:
@@ -146,7 +146,7 @@ jobs:
             cache_key: linux-aarch64
             bundle_args: --bundles appimage,deb
           - platform: macos
-            runner: macos-14
+            runner: macos-15
             target: aarch64-apple-darwin
             cache_key: macos-aarch64
             bundle_args: --bundles dmg
