@@ -1,8 +1,11 @@
 //! SKILL management (issue #10): DSH user-level skills live in
 //! `<DSH_HOME>/skills` as directory bundles `<name>/SKILL.md` (or flat
 //! `<name>.md`). Skills can be installed/updated from source repositories
-//! (`https://[user:password@]github.com/user/repo[.git][#/path/to/skill]`),
-//! imported from a local SKILL.md, or created from pasted content.
+//! (`https://[user:password@]github.com/user/repo[.git][#/path/to/skill]`,
+//! `ssh://[user@]host[:port]/owner/repo[.git][#/sub]` or the scp shorthand
+//! `git@host:owner/repo[.git][#/sub]`, authenticated with the machine's own
+//! SSH keys/agent), imported from a local SKILL.md, or created from pasted
+//! content.
 //! Repo-sourced skills record their origin (repo URL + commit/tag) in
 //! `.dsh-skill.json` inside the bundle so they can be updated later.
 
@@ -102,12 +105,34 @@ fn wsl_tmp_dir_script() -> &'static str {
 
 /// `git clone` script for the distro (issue #49 G6). Both arguments are
 /// shell-quoted: the URL is user input and the directory comes from `mktemp`,
-/// so neither may be interpolated raw.
+/// so neither may be interpolated raw. SSH URLs additionally get
+/// `GIT_SSH_COMMAND` (quoted env prefix) so clone authenticates with the
+/// distro's own `~/.ssh` keys/agent and never blocks on a prompt.
 fn wsl_clone_script(clone_url: &str, dir: &str) -> String {
+    let env = if is_ssh_clone_url(clone_url) {
+        format!("GIT_SSH_COMMAND={} ", crate::wsl::sh_quote(GIT_SSH_OPTIONS))
+    } else {
+        String::new()
+    };
     format!(
-        "git clone --depth 1 {url} {dir}",
+        "{env}git clone --depth 1 {url} {dir}",
         url = crate::wsl::sh_quote(clone_url),
         dir = crate::wsl::sh_quote(dir),
+    )
+}
+
+/// `git ls-remote <url> HEAD` script for the distro; SSH URLs get the same
+/// quoted `GIT_SSH_COMMAND` prefix as the clone, so update checks use the
+/// distro's own `~/.ssh` keys/agent just like installs do.
+fn wsl_ls_remote_script(clone_url: &str) -> String {
+    let env = if is_ssh_clone_url(clone_url) {
+        format!("GIT_SSH_COMMAND={} ", crate::wsl::sh_quote(GIT_SSH_OPTIONS))
+    } else {
+        String::new()
+    };
+    format!(
+        "{env}git ls-remote {url} HEAD",
+        url = crate::wsl::sh_quote(clone_url),
     )
 }
 
@@ -174,8 +199,31 @@ fn sanitize_skill_name(name: &str) -> Result<String, String> {
     Ok(clean)
 }
 
+/// SSH command used by git for SSH clone URLs. `BatchMode=yes` forbids any
+/// interactive prompt (passphrase, host-key confirmation), so auth comes
+/// only from the machine's own keys and ssh-agent and failures surface as
+/// the ssh stderr instead of hanging; `accept-new` records an unknown host
+/// key on first connect (TOFU) so first-time SSH remotes do not fail.
+const GIT_SSH_OPTIONS: &str = "ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new";
+
+/// Whether a normalized clone URL talks SSH (and needs `GIT_SSH_OPTIONS`):
+/// `ssh://…`, or the scheme-less scp shorthand `[user@]host:owner/repo`
+/// (user optional: ssh falls back to the default user).
+fn is_ssh_clone_url(url: &str) -> bool {
+    url.starts_with("ssh://") || (!url.contains("://") && url.contains(':'))
+}
+
+/// Whether a repo base (before `#/sub`) is the scp shorthand
+/// `[user@]host:owner/repo` (user optional, e.g. both `git@github.com:o/r`
+/// and `git.example.com:o/r`).
+fn is_scp_repo_base(base: &str) -> bool {
+    !base.contains("://") && base.contains(':')
+}
+
 /// Parses a skill repo URL into (clone URL, optional `#/sub/path`).
-/// Accepts `https://[user:password@]host/owner/repo[.git][#/path/to/skill]`.
+/// Accepts `https://[user:password@]host/owner/repo[.git][#/path/to/skill]`,
+/// `ssh://[user@]host[:port]/owner/repo[.git][#/sub]` and the scp shorthand
+/// `[user@]host:owner/repo[.git][#/sub]` (e.g. `git@github.com:user/repo`).
 pub(crate) fn parse_skill_repo_url(url: &str) -> Result<(String, Option<String>), String> {
     let url = url.trim();
     let (base, sub) = match url.split_once('#') {
@@ -184,19 +232,42 @@ pub(crate) fn parse_skill_repo_url(url: &str) -> Result<(String, Option<String>)
         Some((b, s)) => (b, Some(s.trim().trim_matches('/').to_string())),
         None => (url, None),
     };
-    if !(base.starts_with("https://") || base.starts_with("http://")) {
-        return Err(format!("SKILL 仓库地址需以 https:// 开头: {url}"));
-    }
-    let without_scheme = base.split_once("://").map(|x| x.1).unwrap_or("");
-    // user:password@host/owner/repo → require at least host + owner + repo.
-    let path_part = without_scheme
-        .split_once('@')
-        .map(|(_, rest)| rest)
-        .unwrap_or(without_scheme);
-    let segments: Vec<&str> = path_part.split('/').filter(|s| !s.is_empty()).collect();
-    if segments.len() < 3 {
+    if base.starts_with("https://") || base.starts_with("http://") {
+        let without_scheme = base.split_once("://").map(|x| x.1).unwrap_or("");
+        // user:password@host/owner/repo → require at least host + owner + repo.
+        let path_part = without_scheme
+            .split_once('@')
+            .map(|(_, rest)| rest)
+            .unwrap_or(without_scheme);
+        let segments: Vec<&str> = path_part.split('/').filter(|s| !s.is_empty()).collect();
+        if segments.len() < 3 {
+            return Err(format!(
+                "SKILL 仓库地址不完整（需要 host/owner/repo）: {url}"
+            ));
+        }
+    } else if let Some(without_scheme) = base.strip_prefix("ssh://") {
+        // ssh://[user@]host[:port]/owner/repo → require host + owner + repo.
+        let path_part = without_scheme
+            .split_once('@')
+            .map(|(_, rest)| rest)
+            .unwrap_or(without_scheme);
+        let segments: Vec<&str> = path_part.split('/').filter(|s| !s.is_empty()).collect();
+        if segments.len() < 3 {
+            return Err(format!(
+                "SKILL 仓库地址不完整（需要 host/owner/repo）: {url}"
+            ));
+        }
+    } else if is_scp_repo_base(base) {
+        // scp shorthand [user@]host:owner/repo (git runs ssh on the path
+        // after the first ':'); require at least owner + repo.
+        let path_part = base.split_once(':').map(|(_, rest)| rest).unwrap_or("");
+        let segments: Vec<&str> = path_part.split('/').filter(|s| !s.is_empty()).collect();
+        if segments.len() < 2 {
+            return Err(format!("SKILL 仓库地址不完整（需要 owner/repo）: {url}"));
+        }
+    } else {
         return Err(format!(
-            "SKILL 仓库地址不完整（需要 host/owner/repo）: {url}"
+            "SKILL 仓库地址需为 https://…、ssh://… 或 git@host:owner/repo 形式: {url}"
         ));
     }
     let clone_url = base
@@ -376,13 +447,20 @@ fn zip_skill_dir(
     Ok(())
 }
 
-/// Runs git and returns trimmed stdout; errors carry stderr.
-async fn git(args: &[&str], cwd: Option<&Path>) -> Result<String, String> {
+/// Runs git and returns trimmed stdout; errors carry stderr. `ssh: true`
+/// injects `GIT_SSH_OPTIONS` as `GIT_SSH_COMMAND` so SSH remotes use the
+/// machine's own keys/agent without ever prompting; it is only set for SSH
+/// URLs so a user-configured `core.sshCommand`/`GIT_SSH_COMMAND` for other
+/// flows stays untouched.
+async fn git(args: &[&str], cwd: Option<&Path>, ssh: bool) -> Result<String, String> {
     let mut cmd = tokio::process::Command::new("git");
     crate::process::hide_console(&mut cmd);
     cmd.args(args)
         .env("CI", "true")
         .env("GIT_TERMINAL_PROMPT", "0");
+    if ssh {
+        cmd.env("GIT_SSH_COMMAND", GIT_SSH_OPTIONS);
+    }
     if let Some(dir) = cwd {
         cmd.current_dir(dir);
     }
@@ -500,11 +578,15 @@ async fn install_from_clone(
     subpath: Option<&str>,
     home: &Path,
 ) -> Result<Vec<String>, String> {
-    let commit = git(&["rev-parse", "HEAD"], Some(clone_dir)).await?;
-    let tag = git(&["describe", "--tags", "--exact-match"], Some(clone_dir))
-        .await
-        .ok()
-        .filter(|t| !t.is_empty());
+    let commit = git(&["rev-parse", "HEAD"], Some(clone_dir), false).await?;
+    let tag = git(
+        &["describe", "--tags", "--exact-match"],
+        Some(clone_dir),
+        false,
+    )
+    .await
+    .ok()
+    .filter(|t| !t.is_empty());
     let origin = SkillOrigin {
         repo: url.to_string(),
         commit,
@@ -556,6 +638,7 @@ pub async fn install_skill_repo(
             git(
                 &["clone", "--depth", "1", &clone_url, &tmp.to_string_lossy()],
                 None,
+                is_ssh_clone_url(&clone_url),
             )
             .await?;
             install_from_clone(&tmp, url.trim(), subpath.as_deref(), &home).await
@@ -625,6 +708,7 @@ pub async fn list_repo_skills(url: String) -> Result<Vec<RepoSkillInfo>, String>
         git(
             &["clone", "--depth", "1", &clone_url, &tmp.to_string_lossy()],
             None,
+            is_ssh_clone_url(&clone_url),
         )
         .await?;
         let bundles = collect_bundles(&tmp, subpath.as_deref())?;
@@ -664,18 +748,20 @@ pub struct SkillUpdateInfo {
 }
 
 /// Checks repo-sourced skills for updates: compares the recorded commit with
-/// the remote default-branch HEAD (`git ls-remote`, one call per repo).
+/// the remote default-branch HEAD (`git ls-remote`, one call per repo). WSL
+/// homes run ls-remote inside the distro so SSH URLs authenticate with the
+/// same keys/agent the install clone used.
 #[tauri::command]
 pub async fn check_skill_updates(
     state: State<'_, AppState>,
     home_id: String,
 ) -> Result<Vec<SkillUpdateInfo>, String> {
-    let home = home_path_of(&state, &home_id)?;
+    let (home, _, wsl) = home_paths_of(&state, &home_id)?;
     let dir = skills_dir(&home);
     let mut origins: Vec<(String, SkillOrigin)> = Vec::new();
     if dir.exists() {
         for entry in std::fs::read_dir(&dir)
-            .map_err(|e| e.to_string())?
+            .map_err(|e| format!("读取 SKILL 目录失败: {e}"))?
             .flatten()
         {
             let p = entry.path();
@@ -695,15 +781,33 @@ pub async fn check_skill_updates(
     for (name, origin) in origins {
         let clone_url = match parse_skill_repo_url(&origin.repo) {
             Ok((u, _)) => u,
-            Err(_) => continue,
+            Err(e) => {
+                crate::log_warn!("SKILL「{name}」的来源仓库地址无法解析，跳过更新检查: {e}");
+                continue;
+            }
         };
         let head = match head_cache.get(&clone_url) {
             Some(h) => h.clone(),
             None => {
-                let h = git(&["ls-remote", &clone_url, "HEAD"], None)
+                let remote = if let Some(d) = &wsl {
+                    wsl_run(d, &wsl_ls_remote_script(&clone_url)).await
+                } else {
+                    git(
+                        &["ls-remote", &clone_url, "HEAD"],
+                        None,
+                        is_ssh_clone_url(&clone_url),
+                    )
                     .await
-                    .ok()
-                    .and_then(|out| out.split_whitespace().next().map(|s| s.to_string()));
+                };
+                let h = match remote {
+                    Ok(out) => out.split_whitespace().next().map(|s| s.to_string()),
+                    Err(e) => {
+                        crate::log_warn!(
+                            "SKILL 仓库 {clone_url} 的 ls-remote 失败，跳过更新检查: {e}"
+                        );
+                        None
+                    }
+                };
                 head_cache.insert(clone_url.clone(), h.clone());
                 h
             }
@@ -1000,8 +1104,40 @@ mod tests {
             parse_skill_repo_url("https://git.example.com/user/repo#/.agents/skills/").unwrap();
         assert_eq!(sub.as_deref(), Some(".agents/skills"));
 
+        // ssh:// with userinfo and an explicit port.
+        let (clone, sub) =
+            parse_skill_repo_url("ssh://git@git.example.com:2222/owner/repo.git#/sub/dir").unwrap();
+        assert_eq!(clone, "ssh://git@git.example.com:2222/owner/repo.git");
+        assert_eq!(sub.as_deref(), Some("sub/dir"));
+
+        // ssh:// without userinfo.
+        let (clone, _) = parse_skill_repo_url("ssh://git.example.com/owner/repo").unwrap();
+        assert_eq!(clone, "ssh://git.example.com/owner/repo.git");
+
+        // scp shorthand git@host:owner/repo, with and without .git/sub path.
+        let (clone, sub) = parse_skill_repo_url("git@github.com:Gu-ZT/skills").unwrap();
+        assert_eq!(clone, "git@github.com:Gu-ZT/skills.git");
+        assert_eq!(sub, None);
+        let (clone, sub) =
+            parse_skill_repo_url("git@github.com:Gu-ZT/skills.git#/conventional-commits/").unwrap();
+        assert_eq!(clone, "git@github.com:Gu-ZT/skills.git");
+        assert_eq!(sub.as_deref(), Some("conventional-commits"));
+
+        // scp shorthand without a user (ssh uses the default user).
+        let (clone, _) = parse_skill_repo_url("git.example.com:owner/repo").unwrap();
+        assert_eq!(clone, "git.example.com:owner/repo.git");
+
+        // SSH forms are recognized for GIT_SSH_COMMAND injection.
+        assert!(is_ssh_clone_url("ssh://git@h/o/r.git"));
+        assert!(is_ssh_clone_url("git@github.com:o/r.git"));
+        assert!(is_ssh_clone_url("git.example.com:o/r.git"));
+        assert!(!is_ssh_clone_url("https://user:pass@github.com/o/r.git"));
+
         assert!(parse_skill_repo_url("github.com/Gu-ZT/skills").is_err());
         assert!(parse_skill_repo_url("https://github.com/Gu-ZT").is_err());
+        assert!(parse_skill_repo_url("ssh://git.example.com/owner").is_err());
+        assert!(parse_skill_repo_url("git@github.com:just-owner").is_err());
+        assert!(parse_skill_repo_url("git.example.com:just-owner").is_err());
     }
 
     #[test]
@@ -1068,6 +1204,9 @@ mod tests {
             script,
             "git clone --depth 1 'https://github.com/o/r.git' '/tmp/dsh-skill-abc123'"
         );
+        // HTTPS URLs never get an SSH override (a user-configured
+        // GIT_SSH_COMMAND must stay in effect for them).
+        assert!(!script.contains("GIT_SSH_COMMAND"));
         // A quote in the URL cannot break out of the single-quoted argument.
         let evil = wsl_clone_script("https://h/o/r'; rm -rf / #", "/tmp/d");
         assert!(
@@ -1077,6 +1216,33 @@ mod tests {
         assert!(
             evil.ends_with("'/tmp/d'"),
             "the directory must stay the last quoted argument: {evil}"
+        );
+    }
+
+    /// SSH clone URLs get a quoted GIT_SSH_COMMAND prefix so the in-distro
+    /// clone authenticates with the distro's own keys/agent in BatchMode.
+    #[test]
+    fn wsl_clone_script_adds_ssh_command_for_ssh_urls() {
+        let script = wsl_clone_script("git@github.com:o/r.git", "/tmp/dsh-skill-abc123");
+        assert_eq!(
+            script,
+            "GIT_SSH_COMMAND='ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new' \
+             git clone --depth 1 'git@github.com:o/r.git' '/tmp/dsh-skill-abc123'"
+        );
+    }
+
+    /// ls-remote (update checks) mirrors the clone: quoted URL, SSH URLs get
+    /// the same quoted GIT_SSH_COMMAND prefix, HTTPS stays untouched.
+    #[test]
+    fn wsl_ls_remote_script_quotes_url_and_adds_ssh_command() {
+        let https = wsl_ls_remote_script("https://github.com/o/r.git");
+        assert_eq!(https, "git ls-remote 'https://github.com/o/r.git' HEAD");
+        assert!(!https.contains("GIT_SSH_COMMAND"));
+        let ssh = wsl_ls_remote_script("git@github.com:o/r.git");
+        assert_eq!(
+            ssh,
+            "GIT_SSH_COMMAND='ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new' \
+             git ls-remote 'git@github.com:o/r.git' HEAD"
         );
     }
 

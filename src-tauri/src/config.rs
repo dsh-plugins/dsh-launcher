@@ -229,7 +229,9 @@ pub struct LauncherSettings {
     #[serde(default = "default_log_level")]
     pub log_level: String,
     /// SKILL source repositories (issue #10):
-    /// `https://[user:password@]github.com/user/repo[.git][#/path/to/skill]`.
+    /// `https://[user:password@]github.com/user/repo[.git][#/path/to/skill]`,
+    /// `ssh://[user@]host[:port]/owner/repo[.git][#/sub]` or the scp
+    /// shorthand `git@host:owner/repo[.git][#/sub]` (machine SSH keys/agent).
     #[serde(default)]
     pub skill_repos: Vec<String>,
     /// Route the launcher's own HTTP requests through a proxy.
