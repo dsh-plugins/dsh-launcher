@@ -297,8 +297,8 @@
     },
     "skillRepos": {
       "title": "SKILL 仓库",
-      "hint": "格式：https://[user:password{'@'}]github.com/user/repo[.git][#/path/to/skill]；在实例设置的 SKILL 页中从仓库安装或更新 SKILL，以 commit / tag 识别版本。",
-      "placeholder": "https://github.com/user/repo[#/path/to/skill]",
+      "hint": "格式：https://[user:password{'@'}]github.com/user/repo[.git][#/path/to/skill]，或 SSH 形式 ssh://[user{'@'}]host[:port]/owner/repo[.git][#/sub] 与 git{'@'}host:owner/repo[.git][#/sub]（使用本机 SSH 密钥 / ssh-agent 鉴权，密钥需无口令或已加载 agent；WSL 实例使用发行版内的密钥）；在实例设置的 SKILL 页中从仓库安装或更新 SKILL，以 commit / tag 识别版本。",
+      "placeholder": "https://github.com/user/repo 或 git{'@'}github.com:user/repo[#/path/to/skill]",
       "add": "添加",
       "empty": "暂无 SKILL 仓库"
     },
@@ -603,7 +603,7 @@
     "agentsEmpty": "暂无内容，输入 AGENTS.md 的 Markdown 文本",
     "agentsSaved": "AGENTS.md 已保存",
     "skillsEmpty": "暂无 SKILL",
-    "skillRepoPlaceholder": "选择已配置的仓库，或粘贴 https://…/owner/repo[#/path/to/skill]",
+    "skillRepoPlaceholder": "选择已配置的仓库，或粘贴 https://…/owner/repo 或 git{'@'}host:owner/repo[#/path/to/skill]",
     "skillInstall": "安装 / 更新",
     "skillImportFile": "导入 SKILL.md",
     "skillCreate": "粘贴创建",

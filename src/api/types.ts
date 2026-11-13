@@ -85,7 +85,7 @@ export interface LauncherSettings {
   news_source: string
   theme: ThemeMode
   log_level: LogLevel
-  /** SKILL source repos: https://[user:password@]github.com/user/repo[.git][#/path/to/skill] */
+  /** SKILL source repos: https://[user:password@]github.com/user/repo[.git][#/path/to/skill], ssh://[user@]host[:port]/owner/repo[.git][#/sub] or scp shorthand git@host:owner/repo[.git][#/sub] */
   skill_repos: string[]
   /** Plugin marketplace catalog sources. */
   plugin_sources: PluginSourceConfig[]

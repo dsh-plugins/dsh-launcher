@@ -297,8 +297,8 @@
     },
     "skillRepos": {
       "title": "SKILL repositories",
-      "hint": "Format: https://[user:password{'@'}]github.com/user/repo[.git][#/path/to/skill]; install or update skills from a repo on the instance SKILL tab, versioned by commit / tag.",
-      "placeholder": "https://github.com/user/repo[#/path/to/skill]",
+      "hint": "Format: https://[user:password{'@'}]github.com/user/repo[.git][#/path/to/skill], or SSH as ssh://[user{'@'}]host[:port]/owner/repo[.git][#/sub] / git{'@'}host:owner/repo[.git][#/sub] (authenticates with this machine's SSH keys / ssh-agent; keys must be passphrase-free or loaded into the agent; WSL instances use the distro's own keys); install or update skills from a repo on the instance SKILL tab, versioned by commit / tag.",
+      "placeholder": "https://github.com/user/repo or git{'@'}github.com:user/repo[#/path/to/skill]",
       "add": "Add",
       "empty": "No SKILL repositories yet"
     },
@@ -603,7 +603,7 @@
     "agentsEmpty": "Nothing yet — write the AGENTS.md markdown here",
     "agentsSaved": "AGENTS.md saved",
     "skillsEmpty": "No skills yet",
-    "skillRepoPlaceholder": "Pick a configured repo, or paste https://…/owner/repo[#/path/to/skill]",
+    "skillRepoPlaceholder": "Pick a configured repo, or paste https://…/owner/repo or git{'@'}host:owner/repo[#/path/to/skill]",
     "skillInstall": "Install / Update",
     "skillImportFile": "Import SKILL.md",
     "skillCreate": "Paste to create",
