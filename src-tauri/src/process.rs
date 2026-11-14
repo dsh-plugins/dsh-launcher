@@ -23,9 +23,23 @@ pub struct RunningInstance {
     web: Option<WebLaunch>,
     launch_failed: bool,
     stopping: bool,
+    activity: Option<crate::exit_protection::HostActivity>,
 }
 
 impl RunningInstance {
+    pub fn exit_impact(&self) -> crate::exit_protection::Impact {
+        if self.stopping {
+            return Default::default();
+        }
+        self.activity
+            .as_ref()
+            .map(|a| a.impact())
+            .unwrap_or(crate::exit_protection::Impact {
+                unknown: true,
+                ..Default::default()
+            })
+    }
+
     pub fn desktop_url(&self) -> Option<String> {
         self.links.as_ref().map(|links| links.desktop.to_string())
     }
@@ -297,6 +311,17 @@ pub async fn start_instance_process(
     let is_web = is_web_profile(&profile_dir, profile)
         || (profile == "web" && !profile_dir.join("profiles/web/package.json").exists());
     let mut cli_args = vec!["--profile".to_string(), profile.to_string()];
+    let mut activity = None;
+    if is_web && wsl_distro.is_none() {
+        match crate::exit_protection::prepare_bridge(&state.data_dir, &version.dir) {
+            Ok(Some((patch, host))) => {
+                cli_args.extend(["--patch".into(), patch.to_string_lossy().into_owned()]);
+                activity = Some(host);
+            }
+            Ok(None) => {}
+            Err(error) => crate::log_warn!("退出状态桥接不可用: {error}"),
+        }
+    }
     let web = if is_web {
         let startup = crate::web_launch::startup_script(
             &crate::wsl::version_fs_path(version),
@@ -378,6 +403,16 @@ pub async fn start_instance_process(
     if state.launch_cancels.lock().unwrap().contains(instance_id) {
         return Err("启动已取消".into());
     }
+    if !state
+        .config
+        .lock()
+        .unwrap()
+        .instances
+        .iter()
+        .any(|instance| instance.id == instance_id)
+    {
+        return Err("实例已删除，取消启动".into());
+    }
     let mut child = cmd
         .kill_on_drop(true)
         .spawn()
@@ -395,6 +430,7 @@ pub async fn start_instance_process(
         web,
         launch_failed: false,
         stopping: false,
+        activity,
     };
     let mut status = entry.status(instance_id);
     status.state = InstanceState::Starting;
@@ -529,6 +565,16 @@ pub async fn start_instance_process(
                     }
                     continue;
                 }
+                {
+                    let mut running = state.running.lock().await;
+                    if let Some(entry) = running.get_mut(&reader_id) {
+                        if Arc::ptr_eq(&entry.kill, &reader_kill)
+                            && entry.activity.as_mut().is_some_and(|a| a.receive(&line))
+                        {
+                            continue;
+                        }
+                    }
+                }
                 log_line(&reader_log, &line).await;
                 if let Some(cap) = url_re().captures(&line) {
                     let mut running = state.running.lock().await;
@@ -593,13 +639,22 @@ pub async fn start_instance_process(
 /// is idempotent: when the entry is already gone (crashed, stopped from the
 /// tray, duplicate click) a terminal status is re-emitted so a stale
 /// frontend converges instead of erroring with "实例未在运行".
-pub async fn stop_instance_process(
+pub async fn stop_instance_process_if(
     app: &AppHandle,
     state: &State<'_, AppState>,
     instance_id: &str,
+    expected: Option<&Arc<Notify>>,
 ) -> Result<(), String> {
     let entry = {
         let mut running = state.running.lock().await;
+        if let Some(expected) = expected {
+            if running
+                .get(instance_id)
+                .is_some_and(|entry| !Arc::ptr_eq(&entry.kill, expected))
+            {
+                return Err("实例已重新启动，请重新确认停止".into());
+            }
+        }
         if let Some(entry) = running.get_mut(instance_id) {
             entry.stopping = true;
             entry.links = None;
@@ -634,8 +689,15 @@ pub async fn stop_instance_process(
     // flow) observe a clean registry on return.
     for _ in 0..100 {
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-        if !state.running.lock().await.contains_key(instance_id) {
-            return Ok(());
+        let running = state.running.lock().await;
+        match running.get(instance_id) {
+            None => return Ok(()),
+            Some(current)
+                if expected.is_some_and(|expected| !Arc::ptr_eq(expected, &current.kill)) =>
+            {
+                return Err("实例已重新启动，请重新确认停止".into())
+            }
+            Some(_) => {}
         }
     }
     crate::log_error!("停止实例 {instance_id} 超时：进程未响应终止信号");

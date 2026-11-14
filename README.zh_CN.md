@@ -18,6 +18,8 @@ Tauri 2 + Vue 3 + TypeScript + Sass + vue-router + vue-i18n + Arco Design Vue。
 
 ## 功能
 
+- **实验性 Rust Office**：可选启用、限定工作目录的 DOCX/XLSX MCP 工具及语义 HTML 预览，无需 Python 或 Node 运行时。详见[配置与限制](docs/RUST_OFFICE.md)。
+
 - **多版本安装**：从 npm registry 查询并安装多个 `@deepseek-ai/dsh` 版本到隔离目录，互不干扰。
 - **多实例管理**：同一版本可创建多个实例，每个实例拥有独立的名称、Profile 与运行时环境变量。
 - **DSH_HOME 三种模式**：
