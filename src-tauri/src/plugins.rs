@@ -2086,18 +2086,26 @@ struct SourceVersion {
 }
 
 /// Newest version of a plugin that the channel accepts. Pre-releases are
-/// skipped for Release; Beta takes the highest version overall.
+/// skipped for Release; Beta takes the highest version overall. Equal versions
+/// keep the first entry, so the source order decides the install source.
 fn newest_version(versions: &[SourceVersion], channel: UpdateChannel) -> Option<&SourceVersion> {
-    versions
-        .iter()
-        .filter_map(|entry| {
-            semver::Version::parse(&entry.version)
-                .ok()
-                .map(|parsed| (parsed, entry))
-        })
-        .filter(|(parsed, _)| channel.includes_prerelease() || parsed.pre.is_empty())
-        .max_by(|left, right| left.0.cmp_precedence(&right.0))
-        .map(|(_, entry)| entry)
+    let mut best: Option<(semver::Version, &SourceVersion)> = None;
+    for entry in versions {
+        let Ok(parsed) = semver::Version::parse(&entry.version) else {
+            continue;
+        };
+        if !channel.includes_prerelease() && !parsed.pre.is_empty() {
+            continue;
+        }
+        let higher = match &best {
+            Some((current, _)) => parsed.cmp_precedence(current).is_gt(),
+            None => true,
+        };
+        if higher {
+            best = Some((parsed, entry));
+        }
+    }
+    best.map(|(_, entry)| entry)
 }
 
 /// Budget for reading catalog indexes during an update check: a slow source
@@ -2115,13 +2123,14 @@ async fn source_versions(
     ordered.sort_by_key(|source| source.order);
     let mut set = tokio::task::JoinSet::new();
     for source in ordered {
+        let order = source.order;
         set.spawn(async move {
             let result = fetch_catalog(&source).await;
-            (source.id, result)
+            (order, source.id, result)
         });
     }
     let deadline = tokio::time::Instant::now() + budget;
-    let mut collected: Vec<(String, Vec<MarketPlugin>)> = Vec::new();
+    let mut collected: Vec<(u32, String, Vec<MarketPlugin>)> = Vec::new();
     loop {
         let joined = match tokio::time::timeout_at(deadline, set.join_next()).await {
             Ok(Some(joined)) => joined,
@@ -2129,18 +2138,20 @@ async fn source_versions(
             Err(_) => break,
         };
         match joined {
-            Ok((id, Ok(plugins))) => collected.push((id, plugins)),
-            Ok((id, Err(error))) => {
+            Ok((order, id, Ok(plugins))) => collected.push((order, id, plugins)),
+            Ok((_, id, Err(error))) => {
                 crate::log_warn!("插件更新检查读取来源「{id}」失败: {error}");
             }
             Err(error) => crate::log_warn!("插件更新检查来源任务异常: {error}"),
         }
     }
     set.abort_all();
+    // 完成顺序取决于网络，按来源顺序重排后同一版本才能稳定归因到高优先级来源。
+    collected.sort_by_key(|(order, _, _)| *order);
 
     let mut out: std::collections::HashMap<String, Vec<SourceVersion>> =
         std::collections::HashMap::new();
-    for (source_id, plugins) in collected {
+    for (_, source_id, plugins) in collected {
         for plugin in plugins {
             let Some(catalog) = plugin.catalog else {
                 continue;
@@ -4355,6 +4366,21 @@ mod tests {
         let only_pre = [source_version("dsh-plugins", "2.0.0-rc.1")];
         assert!(newest_version(&only_pre, UpdateChannel::Release).is_none());
         assert!(newest_version(&[], UpdateChannel::Beta).is_none());
+    }
+
+    #[test]
+    fn equal_versions_keep_the_first_source() {
+        // 来源按优先级排序后传入：同一版本必须归因到更靠前的来源。
+        let versions = [
+            source_version("official", "1.0.0"),
+            source_version("mirror", "1.0.0"),
+        ];
+        assert_eq!(
+            newest_version(&versions, UpdateChannel::Release)
+                .unwrap()
+                .source_id,
+            "official"
+        );
     }
 
     #[test]
