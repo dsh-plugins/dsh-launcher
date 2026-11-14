@@ -2169,10 +2169,77 @@ async fn source_versions(
     out
 }
 
-/// The channel's default version from npm, used when no configured index
-/// lists the plugin. Beta falls back to the stable tag when `next` is absent,
-/// so a package without pre-releases still reports its latest stable version.
+/// One npm dist-tag target: the version it points at, plus when that version
+/// was published (absent when the registry omits the publish time).
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct DistTagVersion {
+    version: String,
+    published_at: Option<chrono::DateTime<chrono::Utc>>,
+}
+
+/// Reads one dist-tag's version and publish time from a registry document.
+fn dist_tag(doc: &serde_json::Value, tag: &str) -> Option<DistTagVersion> {
+    let version = doc
+        .get("dist-tags")
+        .and_then(|tags| tags.get(tag))
+        .and_then(|value| value.as_str())?
+        .to_string();
+    let published_at = doc
+        .get("time")
+        .and_then(|time| time.get(&version))
+        .and_then(|value| value.as_str())
+        .and_then(|text| chrono::DateTime::parse_from_rfc3339(text).ok())
+        .map(|time| time.with_timezone(&chrono::Utc));
+    Some(DistTagVersion {
+        version,
+        published_at,
+    })
+}
+
+/// Beta 偏好下同时存在 `latest` 与 `next` 时取发布时间更晚的目标：`next`
+/// 落后于正式版时不能把更新倒退回旧的预发布版本。缺少发布时间时沿用 Beta
+/// 优先 `next` 的行为，同一时刻也保留 `next`。
+fn later_dist_tag(
+    latest: Option<DistTagVersion>,
+    next: Option<DistTagVersion>,
+) -> Option<DistTagVersion> {
+    match (latest, next) {
+        (Some(latest), Some(next)) => {
+            let next_is_newer = match (&latest.published_at, &next.published_at) {
+                (Some(latest_at), Some(next_at)) => next_at >= latest_at,
+                _ => true,
+            };
+            Some(if next_is_newer { next } else { latest })
+        }
+        (Some(only), None) | (None, Some(only)) => Some(only),
+        (None, None) => None,
+    }
+}
+
+/// Reads both release tags of a package in one registry request.
+async fn npm_dist_tags(
+    id: &str,
+) -> Result<(Option<DistTagVersion>, Option<DistTagVersion>), String> {
+    // Scoped npm packages must be URL-encoded (@dsh-plugin/x -> @dsh-plugin%2fx).
+    let encoded = id.replace('/', "%2f");
+    let doc = fetch_json(&format!("{NPM_REGISTRY}/{encoded}"), 16 * 1024 * 1024).await?;
+    Ok((dist_tag(&doc, "latest"), dist_tag(&doc, "next")))
+}
+
+/// The channel's version from npm, used when no configured index lists the
+/// plugin. Beta compares `latest` and `next` by publish time and keeps the
+/// later one; the version list remains the fallback when both tags are absent.
 async fn npm_channel_version(id: &str, channel: UpdateChannel) -> Option<String> {
+    if channel == UpdateChannel::Beta {
+        match npm_dist_tags(id).await {
+            Ok((latest, next)) => {
+                if let Some(picked) = later_dist_tag(latest, next) {
+                    return Some(picked.version);
+                }
+            }
+            Err(e) => crate::log_warn!("查询插件 {id} 发布标签失败: {e}"),
+        }
+    }
     let candidates = match channel {
         UpdateChannel::Release => vec![PluginChannel::Stable],
         UpdateChannel::Beta => vec![PluginChannel::Beta, PluginChannel::Stable],
@@ -4413,6 +4480,83 @@ mod tests {
             PluginChannel::Stable
         );
         assert_eq!(UpdateChannel::Beta.plugin_channel(), PluginChannel::Beta);
+    }
+
+    fn tag(version: &str, published_at: Option<&str>) -> DistTagVersion {
+        DistTagVersion {
+            version: version.to_string(),
+            published_at: published_at.map(|text| {
+                chrono::DateTime::parse_from_rfc3339(text)
+                    .unwrap()
+                    .with_timezone(&chrono::Utc)
+            }),
+        }
+    }
+
+    #[test]
+    fn beta_preference_keeps_the_later_published_tag() {
+        let newer_stable = later_dist_tag(
+            Some(tag("2.0.0", Some("2026-06-01T00:00:00Z"))),
+            Some(tag("2.1.0-rc.1", Some("2026-05-01T00:00:00Z"))),
+        );
+        assert_eq!(newer_stable.unwrap().version, "2.0.0");
+
+        let newer_next = later_dist_tag(
+            Some(tag("2.0.0", Some("2026-05-01T00:00:00Z"))),
+            Some(tag("2.1.0-rc.1", Some("2026-06-01T00:00:00Z"))),
+        );
+        assert_eq!(newer_next.unwrap().version, "2.1.0-rc.1");
+
+        // 同一时刻或缺少发布时间时保留 Beta 优先 next 的行为。
+        let same_moment = later_dist_tag(
+            Some(tag("2.0.0", Some("2026-06-01T00:00:00Z"))),
+            Some(tag("2.1.0-rc.1", Some("2026-06-01T00:00:00Z"))),
+        );
+        assert_eq!(same_moment.unwrap().version, "2.1.0-rc.1");
+        assert_eq!(
+            later_dist_tag(Some(tag("2.0.0", None)), Some(tag("2.1.0-rc.1", None)))
+                .unwrap()
+                .version,
+            "2.1.0-rc.1"
+        );
+        // 只有一个标签时直接使用它。
+        assert_eq!(
+            later_dist_tag(Some(tag("2.0.0", None)), None)
+                .unwrap()
+                .version,
+            "2.0.0"
+        );
+        assert_eq!(
+            later_dist_tag(None, Some(tag("2.1.0-rc.1", None)))
+                .unwrap()
+                .version,
+            "2.1.0-rc.1"
+        );
+        assert!(later_dist_tag(None, None).is_none());
+    }
+
+    #[test]
+    fn dist_tags_carry_their_publish_time() {
+        let doc = serde_json::json!({
+            "dist-tags": { "latest": "2.0.0", "next": "2.1.0-rc.1" },
+            "time": {
+                "2.0.0": "2026-06-01T00:00:00.000Z",
+                "2.1.0-rc.1": "2026-05-01T12:00:00.000Z",
+                "created": "2025-01-01T00:00:00.000Z"
+            }
+        });
+        let latest = dist_tag(&doc, "latest").unwrap();
+        assert_eq!(latest.version, "2.0.0");
+        assert_eq!(
+            latest.published_at.unwrap().to_rfc3339(),
+            "2026-06-01T00:00:00+00:00"
+        );
+        let next = dist_tag(&doc, "next").unwrap();
+        assert!(next.published_at.unwrap() < latest.published_at.unwrap());
+        // 缺少标签或缺少发布时间都不应伪造取值。
+        assert!(dist_tag(&doc, "beta").is_none());
+        let untimed = serde_json::json!({ "dist-tags": { "latest": "1.0.0" } });
+        assert!(dist_tag(&untimed, "latest").unwrap().published_at.is_none());
     }
 
     #[test]

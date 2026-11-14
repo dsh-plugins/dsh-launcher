@@ -333,7 +333,7 @@
         "release": "Release（npm latest）",
         "beta": "Beta（npm next）"
       },
-      "channelHint": "Release 只比较正式版；Beta 同时接受预发布版本。"
+      "channelHint": "Release 只比较正式版；Beta 同时接受预发布版本，并在 npm latest 与 next 中取发布时间更晚的一个。"
     },
     "proxy": {
       "title": "代理",

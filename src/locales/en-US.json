@@ -333,7 +333,7 @@
         "release": "Release (npm latest)",
         "beta": "Beta (npm next)"
       },
-      "channelHint": "Release compares stable versions only; Beta also accepts pre-releases."
+      "channelHint": "Release compares stable versions only; Beta also accepts pre-releases and keeps whichever of npm latest and next was published later."
     },
     "proxy": {
       "title": "Proxy",
