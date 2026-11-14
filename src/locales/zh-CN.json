@@ -326,6 +326,15 @@
         "githubTopic": "GitHub Topic"
       }
     },
+    "pluginUpdates": {
+      "title": "插件更新",
+      "hint": "插件页的更新检查先按插件 id 查询已配置的官方格式插件源，来源没有收录时再回退 npm 注册表的渠道标签。Git 安装的插件保存安装来源时会使用索引中固定的提交。",
+      "channel": {
+        "release": "Release（npm latest）",
+        "beta": "Beta（npm next）"
+      },
+      "channelHint": "Release 只比较正式版；Beta 同时接受预发布版本。"
+    },
     "proxy": {
       "title": "代理",
       "enabled": "启用代理",

@@ -1799,6 +1799,18 @@ pub fn update_settings(
     if let Some(v) = settings.plugin_sources {
         cfg.settings.plugin_sources = sanitize_plugin_sources(v);
     }
+    if let Some(v) = settings.plugin_update_channel {
+        match crate::plugins::UpdateChannel::parse(&v) {
+            Some(channel) => {
+                cfg.settings.plugin_update_channel = match channel {
+                    crate::plugins::UpdateChannel::Release => "release",
+                    crate::plugins::UpdateChannel::Beta => "beta",
+                }
+                .to_string()
+            }
+            None => return Err(format!("无效的插件更新渠道: {v}")),
+        }
+    }
     if let Some(v) = settings.proxy_enabled {
         cfg.settings.proxy_enabled = v;
     }

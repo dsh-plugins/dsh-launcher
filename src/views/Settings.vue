@@ -1,4 +1,4 @@
-﻿<script setup lang="ts">
+<script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { Message } from '@arco-design/web-vue'
@@ -366,6 +366,22 @@ const newSourceId = ref('')
 const newSourceKind = ref<SourceKind>('primary')
 const newSourceUrl = ref('')
 const pluginSourceBusy = ref(false)
+
+// --- Plugin updates -----------------------------------------------------------
+
+const pluginUpdateChannel = computed<'release' | 'beta'>(
+  () => store.settings.plugin_update_channel ?? 'release',
+)
+
+const PLUGIN_UPDATE_CHANNEL_OPTIONS = computed<{ value: 'release' | 'beta'; label: string }[]>(() => [
+  { value: 'release', label: t('settings.pluginUpdates.channel.release') },
+  { value: 'beta', label: t('settings.pluginUpdates.channel.beta') },
+])
+
+async function onPluginUpdateChannelChange(value: unknown) {
+  const channel = value === 'beta' ? 'beta' : 'release'
+  await patchSettings({ plugin_update_channel: channel })
+}
 
 /** Order is the array index; renumber on every mutation. */
 function renumberSources(list: PluginSourceConfig[]): PluginSourceConfig[] {
@@ -1017,6 +1033,24 @@ const pluginSourceColumns = computed(() => [
           <a-empty :description="t('settings.pluginSources.empty')" />
         </template>
       </a-table>
+    </div>
+
+    <div class="dl-card">
+      <div class="dl-card-title">
+        <h3>{{ t('settings.pluginUpdates.title') }}<HintIcon :content="t('settings.pluginUpdates.hint')" /></h3>
+      </div>
+      <div class="update-row">
+        <a-select
+          :model-value="pluginUpdateChannel"
+          style="width: 200px"
+          @change="onPluginUpdateChannelChange"
+        >
+          <a-option v-for="o in PLUGIN_UPDATE_CHANNEL_OPTIONS" :key="o.value" :value="o.value">
+            {{ o.label }}
+          </a-option>
+        </a-select>
+        <span class="update-hint">{{ t('settings.pluginUpdates.channelHint') }}</span>
+      </div>
     </div>
 
     </template>

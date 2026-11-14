@@ -268,6 +268,10 @@ pub struct LauncherSettings {
     /// three catalogs plus the (disabled) live GitHub topic channel.
     #[serde(default = "default_plugin_sources")]
     pub plugin_sources: Vec<PluginSourceConfig>,
+    /// Version preference of the plugin update check: "release" (stable only,
+    /// npm dist-tag `latest`) or "beta" (pre-releases included, `next`).
+    #[serde(default = "default_plugin_update_channel")]
+    pub plugin_update_channel: String,
     /// Root directory of the most recent storage redirection (issue #65),
     /// offered as the "last used" preset. Advisory UI memory only — it never
     /// affects validation. `#[serde(default)]` keeps older configs loadable.
@@ -353,6 +357,10 @@ fn default_update_channel() -> String {
     "dev".to_string()
 }
 
+fn default_plugin_update_channel() -> String {
+    "release".to_string()
+}
+
 impl Default for LauncherSettings {
     fn default() -> Self {
         Self {
@@ -373,6 +381,7 @@ impl Default for LauncherSettings {
             hide_launcher_on_window_open: false,
             per_instance_tray: true,
             plugin_sources: default_plugin_sources(),
+            plugin_update_channel: default_plugin_update_channel(),
             last_link_root: None,
             update_channel: default_update_channel(),
             update_suppressed: Vec::new(),
@@ -461,6 +470,8 @@ pub struct SettingsPatch {
     pub proxy_apply_dsh: Option<bool>,
     #[serde(default)]
     pub plugin_sources: Option<Vec<PluginSourceConfig>>,
+    #[serde(default)]
+    pub plugin_update_channel: Option<String>,
     #[serde(default)]
     pub update_channel: Option<String>,
     #[serde(default)]
@@ -671,6 +682,13 @@ mod tests {
         assert!(LauncherSettings::default().per_instance_tray);
         let cfg: Config = serde_json::from_str(r#"{"settings": {"locale": "zh-CN"}}"#).unwrap();
         assert!(cfg.settings.per_instance_tray);
+    }
+
+    #[test]
+    fn plugin_update_channel_defaults_to_release_for_old_configs() {
+        assert_eq!(LauncherSettings::default().plugin_update_channel, "release");
+        let cfg: Config = serde_json::from_str(r#"{"settings": {"locale": "zh-CN"}}"#).unwrap();
+        assert_eq!(cfg.settings.plugin_update_channel, "release");
     }
 
     fn source(id: &str, kind: SourceKind, confidence: Confidence) -> PluginSourceConfig {

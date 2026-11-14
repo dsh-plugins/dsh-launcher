@@ -326,6 +326,15 @@
         "githubTopic": "GitHub topic"
       }
     },
+    "pluginUpdates": {
+      "title": "Plugin updates",
+      "hint": "The Plugins tab checks each installed plugin id against the configured official-format sources first, and falls back to the npm registry tags only for plugins no source lists. Updates for Git installs use the exact commit recorded in the index.",
+      "channel": {
+        "release": "Release (npm latest)",
+        "beta": "Beta (npm next)"
+      },
+      "channelHint": "Release compares stable versions only; Beta also accepts pre-releases."
+    },
     "proxy": {
       "title": "Proxy",
       "enabled": "Enable proxy",

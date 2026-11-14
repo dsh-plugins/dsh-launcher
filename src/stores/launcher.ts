@@ -108,6 +108,7 @@ export const useLauncherStore = defineStore('launcher', {
       log_level: 'info',
       skill_repos: [],
       plugin_sources: [],
+      plugin_update_channel: 'release',
       proxy_enabled: false,
       proxy_url: 'http://127.0.0.1',
       proxy_port: 7890,

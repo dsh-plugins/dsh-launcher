@@ -145,6 +145,7 @@ function seedDb(): MockDb {
         { id: 'dshget', url: 'https://github.com/dshget/plugins', kind: 'dsh-get', enabled: true, confidence: 'aggregated', order: 2 },
         { id: 'github-topic', url: '', kind: 'github-topic', enabled: false, confidence: 'unverified', order: 3 },
       ],
+      plugin_update_channel: 'release',
       proxy_enabled: false,
       proxy_url: 'http://127.0.0.1',
       proxy_port: 7890,
@@ -183,6 +184,7 @@ function loadDb(): MockDb {
       db.settings.hide_launcher_on_window_open = db.settings.hide_launcher_on_window_open ?? false
       db.settings.last_link_root = db.settings.last_link_root ?? null
       db.settings.plugin_sources = db.settings.plugin_sources ?? seedDb().settings.plugin_sources
+      db.settings.plugin_update_channel = db.settings.plugin_update_channel ?? 'release'
       db.settings.update_channel = db.settings.update_channel ?? 'dev'
       db.settings.update_suppressed = db.settings.update_suppressed ?? []
       db.settings.silent_autostart = db.settings.silent_autostart ?? false
@@ -1516,8 +1518,8 @@ async function mockCall<T>(cmd: string, args?: Record<string, unknown>): Promise
     }
     case 'check_plugin_updates': {
       return [
-        { id: '@dsh-plugin/dsh-auxiliary', current: '0.4.1', latest: '0.5.0', has_update: true },
-        { id: '@dsh-plugin/dsh-thought-buddy', current: '0.3.1', latest: '0.3.1', has_update: false },
+        { id: '@dsh-plugin/dsh-auxiliary', current: '0.4.1', latest: '0.5.0', has_update: true, source: 'dsh-plugins', channel: 'stable' },
+        { id: '@dsh-plugin/dsh-thought-buddy', current: '0.3.1', latest: '0.3.1', has_update: false, channel: 'stable' },
       ] as T
     }
     case 'set_plugins_enabled':

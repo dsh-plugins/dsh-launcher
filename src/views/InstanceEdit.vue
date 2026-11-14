@@ -2288,9 +2288,10 @@ async function updatePlugins(ids: string[]) {
       const taskId = await api.startInstallPluginTask({
         pluginId: id,
         version: info.latest,
-        channel: 'stable',
+        channel: info.channel ?? 'stable',
         instanceId: editingId.value,
         profile: pluginProfile.value,
+        installSource: info.install_source ?? undefined,
       })
       pendingUpdateTasks.value.push(taskId)
       started += 1

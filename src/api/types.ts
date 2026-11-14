@@ -89,6 +89,8 @@ export interface LauncherSettings {
   skill_repos: string[]
   /** Plugin marketplace catalog sources. */
   plugin_sources: PluginSourceConfig[]
+  /** Version preference of the plugin update check (release = stable only). */
+  plugin_update_channel: 'release' | 'beta'
   /** Route the launcher's own HTTP requests through a proxy. */
   proxy_enabled: boolean
   /** Proxy URL without port (PROXY_URL), e.g. http://127.0.0.1 */
@@ -717,14 +719,20 @@ export interface InstalledPlugin {
   cordis_id?: string
 }
 
-/** Update availability for one installed npm plugin (issue #27). */
+/** Update availability for one installed plugin (issue #27). */
 export interface PluginUpdateInfo {
   id: string
-  /** Resolved installed version (node_modules), or the cleaned manifest spec. */
+  /** Resolved installed version (node_modules), or the cleaned npm spec. */
   current?: string
-  /** Latest stable version (npm dist-tag `latest`); absent when unknown. */
+  /** Newest version matching the update channel; absent when unknown. */
   latest?: string
   has_update: boolean
+  /** Plugin source that supplied the version; absent for the npm fallback. */
+  source?: string | null
+  /** Exact index install source, so Git updates pin the listed commit. */
+  install_source?: InstallSource | null
+  /** Channel the update task installs with, following the update preference. */
+  channel: PluginChannel
 }
 
 export interface InstallPluginInput {

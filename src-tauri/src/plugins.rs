@@ -1962,17 +1962,55 @@ pub(crate) fn resolve_instance_linux(
 // Commands: update check (issue #27)
 // ---------------------------------------------------------------------------
 
-/// Update availability for one installed npm plugin.
+/// Update availability for one installed plugin.
 #[derive(Clone, Debug, Serialize)]
 pub struct PluginUpdateInfo {
     pub id: String,
-    /// Resolved installed version (from node_modules), or the manifest spec
-    /// with range prefixes stripped when the package cannot be read.
+    /// Resolved installed version (node_modules), or — for npm dependencies
+    /// only — the manifest spec with range prefixes stripped.
     pub current: Option<String>,
-    /// Latest stable version (npm dist-tag `latest`); None when the registry
-    /// lookup failed or the plugin is not registry-backed.
+    /// Newest version matching the update channel; None when no source lists
+    /// the plugin and the registry lookup failed or does not apply.
     pub latest: Option<String>,
     pub has_update: bool,
+    /// Catalog source that supplied `latest`; None when the version came from
+    /// the npm registry fallback.
+    pub source: Option<String>,
+    /// Exact install source of `latest` in the catalog index; Git updates use
+    /// the pinned commit instead of a moving tag.
+    pub install_source: Option<crate::market_index::InstallSource>,
+    /// Channel the update task must install with (`stable` / `beta`).
+    pub channel: PluginChannel,
+}
+
+/// Version preference of the update check: Release installs stable versions
+/// only, Beta also accepts pre-releases.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum UpdateChannel {
+    Release,
+    Beta,
+}
+
+impl UpdateChannel {
+    pub fn parse(value: &str) -> Option<Self> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "release" => Some(Self::Release),
+            "beta" => Some(Self::Beta),
+            _ => None,
+        }
+    }
+
+    fn includes_prerelease(self) -> bool {
+        self == Self::Beta
+    }
+
+    /// Update task channel: a Git/npm install must follow the same preference.
+    fn plugin_channel(self) -> PluginChannel {
+        match self {
+            Self::Release => PluginChannel::Stable,
+            Self::Beta => PluginChannel::Beta,
+        }
+    }
 }
 
 /// Compares two version strings; true when `latest` is strictly newer.
@@ -2003,25 +2041,153 @@ fn spec_to_version(spec: &str) -> Option<String> {
     }
 }
 
+/// The real installed version recorded in `node_modules/<pkg>/package.json`.
+fn node_modules_version(dir: &std::path::Path, id: &str) -> Option<String> {
+    let pkg_json = dir.join("node_modules").join(id).join("package.json");
+    let raw = std::fs::read_to_string(&pkg_json).ok()?;
+    let doc = serde_json::from_str::<serde_json::Value>(&raw).ok()?;
+    doc.get("version")
+        .and_then(|v| v.as_str())
+        .map(str::to_string)
+}
+
 /// The installed version of a package in a profile: the real version from
 /// `node_modules/<pkg>/package.json`, falling back to the cleaned spec.
 fn installed_version_of(dir: &std::path::Path, id: &str, spec: &str) -> Option<String> {
-    let pkg_json = dir.join("node_modules").join(id).join("package.json");
-    if let Ok(raw) = std::fs::read_to_string(&pkg_json) {
-        if let Ok(doc) = serde_json::from_str::<serde_json::Value>(&raw) {
-            if let Some(v) = doc.get("version").and_then(|v| v.as_str()) {
-                return Some(v.to_string());
+    node_modules_version(dir, id).or_else(|| spec_to_version(spec))
+}
+
+/// How a profile dependency can be version-checked: only npm specs have a
+/// registry fallback, Git specs rely on the configured catalog indexes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum DepKind {
+    Npm,
+    Git,
+    Other,
+}
+
+fn dep_kind(spec: &str) -> DepKind {
+    let spec = spec.trim();
+    if spec.starts_with("github:") || spec.starts_with("git+") || spec.starts_with("git@") {
+        DepKind::Git
+    } else if spec.contains(':') || spec.ends_with(".tgz") || spec.ends_with(".tar.gz") {
+        DepKind::Other
+    } else {
+        DepKind::Npm
+    }
+}
+
+/// One installable version listed by a catalog source.
+#[derive(Clone, Debug)]
+struct SourceVersion {
+    version: String,
+    source: crate::market_index::InstallSource,
+    source_id: String,
+}
+
+/// Newest version of a plugin that the channel accepts. Pre-releases are
+/// skipped for Release; Beta takes the highest version overall.
+fn newest_version(versions: &[SourceVersion], channel: UpdateChannel) -> Option<&SourceVersion> {
+    versions
+        .iter()
+        .filter_map(|entry| {
+            semver::Version::parse(&entry.version)
+                .ok()
+                .map(|parsed| (parsed, entry))
+        })
+        .filter(|(parsed, _)| channel.includes_prerelease() || parsed.pre.is_empty())
+        .max_by(|left, right| left.0.cmp_precedence(&right.0))
+        .map(|(_, entry)| entry)
+}
+
+/// Budget for reading catalog indexes during an update check: a slow source
+/// must not hold the plugin list hostage.
+const UPDATE_SOURCE_BUDGET: std::time::Duration = std::time::Duration::from_secs(15);
+
+/// Reads the configured official-format indexes and collects their versions
+/// per package name. Earlier sources win, mirroring the market's priority, and
+/// a failing source only costs its own entries.
+async fn source_versions(
+    sources: Vec<PluginSourceConfig>,
+    budget: std::time::Duration,
+) -> std::collections::HashMap<String, Vec<SourceVersion>> {
+    let mut ordered = sources;
+    ordered.sort_by_key(|source| source.order);
+    let mut set = tokio::task::JoinSet::new();
+    for source in ordered {
+        set.spawn(async move {
+            let result = fetch_catalog(&source).await;
+            (source.id, result)
+        });
+    }
+    let deadline = tokio::time::Instant::now() + budget;
+    let mut collected: Vec<(String, Vec<MarketPlugin>)> = Vec::new();
+    loop {
+        let joined = match tokio::time::timeout_at(deadline, set.join_next()).await {
+            Ok(Some(joined)) => joined,
+            Ok(None) => break,
+            Err(_) => break,
+        };
+        match joined {
+            Ok((id, Ok(plugins))) => collected.push((id, plugins)),
+            Ok((id, Err(error))) => {
+                crate::log_warn!("插件更新检查读取来源「{id}」失败: {error}");
+            }
+            Err(error) => crate::log_warn!("插件更新检查来源任务异常: {error}"),
+        }
+    }
+    set.abort_all();
+
+    let mut out: std::collections::HashMap<String, Vec<SourceVersion>> =
+        std::collections::HashMap::new();
+    for (source_id, plugins) in collected {
+        for plugin in plugins {
+            let Some(catalog) = plugin.catalog else {
+                continue;
+            };
+            let versions = out.entry(plugin.id).or_default();
+            for entry in catalog.versions {
+                versions.push(SourceVersion {
+                    version: entry.version,
+                    source: entry.source,
+                    source_id: source_id.clone(),
+                });
             }
         }
     }
-    spec_to_version(spec)
+    out
 }
 
-/// Checks each installed npm plugin in the profile against the registry's
-/// `latest` dist-tag (issue #27). Non-registry plugins (git/tgz/local specs)
-/// are skipped: their manifest spec does not identify an upstream version.
-/// Per-plugin failures degrade to `latest: None` instead of failing the
-/// whole check.
+/// The channel's default version from npm, used when no configured index
+/// lists the plugin. Beta falls back to the stable tag when `next` is absent,
+/// so a package without pre-releases still reports its latest stable version.
+async fn npm_channel_version(id: &str, channel: UpdateChannel) -> Option<String> {
+    let candidates = match channel {
+        UpdateChannel::Release => vec![PluginChannel::Stable],
+        UpdateChannel::Beta => vec![PluginChannel::Beta, PluginChannel::Stable],
+    };
+    for candidate in candidates {
+        match npm_versions(id, &candidate).await {
+            Ok(versions) => {
+                if let Some(version) = versions
+                    .iter()
+                    .find(|v| v.is_default)
+                    .or(versions.first())
+                    .map(|v| v.version.clone())
+                {
+                    return Some(version);
+                }
+            }
+            Err(e) => crate::log_warn!("查询插件 {id} 最新版本失败: {e}"),
+        }
+    }
+    None
+}
+
+/// Checks every installed plugin against the newest version offered by the
+/// configured plugin sources, falling back to the npm dist-tags for npm
+/// dependencies. Per-plugin failures degrade to `latest: None` instead of
+/// failing the whole check.
 #[tauri::command(rename_all = "snake_case")]
 pub async fn check_plugin_updates(
     state: State<'_, AppState>,
@@ -2037,46 +2203,70 @@ pub async fn check_plugin_updates(
         crate::wsl::run_blocking(move || read_profile_manifest(&dir)).await??
     };
 
-    let mut npm_deps: Vec<(String, String)> = Vec::new();
-    if let Some(deps) = manifest.get("dependencies").and_then(|d| d.as_object()) {
-        for (name, spec) in deps {
+    let channel = {
+        let configured = state
+            .config
+            .lock()
+            .unwrap()
+            .settings
+            .plugin_update_channel
+            .clone();
+        UpdateChannel::parse(&configured).unwrap_or(UpdateChannel::Release)
+    };
+
+    let mut deps: Vec<(String, DepKind, String)> = Vec::new();
+    if let Some(entries) = manifest.get("dependencies").and_then(|d| d.as_object()) {
+        for (name, spec) in entries {
             if name.starts_with("@deepseek-ai/") {
                 continue;
             }
-            let spec = spec.as_str().unwrap_or("");
-            // git/tgz/local specs carry no registry version to compare against.
-            if spec.contains(':') {
+            let spec = spec.as_str().unwrap_or("").trim().to_string();
+            let kind = dep_kind(&spec);
+            if kind == DepKind::Other {
                 continue;
             }
-            npm_deps.push((name.clone(), spec.to_string()));
+            deps.push((name.clone(), kind, spec));
         }
     }
-    npm_deps.sort();
+    deps.sort_by(|left, right| left.0.cmp(&right.0));
+
+    let sources: Vec<PluginSourceConfig> = effective_plugin_sources(state.inner())
+        .into_iter()
+        .filter(|source| source.enabled && source.kind == SourceKind::Primary)
+        .collect();
+    let indexed = source_versions(sources, UPDATE_SOURCE_BUDGET).await;
 
     let mut set = tokio::task::JoinSet::new();
-    for (id, spec) in npm_deps {
+    for (id, kind, spec) in deps {
         let dir = dir.clone();
+        let versions = indexed.get(&id).cloned().unwrap_or_default();
         set.spawn(async move {
             let probe_dir = dir.clone();
             let probe_id = id.clone();
-            let current = crate::wsl::run_blocking(move || {
-                installed_version_of(&probe_dir, &probe_id, &spec)
+            let probe_spec = spec.clone();
+            let current = crate::wsl::run_blocking(move || match kind {
+                DepKind::Npm => installed_version_of(&probe_dir, &probe_id, &probe_spec),
+                _ => node_modules_version(&probe_dir, &probe_id),
             })
             .await
             .unwrap_or_else(|e| {
                 crate::log_warn!("读取插件 {id} 已装版本失败: {e}");
                 None
             });
-            let latest = match npm_versions(&id, &PluginChannel::Stable).await {
-                Ok(versions) => versions
-                    .iter()
-                    .find(|v| v.is_default)
-                    .or(versions.first())
-                    .map(|v| v.version.clone()),
-                Err(e) => {
-                    crate::log_warn!("查询插件 {id} 最新版本失败: {e}");
-                    None
+
+            let picked = newest_version(&versions, channel).map(|entry| {
+                (
+                    Some(entry.version.clone()),
+                    Some(entry.source_id.clone()),
+                    Some(entry.source.clone()),
+                )
+            });
+            let (latest, source, install_source) = match picked {
+                Some(found) => found,
+                None if kind == DepKind::Npm => {
+                    (npm_channel_version(&id, channel).await, None, None)
                 }
+                None => (None, None, None),
             };
             let has_update = match (&current, &latest) {
                 (Some(c), Some(l)) => semver_newer(l, c),
@@ -2087,6 +2277,9 @@ pub async fn check_plugin_updates(
                 current,
                 latest,
                 has_update,
+                source,
+                install_source,
+                channel: channel.plugin_channel(),
             }
         });
     }
@@ -4108,6 +4301,92 @@ mod tests {
         assert_eq!(spec_to_version("*"), None);
         assert_eq!(spec_to_version("latest"), None);
         assert_eq!(spec_to_version("  "), None);
+    }
+
+    #[test]
+    fn dependency_specs_split_into_npm_git_and_skipped_kinds() {
+        assert_eq!(dep_kind("^1.2.3"), DepKind::Npm);
+        assert_eq!(dep_kind("1.2.3"), DepKind::Npm);
+        assert_eq!(dep_kind("github:o/r#v1.0.0"), DepKind::Git);
+        assert_eq!(
+            dep_kind("git+https://example.com/o/r.git#abc"),
+            DepKind::Git
+        );
+        // Tarballs and local paths have no upstream version to compare.
+        for spec in [
+            "file:../foo",
+            "link:../foo",
+            "tgz:https://example.com/x.tgz",
+            "workspace:*",
+        ] {
+            assert_eq!(dep_kind(spec), DepKind::Other, "spec: {spec}");
+        }
+    }
+
+    fn source_version(id: &str, version: &str) -> SourceVersion {
+        SourceVersion {
+            version: version.to_string(),
+            source: crate::market_index::InstallSource::Npm { registry: None },
+            source_id: id.to_string(),
+        }
+    }
+
+    #[test]
+    fn newest_version_follows_the_update_channel() {
+        let versions = [
+            source_version("dsh-plugins", "1.0.0"),
+            source_version("dsh-plugins", "1.1.0-rc.2"),
+            source_version("dsh-plugins", "1.0.9"),
+        ];
+        // Release ignores pre-releases even when they sort higher.
+        assert_eq!(
+            newest_version(&versions, UpdateChannel::Release)
+                .unwrap()
+                .version,
+            "1.0.9"
+        );
+        assert_eq!(
+            newest_version(&versions, UpdateChannel::Beta)
+                .unwrap()
+                .version,
+            "1.1.0-rc.2"
+        );
+        // Only pre-releases published: Release has nothing to offer.
+        let only_pre = [source_version("dsh-plugins", "2.0.0-rc.1")];
+        assert!(newest_version(&only_pre, UpdateChannel::Release).is_none());
+        assert!(newest_version(&[], UpdateChannel::Beta).is_none());
+    }
+
+    #[test]
+    fn update_candidates_keep_the_index_install_source() {
+        let source = crate::market_index::InstallSource::Git {
+            url: "https://github.com/foo/bar".into(),
+            commit: "a".repeat(40),
+            path: None,
+        };
+        let versions = [SourceVersion {
+            version: "1.2.0".into(),
+            source: source.clone(),
+            source_id: "dsh-plugins".into(),
+        }];
+        let picked = newest_version(&versions, UpdateChannel::Release).unwrap();
+        assert_eq!(picked.source_id, "dsh-plugins");
+        assert_eq!(picked.source, source);
+    }
+
+    #[test]
+    fn update_channel_parses_and_maps_to_install_channels() {
+        assert_eq!(
+            UpdateChannel::parse("Release"),
+            Some(UpdateChannel::Release)
+        );
+        assert_eq!(UpdateChannel::parse(" beta "), Some(UpdateChannel::Beta));
+        assert_eq!(UpdateChannel::parse("dev"), None);
+        assert_eq!(
+            UpdateChannel::Release.plugin_channel(),
+            PluginChannel::Stable
+        );
+        assert_eq!(UpdateChannel::Beta.plugin_channel(), PluginChannel::Beta);
     }
 
     #[test]

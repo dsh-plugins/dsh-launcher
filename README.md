@@ -32,6 +32,7 @@ Tauri 2 + Vue 3 + TypeScript + Sass + vue-router + vue-i18n + Arco Design Vue.
   - The install flow is a wizard: pick plugin → pick version channel/version → pick instance → pick profile → create a task → start installing;
   - Dependency build scripts are allowed automatically (`onlyBuiltDependencies: ['*']`), and the installed plugin is registered in the profile's `package.json` (`dsh.profile.bundles` + `dependencies`) plus a `cordis.patch.yml` insert row for non-bundle plugins.
 - **Per-profile plugin management** (instance settings → Plugins tab): filter by profile to view the plugins installed in it, enable/disable individual plugins, and multi-select for batch enable/disable. Core `@deepseek-ai/*` packages are hidden.
+- **Plugin update check** (instance settings → Plugins tab): looks up each plugin id in the configured official `format: 1` sources first and falls back to the npm registry tags only for plugins no source lists; Git installs update to the commit pinned by the index. The update preference (Settings → Resources → Plugin updates) selects Release (stable only, npm `latest`) or Beta (pre-releases included, npm `next`).
 - **System tray**:
   - Left-click the launcher tray: opens and focuses the launcher window;
   - Right-click menu: a "Running profiles" submenu offers Open / Stop for each running instance, plus "Open launcher / Quit launcher".
@@ -52,7 +53,7 @@ Tauri 2 + Vue 3 + TypeScript + Sass + vue-router + vue-i18n + Arco Design Vue.
 - **Download**: sidebar with "Create instance / Download plugins"; the create page groups installable versions by stable/prerelease; clicking a version opens the naming page (instance name, DSH_HOME choice, "Start download" at the bottom). The plugins page is the marketplace; a three-step wizard (plugin → version channel → instance/profile) creates an install task.
 - **Instances**: name, version, DSH_HOME, profile, runtime status and URL, edit/delete.
 - **Instance settings → Plugins**: filter by profile, enable/disable plugins, multi-select batch enable/disable (`@deepseek-ai/*` core plugins hidden).
-- **Settings**: five sections — Startup (launch behavior, data directory, DSH_HOME management, environment import, logs), Personalization (language, theme, news source, launcher icons), Network (proxy), Resources (SKILL repositories, plugin catalog sources) and About (version, update channel and check, repository / issues / releases links).
+- **Settings**: five sections — Startup (launch behavior, data directory, DSH_HOME management, environment import, logs), Personalization (language, theme, news source, launcher icons), Network (proxy), Resources (SKILL repositories, plugin catalog sources, plugin updates) and About (version, update channel and check, repository / issues / releases links).
 
 > For WSL instances, plugin and modpack dependency installs run pnpm inside the distro (pulling Linux platform binaries), and SKILL repository installs clone with the distro's own `git`; reading/writing files from the Windows side through UNC requires the distro to be running, which the launcher starts automatically.
 >
