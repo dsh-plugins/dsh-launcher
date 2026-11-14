@@ -1,12 +1,12 @@
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, toRef, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { useLauncherStore } from '@/stores/launcher'
 import { injectDownloadScroll } from '@/composables/download-scroll'
 import { api } from '@/api'
 import { localizedText, nameValues, pluginName, rangeParts } from '@/utils/market'
-import { useProgressiveList } from '@/composables/progressive-list'
+import { usePaginatedList } from '@/composables/paginated-list'
 import type { Confidence, MarketPlugin, PluginSource } from '@/api/types'
 
 // keep-alive name: the download page caches this view (search/scroll state).
@@ -93,10 +93,13 @@ const filtered = computed(() => {
   })
 })
 
-// Progressive rendering (issue #50): the merged multi-source catalog holds
-// thousands of entries; rendering them in one pass freezes the page. Rows
-// stream in per animation frame instead.
-const { visible: visiblePlugins, growing: listGrowing } = useProgressiveList(filtered)
+const page = toRef(store, 'pluginMarketPage')
+const { visible: visiblePlugins, pageSize } = usePaginatedList(filtered, page)
+
+watch([page, filtered], () => {
+  // Cached markets share the download scrollbar; only move the active one.
+  if (router.currentRoute.value.name === 'download-plugins') scrollAccessor?.(0)
+}, { flush: 'post' })
 
 function relationships(p: MarketPlugin) {
   return p.relationship ?? []
@@ -188,7 +191,7 @@ onBeforeUnmount(() => {
           class="plugin-row"
           @click="choose(p)"
         >
-          <img v-if="p.catalog?.icon" :src="p.catalog.icon" class="plugin-icon" alt="" style="width: 32px; height: 32px; object-fit: contain" />
+          <img v-if="p.catalog?.icon" :src="p.catalog.icon" class="plugin-icon" alt="" loading="lazy" decoding="async" style="width: 32px; height: 32px; object-fit: contain" />
           <span v-else class="plugin-icon">🧩</span>
           <div class="plugin-meta">
             <div class="plugin-name">
@@ -221,9 +224,14 @@ onBeforeUnmount(() => {
             <span class="version-arrow">›</span>
           </div>
         </div>
-        <div v-if="listGrowing" class="market-streaming">
-          <a-spin :size="20" />
-        </div>
+        <a-pagination
+          v-model:current="page"
+          class="market-pagination"
+          :total="filtered.length"
+          :page-size="pageSize"
+          hide-on-single-page
+          size="small"
+        />
       </template>
     </div>
   </div>
@@ -263,7 +271,7 @@ onBeforeUnmount(() => {
   padding: 20px 0;
 }
 
-.market-streaming {
+.market-pagination {
   display: flex;
   justify-content: center;
   padding: 12px 0;

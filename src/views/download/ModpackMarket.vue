@@ -1,10 +1,12 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, onMounted, ref, toRef, watch } from 'vue'
+import { useRoute } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { api } from '@/api'
 import type { MarketModpack } from '@/api/types'
 import { useLauncherStore } from '@/stores/launcher'
-import { useProgressiveList } from '@/composables/progressive-list'
+import { usePaginatedList } from '@/composables/paginated-list'
+import { injectDownloadScroll } from '@/composables/download-scroll'
 import ModpackImportDialog from '@/components/ModpackImportDialog.vue'
 
 // keep-alive name: the download page caches this view (search state).
@@ -12,6 +14,8 @@ defineOptions({ name: 'ModpackMarketPage' })
 
 const { t, locale } = useI18n()
 const store = useLauncherStore()
+const route = useRoute()
+const scrollAccessor = injectDownloadScroll()
 
 /** "如何发布整合包？" documentation link (issue #17). */
 const PUBLISH_URL =
@@ -62,9 +66,12 @@ const filtered = computed(() => {
   })
 })
 
-// Progressive rendering (issue #50), same as the plugin market: rows stream
-// in per animation frame instead of one blocking render pass.
-const { visible: visiblePacks, growing: listGrowing } = useProgressiveList(filtered)
+const page = toRef(store, 'modpackMarketPage')
+const { visible: visiblePacks, pageSize } = usePaginatedList(filtered, page)
+
+watch([page, filtered], () => {
+  if (route.name === 'download-modpacks') scrollAccessor?.(0)
+}, { flush: 'post' })
 
 function install(pack: MarketModpack) {
   importSource.value = pack.downloadUrl
@@ -171,9 +178,14 @@ onMounted(() => {
             </a-button>
           </div>
         </div>
-        <div v-if="listGrowing" class="market-streaming">
-          <a-spin :size="20" />
-        </div>
+        <a-pagination
+          v-model:current="page"
+          class="market-pagination"
+          :total="filtered.length"
+          :page-size="pageSize"
+          hide-on-single-page
+          size="small"
+        />
       </template>
     </div>
 
@@ -209,7 +221,7 @@ onMounted(() => {
   padding: 20px 0;
 }
 
-.market-streaming {
+.market-pagination {
   display: flex;
   justify-content: center;
   padding: 12px 0;

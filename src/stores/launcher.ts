@@ -67,6 +67,7 @@ interface LauncherState {
   pluginSourcesLoadedAt: number | null
   /** Search box of the plugin market page, persisted across navigations. */
   pluginMarketSearch: string
+  pluginMarketPage: number
   /** Source filter ('' = all, else a source id) of the market page. */
   pluginMarketSource: PluginSource | ''
   /** Scroll offset of the plugin market page's scrollbar, in px. */
@@ -77,6 +78,7 @@ interface LauncherState {
   modpackMarketLoadedAt: number | null
   /** Search box of the modpack market page, persisted across navigations. */
   modpackMarketSearch: string
+  modpackMarketPage: number
   pluginWizard: PluginWizardState | null
   modpackExport: ModpackExportState | null
   modpackExportMulti: ModpackExportMultiState | null
@@ -136,12 +138,14 @@ export const useLauncherStore = defineStore('launcher', {
     pluginSources: [],
     pluginSourcesLoadedAt: null,
     pluginMarketSearch: '',
+    pluginMarketPage: 1,
     pluginMarketSource: '' as PluginSource | '',
     pluginMarketScrollTop: 0,
     marketModpacks: [],
     modpackMarketLoading: false,
     modpackMarketLoadedAt: null,
     modpackMarketSearch: '',
+    modpackMarketPage: 1,
     pluginWizard: null,
     modpackExport: null,
     modpackExportMulti: null,
