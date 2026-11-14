@@ -5547,6 +5547,29 @@ mod tests {
         }
     }
 
+    /// 离线校验站点生成的 plugins.json：多语言名称与单语言名称都能解析，
+    /// 且空名称会回退为包名（由 `DSH_TEST_MARKET_DESCRIPTORS` 指定文件）。
+    #[test]
+    #[ignore = "需要通过 DSH_TEST_MARKET_DESCRIPTORS 指定生成的 plugins.json"]
+    fn generated_descriptors_parse_names() {
+        let path = std::env::var("DSH_TEST_MARKET_DESCRIPTORS").expect("缺少 plugins.json 路径");
+        let raw = std::fs::read(path).unwrap();
+        let list: Vec<MarketPlugin> = serde_json::from_slice(&raw).unwrap();
+        assert!(!list.is_empty());
+        for plugin in list.into_iter().map(normalized_name) {
+            assert!(
+                !plugin
+                    .name
+                    .texts()
+                    .iter()
+                    .all(|text| text.trim().is_empty()),
+                "{} 缺少名称",
+                plugin.id
+            );
+            assert!(plugin.id.starts_with('@') || plugin.id.starts_with("github:"));
+        }
+    }
+
     /// Versions half of the live smoke test. Requires npm and `api.github.com`;
     /// on a network without a GitHub proxy the alpha leg cannot run, so this is
     /// a separate test from `live_fetch_market`.
