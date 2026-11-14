@@ -234,27 +234,57 @@ async fn run_npm_view(pkg: &str, field: &str) -> Result<String, String> {
 }
 
 #[tauri::command]
-pub fn remove_version(state: State<'_, AppState>, id: String) -> Result<(), String> {
-    let mut cfg = state.config.lock().unwrap();
-    if cfg.instances.iter().any(|i| i.version_id == id) {
-        return Err("该版本仍被实例引用，无法删除".to_string());
-    }
-    let Some(version) = cfg.versions.iter().find(|v| v.id == id).cloned() else {
-        return Err("版本不存在".to_string());
+pub async fn remove_version(state: State<'_, AppState>, id: String) -> Result<(), String> {
+    let removed = {
+        let mut cfg = state.config.lock().unwrap();
+        if cfg.instances.iter().any(|i| i.version_id == id) {
+            return Err("该版本仍被实例引用，无法删除".to_string());
+        }
+        let Some(version) = cfg.versions.iter().find(|v| v.id == id).cloned() else {
+            return Err("版本不存在".to_string());
+        };
+        cfg.versions.retain(|v| v.id != id);
+        save_state(&state, &cfg)?;
+        version
     };
-    cfg.versions.retain(|v| v.id != id);
-    save_state(&state, &cfg)?;
-    // Best-effort removal of the install directory (inside the distro for
-    // WSL versions, issue #19).
-    if let Some(distro) = &version.wsl {
-        let dir = version.dir.to_string_lossy().to_string();
-        let _ = std::process::Command::new("wsl.exe")
-            .args(["-d", distro, "--", "rm", "-rf", &dir])
-            .status();
-    } else {
-        let _ = std::fs::remove_dir_all(&version.dir);
-    }
+    remove_version_dir(removed.dir, removed.wsl).await;
     Ok(())
+}
+
+/// Deletes the install directory of a removed version.
+///
+/// The tree holds a full Node.js runtime plus profile `node_modules`, and the
+/// WSL branch needs a `wsl.exe` round trip. A synchronous command runs inline on
+/// the IPC thread, which on Windows also renders the WebView, so deleting from
+/// there freezes the window for the whole removal; the work therefore runs on
+/// the runtime instead (blocking pool for the local tree, async process for WSL).
+async fn remove_version_dir(dir: std::path::PathBuf, distro: Option<String>) {
+    match distro {
+        Some(distro) => {
+            // The path is a Linux path inside the distro: argv passes it
+            // verbatim, so no shell quoting is involved.
+            let argv = vec![
+                "rm".to_string(),
+                "-rf".to_string(),
+                dir.to_string_lossy().to_string(),
+            ];
+            if let Err(e) = crate::wsl::wsl_output(&distro, &argv).await {
+                crate::log_warn!("删除 WSL 版本目录失败({}): {e}", dir.display());
+            }
+        }
+        None => {
+            let path = dir.clone();
+            let job = crate::wsl::run_blocking(move || {
+                if let Err(e) = std::fs::remove_dir_all(&path) {
+                    crate::log_warn!("删除版本目录失败({}): {e}", path.display());
+                }
+            })
+            .await;
+            if let Err(e) = job {
+                crate::log_warn!("删除版本目录任务失败({}): {e}", dir.display());
+            }
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------

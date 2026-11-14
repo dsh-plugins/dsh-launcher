@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { Message } from '@arco-design/web-vue'
@@ -54,17 +54,25 @@ function pick(version: string) {
 
 // --- Installed versions management -----------------------------------------
 
+/** Version id whose directory is being deleted; empty when idle. */
+const removingId = ref<string | null>(null)
+
 function usedByCount(versionId: string) {
   return store.instances.filter((i) => i.version_id === versionId).length
 }
 
 async function onRemove(id: string, version: string) {
+  // 目录删除在后台线程执行，期间禁用其余删除按钮，避免重复提交。
+  if (removingId.value) return
+  removingId.value = id
   try {
     await api.removeVersion(id)
     await store.refreshVersions()
     Message.success(t('download.versionDeleted', { version }))
   } catch (e) {
     Message.error(String(e))
+  } finally {
+    removingId.value = null
   }
 }
 </script>
@@ -167,9 +175,17 @@ async function onRemove(id: string, version: string) {
         <span class="used-by">{{ t('download.usedBy', { count: usedByCount(v.id) }) }}</span>
         <a-popconfirm
           :content="t('download.confirmDeleteVersion', { version: v.version })"
+          :disabled="removingId !== null"
           @ok="onRemove(v.id, v.version)"
         >
-          <a-button size="small" status="danger">{{ t('download.deleteVersion') }}</a-button>
+          <a-button
+            size="small"
+            status="danger"
+            :loading="removingId === v.id"
+            :disabled="removingId !== null && removingId !== v.id"
+          >
+            {{ t('download.deleteVersion') }}
+          </a-button>
         </a-popconfirm>
       </div>
       <a-empty v-if="store.versions.length === 0" :description="t('download.emptyInstalled')" />
