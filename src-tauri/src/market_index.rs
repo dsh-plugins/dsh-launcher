@@ -90,15 +90,65 @@ impl InstallSource {
     }
 }
 
-/// 本地化文本保留地区键，供界面按当前语言选择。
-#[derive(Clone, Debug, Deserialize, Serialize)]
+/// 本地化文本保留地区键，供界面按当前语言选择。插件名称与官方索引标题共用
+/// 该类型：字符串表示单语言文本，语言映射表示多语言名称。
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(untagged)]
 pub enum LocalizedText {
     Text(String),
     Languages(BTreeMap<String, String>),
 }
 
+impl Default for LocalizedText {
+    fn default() -> Self {
+        Self::Text(String::new())
+    }
+}
+
+impl From<String> for LocalizedText {
+    fn from(text: String) -> Self {
+        Self::Text(text)
+    }
+}
+
 impl LocalizedText {
+    /// 语言键统一小写并丢弃空白值，市场站点生成的名称因此可以混用
+    /// `en-US` 与 `en-us`；映射键去重后保留首个取值。
+    pub fn normalized(self) -> Self {
+        match self {
+            Self::Text(text) => Self::Text(text.trim().to_string()),
+            Self::Languages(texts) => {
+                let mut out = BTreeMap::new();
+                for (language, text) in texts {
+                    let text = text.trim().to_string();
+                    if !text.is_empty() {
+                        out.entry(language.trim().to_lowercase()).or_insert(text);
+                    }
+                }
+                if out.is_empty() {
+                    Self::Text(String::new())
+                } else {
+                    Self::Languages(out)
+                }
+            }
+        }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        match self {
+            Self::Text(text) => text.trim().is_empty(),
+            Self::Languages(texts) => texts.values().all(|text| text.trim().is_empty()),
+        }
+    }
+
+    /// 全部语言取值，供名称搜索覆盖当前界面语言以外的文本。
+    pub fn texts(&self) -> Vec<&str> {
+        match self {
+            Self::Text(text) => vec![text.as_str()],
+            Self::Languages(texts) => texts.values().map(String::as_str).collect(),
+        }
+    }
+
     fn validate(&self) -> Result<(), String> {
         let valid = match self {
             Self::Text(text) => !text.trim().is_empty(),
@@ -114,13 +164,6 @@ impl LocalizedText {
         valid
             .then_some(())
             .ok_or_else(|| "本地化文本必须非空，语言对象必须包含 en".into())
-    }
-
-    fn english(&self) -> String {
-        match self {
-            Self::Text(text) => text.clone(),
-            Self::Languages(texts) => texts.get("en").cloned().unwrap_or_default(),
-        }
     }
 
     fn description(self) -> MarketDescription {
@@ -238,9 +281,10 @@ pub fn parse_index(value: Value, url: &str) -> Result<Vec<MarketPlugin>, String>
             id: entry.name.clone(),
             name: entry
                 .title
-                .as_ref()
-                .map(LocalizedText::english)
-                .unwrap_or_else(|| entry.name.clone()),
+                .clone()
+                .map(LocalizedText::normalized)
+                .filter(|title| !title.is_empty())
+                .unwrap_or_else(|| LocalizedText::Text(entry.name.clone())),
             description: entry.description.clone().map(LocalizedText::description),
             support_versions: None,
             urls: Some(MarketPluginUrls {
@@ -312,6 +356,34 @@ mod tests {
             Some("https://example.com/")
         );
         assert_eq!(catalog.versions[0].engines["dsh"], ">=0.1.0 <0.2.0");
+    }
+
+    #[test]
+    fn localized_title_becomes_the_plugin_name() {
+        let entries = parse_index(index(), "https://example.com/api/index.json").unwrap();
+        assert_eq!(
+            entries[0].name,
+            LocalizedText::Languages(BTreeMap::from([
+                ("en".to_string(), "Foo".to_string()),
+                ("zh-cn".to_string(), "示例".to_string()),
+            ]))
+        );
+
+        // A single-language title keeps the string form.
+        let mut plain = index();
+        plain["plugins"][0]["title"] = json!("Plain");
+        let entries = parse_index(plain, "https://example.com/api/index.json").unwrap();
+        assert_eq!(entries[0].name, LocalizedText::Text("Plain".into()));
+
+        // A missing title falls back to the package name so the market never
+        // renders an empty row.
+        let mut untitled = index();
+        untitled["plugins"][0]
+            .as_object_mut()
+            .unwrap()
+            .remove("title");
+        let entries = parse_index(untitled, "https://example.com/api/index.json").unwrap();
+        assert_eq!(entries[0].name, LocalizedText::Text("@foo/bar".into()));
     }
 
     #[test]

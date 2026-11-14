@@ -669,7 +669,8 @@ export interface MarketResult {
 export interface MarketPlugin {
   catalog?: IndexPlugin | null
   id: string
-  name: string
+  /** 单语言名称，或按语言键给出的多语言名称。 */
+  name: string | Record<string, string>
   description?: string | MarketPluginDescription[]
   support_versions?: unknown
   urls?: MarketPluginUrls

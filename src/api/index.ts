@@ -1311,7 +1311,7 @@ async function mockCall<T>(cmd: string, args?: Record<string, unknown>): Promise
         },
         {
           id: '@dsh-plugin/dsh-auxiliary',
-          name: 'DSH Auxiliary',
+          name: { en: 'Auxiliary models', zh: '辅助模型' },
           source: 'dsh-plugins',
           confidence: 'official',
           sources: ['dsh-plugins'],
@@ -1396,7 +1396,8 @@ async function mockCall<T>(cmd: string, args?: Record<string, unknown>): Promise
         const desc = Array.isArray(p.description)
           ? p.description.map((d) => d.content).join(' ')
           : (p.description ?? '')
-        return (p.id + p.name + desc).toLowerCase().includes(q)
+        const name = typeof p.name === 'string' ? p.name : Object.values(p.name).join(' ')
+        return (p.id + name + desc).toLowerCase().includes(q)
       })
       return { plugins, warnings: [] } as T
     }

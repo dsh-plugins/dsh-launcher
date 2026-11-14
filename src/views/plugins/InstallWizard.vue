@@ -4,15 +4,18 @@ import { useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { Message } from '@arco-design/web-vue'
 import { api } from '@/api'
-import { compatibility, rangeParts, useCompatibilityAck } from '@/utils/market'
+import { compatibility, pluginName, rangeParts, useCompatibilityAck } from '@/utils/market'
 import { useLauncherStore } from '@/stores/launcher'
 import HintIcon from '@/components/HintIcon.vue'
 
 const router = useRouter()
-const { t } = useI18n()
+const { t, locale } = useI18n()
 const store = useLauncherStore()
 
 const state = computed(() => store.pluginWizard)
+
+/** 插件的显示名称，按界面语言从多语言名称中取值。 */
+const pluginTitle = computed(() => pluginName(state.value?.plugin.name, locale.value))
 
 const instanceId = ref<string>('')
 const profile = ref<string>('')
@@ -149,7 +152,7 @@ async function startInstall() {
     <a-page-header
       class="wizard-header"
       :title="t('plugins.installTitle')"
-      :sub-title="state ? `${state.plugin.name} ${displayVersion(state.version?.version ?? '')}` : ''"
+      :sub-title="state ? `${pluginTitle} ${displayVersion(state.version?.version ?? '')}` : ''"
       @back="router.back()"
     />
 

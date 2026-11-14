@@ -64,3 +64,22 @@ export function localizedText(value: string | Record<string, string> | undefined
   const language = locale.toLowerCase()
   return value?.[language] ?? value?.[language.split('-')[0]!] ?? value?.en ?? ''
 }
+
+/** 插件名称可能是单语言文本或语言映射，显示时按当前语言取值。 */
+export function pluginName(name: string | Record<string, string> | undefined, locale: string): string {
+  if (!name) {
+    return ''
+  }
+  if (typeof name === 'string') {
+    return name
+  }
+  return localizedText(name, locale) || Object.values(name)[0] || ''
+}
+
+/** 名称的全部语言取值，搜索需要覆盖当前界面语言以外的文本。 */
+export function nameValues(name: string | Record<string, string> | undefined): string[] {
+  if (!name) {
+    return []
+  }
+  return typeof name === 'string' ? [name] : Object.values(name)
+}

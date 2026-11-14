@@ -5,7 +5,7 @@ import { useI18n } from 'vue-i18n'
 import { useLauncherStore } from '@/stores/launcher'
 import { injectDownloadScroll } from '@/composables/download-scroll'
 import { api } from '@/api'
-import { localizedText, rangeParts } from '@/utils/market'
+import { localizedText, nameValues, pluginName, rangeParts } from '@/utils/market'
 import { useProgressiveList } from '@/composables/progressive-list'
 import type { Confidence, MarketPlugin, PluginSource } from '@/api/types'
 
@@ -87,7 +87,8 @@ const filtered = computed(() => {
   if (!q) return list
   return list.filter((p) => {
     const desc = pickDescription(p).toLowerCase()
-    return p.id.toLowerCase().includes(q) || p.name.toLowerCase().includes(q)
+    return p.id.toLowerCase().includes(q)
+      || nameValues(p.name).some((name) => name.toLowerCase().includes(q))
       || localizedText(p.catalog?.title, locale.value).toLowerCase().includes(q) || desc.includes(q)
   })
 })
@@ -191,7 +192,7 @@ onBeforeUnmount(() => {
           <span v-else class="plugin-icon">🧩</span>
           <div class="plugin-meta">
             <div class="plugin-name">
-              {{ localizedText(p.catalog?.title, locale) || p.name }}
+              {{ localizedText(p.catalog?.title, locale) || pluginName(p.name, locale) }}
               <span class="plugin-id">{{ p.id }}</span>
               <a-tag v-if="sourceOf(p) !== 'dsh-plugins'" size="small">
                 {{ sourceLabel(sourceOf(p)) }}

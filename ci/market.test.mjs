@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { ref } from 'vue'
-import { compatibility, indexedVersions, useCompatibilityAck } from '../src/utils/market.ts'
+import { compatibility, indexedVersions, nameValues, pluginName, useCompatibilityAck } from '../src/utils/market.ts'
 
 test('确认随插件、版本和实例组合变化失效', () => {
   const selection = ref('foo/1.0.0/instance-1')
@@ -31,4 +31,19 @@ test('官方版本保留固定来源和独立兼容范围', () => {
   assert.equal(versions[0].support_versions, '>=0.1.0')
   assert.equal(versions[0].channel, 'beta')
   assert.equal(indexedVersions({ id: 'foo' }), null)
+})
+
+test('多语言名称按界面语言取值，搜索覆盖全部语言', () => {
+  const name = { zh: '辅助模型', en: 'Auxiliary models', 'en-us': 'Auxiliary (US)' }
+  assert.equal(pluginName(name, 'zh-CN'), '辅助模型')
+  assert.equal(pluginName(name, 'zh'), '辅助模型')
+  assert.equal(pluginName(name, 'en-US'), 'Auxiliary (US)')
+  assert.equal(pluginName(name, 'ja'), 'Auxiliary models')
+  assert.equal(pluginName('dsh-loader', 'zh-CN'), 'dsh-loader')
+  assert.equal(pluginName(undefined, 'zh-CN'), '')
+  // 只有中文时也要显示名称，而不是空行。
+  assert.equal(pluginName({ zh: '仅中文' }, 'en-US'), '仅中文')
+  assert.deepEqual(nameValues(name), ['辅助模型', 'Auxiliary models', 'Auxiliary (US)'])
+  assert.deepEqual(nameValues('dsh-loader'), ['dsh-loader'])
+  assert.deepEqual(nameValues(undefined), [])
 })

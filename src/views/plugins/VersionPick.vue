@@ -3,15 +3,21 @@ import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { api } from '@/api'
-import { indexedVersions } from '@/utils/market'
+import { indexedVersions, localizedText, pluginName } from '@/utils/market'
 import { useLauncherStore } from '@/stores/launcher'
 import type { MarketPlugin, PluginChannel, PluginVersionInfo } from '@/api/types'
 
 const router = useRouter()
-const { t } = useI18n()
+const { t, locale } = useI18n()
 const store = useLauncherStore()
 
 const plugin = computed<MarketPlugin | null>(() => store.pluginWizard?.plugin ?? null)
+
+/** 官方索引自带多语言标题，其余来源使用插件的多语言名称。 */
+const pluginTitle = computed(() =>
+  localizedText(plugin.value?.catalog?.title, locale.value)
+  || pluginName(plugin.value?.name, locale.value),
+)
 
 /** GitHub repo hint for sources (live/unverified) absent from the static catalog. */
 function repoHint(): string | undefined {
@@ -186,7 +192,7 @@ function displayVersion(v: PluginVersionInfo): string {
   <div class="version-pick">
     <a-page-header
       class="pick-header"
-      :title="plugin?.name ?? t('plugins.chooseVersion')"
+      :title="pluginTitle || t('plugins.chooseVersion')"
       :sub-title="plugin?.id"
       @back="router.push({ name: 'download-plugins' })"
     />

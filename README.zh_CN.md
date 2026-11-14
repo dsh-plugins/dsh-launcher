@@ -28,6 +28,7 @@ Tauri 2 + Vue 3 + TypeScript + Sass + vue-router + vue-i18n + Arco Design Vue。
 - **环境变量复写**：实例设置页可增删运行时环境变量，启动时注入子进程（`DSH_HOME` 为保留项，由启动器按所选 DSH_HOME 注入）。
 - **插件市场**：浏览 [DSH 插件市场](https://dsh-plug.in/)（`https://dsh-plug.in/api/plugins.json`）发布的插件，按名称/描述搜索，并安装到任意实例的 Profile：
   - **三个版本渠道**，以彩色字母图标区分——**稳定版**（releases / npm `latest`，绿色 **R**）、**测试版**（pre-releases / npm `next`，黄色 **B**）、**最新提交**（GitHub 最新 commit，红色 **A**）；
+  - 插件名称支持单语言字符串与多语言对象（`{"zh": "中文名称", "en": "English Name", "en-US": "...", "zh-CN": "..."}`），按界面语言显示；语言键不区分大小写，搜索覆盖全部语言；
   - 主目录自动识别数组目录与[官方 `format: 1` 索引](https://dsh-plug.in/api/dsh-plugins.json)。官方版本直接读取索引，安装使用精确 npm 版本及指定 registry，或固定 Git 提交及包子目录；
   - `support_versions` 和 `relationship[].versions` 支持分号分隔的区间并集，例如 `[0.1.0-rc.6,0.2.0-rc.1);[0.2.1-rc.4,)`，预发布版本参与比较，仍支持 SemVer 范围和版本数组；
   - 安装流程为向导：选插件 → 选版本渠道/版本 → 选实例 → 选 Profile → 创建任务 → 开始安装。安装前按实例 DSH 版本检查兼容性；明确不兼容时需确认继续，切换插件、版本或实例后重新确认；

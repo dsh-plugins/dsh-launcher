@@ -6,6 +6,7 @@ use crate::config::{
     default_plugin_sources, new_id, sanitize_name, Confidence, DshInstance, PluginSourceConfig,
     SourceKind,
 };
+use crate::market_index::LocalizedText;
 use crate::AppState;
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Manager, State};
@@ -72,7 +73,9 @@ pub struct MarketPlugin {
     #[serde(default)]
     pub catalog: Option<crate::market_index::IndexPlugin>,
     pub id: String,
-    pub name: String,
+    /// 官方索引与插件市场可以给出多语言名称，社区目录只提供单语言文本。
+    #[serde(default)]
+    pub name: LocalizedText,
     #[serde(default)]
     pub description: Option<MarketDescription>,
     #[serde(default)]
@@ -300,6 +303,15 @@ fn repo_hint_of(id: &str, url: Option<&str>) -> Option<String> {
     None
 }
 
+/// 数组目录的语言键可能带地区大小写，展示前统一为小写；空名称回退为包名。
+fn normalized_name(mut plugin: MarketPlugin) -> MarketPlugin {
+    plugin.name = plugin.name.normalized();
+    if plugin.name.is_empty() {
+        plugin.name = LocalizedText::Text(plugin.id.clone());
+    }
+    plugin
+}
+
 /// Stamps an entry with the source it came from and that source's credibility.
 fn tag_entry(mp: &mut MarketPlugin, src: &PluginSourceConfig) {
     mp.source = src.id.clone();
@@ -326,7 +338,7 @@ fn awesome_to_market(p: &AwesomePlugin) -> Option<MarketPlugin> {
     Some(MarketPlugin {
         catalog: None,
         id,
-        name: p.name.clone(),
+        name: LocalizedText::Text(p.name.clone()),
         description,
         support_versions: None,
         urls,
@@ -411,7 +423,7 @@ fn dshget_to_market(p: &DshGetPlugin) -> Option<MarketPlugin> {
     Some(MarketPlugin {
         catalog: None,
         id,
-        name: p.name.clone(),
+        name: LocalizedText::Text(p.name.clone()),
         description,
         support_versions: None,
         urls,
@@ -605,7 +617,7 @@ async fn fetch_github_topic() -> Result<Vec<MarketPlugin>, String> {
         out.push(MarketPlugin {
             catalog: None,
             id: format!("github:{full_name}"),
-            name: name.to_string(),
+            name: LocalizedText::Text(name.to_string()),
             description: description.map(|d| MarketDescription::Plain(d.to_string())),
             support_versions: None,
             urls: html.map(|u| MarketPluginUrls {
@@ -784,7 +796,9 @@ async fn fetch_catalog(src: &PluginSourceConfig) -> Result<Vec<MarketPlugin>, St
         SourceKind::Primary => {
             let v = fetch_json(&src.url, CATALOG_MAX_BYTES).await?;
             let list: Vec<MarketPlugin> = if v.is_array() {
-                serde_json::from_value(v).map_err(|e| format!("解析主源数据失败: {e}"))?
+                let list: Vec<MarketPlugin> =
+                    serde_json::from_value(v).map_err(|e| format!("解析主源数据失败: {e}"))?;
+                list.into_iter().map(normalized_name).collect()
             } else {
                 crate::market_index::parse_index(v, &src.url)?
             };
@@ -1043,7 +1057,12 @@ fn merge_into(dst: &mut MarketPlugin, src: MarketPlugin) {
 }
 
 fn matches_query(p: &MarketPlugin, q: &str) -> bool {
-    if p.id.to_lowercase().contains(q) || p.name.to_lowercase().contains(q) {
+    if p.id.to_lowercase().contains(q)
+        || p.name
+            .texts()
+            .iter()
+            .any(|text| text.to_lowercase().contains(q))
+    {
         return true;
     }
     match &p.description {
@@ -3767,6 +3786,7 @@ fn ensure_cordis_insert(dir: &std::path::Path, plugin_id: &str) -> Result<(), St
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::BTreeMap;
 
     async fn catalog_server(
         body: Vec<u8>,
@@ -3983,7 +4003,7 @@ mod tests {
         higher.confidence = Confidence::Official;
         merge_into(&mut lower, higher);
         assert!(lower.catalog.is_none());
-        assert_eq!(lower.name, "Foo official");
+        assert_eq!(name_of(&lower), "Foo official");
     }
 
     #[test]
@@ -4368,7 +4388,7 @@ mod tests {
         let aw: AwesomePlugin = serde_json::from_str(raw).unwrap();
         let mp = awesome_to_market(&aw).expect("install resolves");
         assert_eq!(mp.id, "@furongjun1999/dsh-memory");
-        assert_eq!(mp.name, "dsh-memory");
+        assert_eq!(name_of(&mp), "dsh-memory");
         // Parsers are source-agnostic; the adapter tags source/confidence.
         assert_eq!(mp.source, "dsh-plugins");
         assert_eq!(mp.confidence, Confidence::Unverified);
@@ -4421,11 +4441,16 @@ mod tests {
         }
     }
 
+    /// 名称在断言中按语言取值拼接，便于同时覆盖单语言与多语言条目。
+    fn name_of(plugin: &MarketPlugin) -> String {
+        plugin.name.texts().join(" | ")
+    }
+
     fn entry(id: &str, name: &str) -> MarketPlugin {
         MarketPlugin {
             catalog: None,
             id: id.to_string(),
-            name: name.to_string(),
+            name: LocalizedText::Text(name.to_string()),
             description: None,
             support_versions: None,
             urls: None,
@@ -4495,6 +4520,32 @@ mod tests {
     }
 
     #[test]
+    fn array_catalog_names_normalize_and_match_every_language() {
+        let raw = serde_json::json!([
+            {"id": "@foo/bar", "name": {"en": "Auxiliary models", "EN-US": "Auxiliary (US)", "zh-CN": "辅助模型"}},
+            {"id": "dsh-blank", "name": {"zh": "  "}},
+        ]);
+        let list: Vec<MarketPlugin> = serde_json::from_value(raw).unwrap();
+        let list: Vec<MarketPlugin> = list.into_iter().map(normalized_name).collect();
+        assert_eq!(
+            list[0].name,
+            LocalizedText::Languages(BTreeMap::from([
+                ("en".to_string(), "Auxiliary models".to_string()),
+                ("en-us".to_string(), "Auxiliary (US)".to_string()),
+                ("zh-cn".to_string(), "辅助模型".to_string()),
+            ]))
+        );
+        // An all-blank mapping falls back to the package id instead of an
+        // empty market row.
+        assert_eq!(list[1].name, LocalizedText::Text("dsh-blank".into()));
+
+        // Search covers every language, not just the English fallback.
+        assert!(matches_query(&list[0], "辅助"));
+        assert!(matches_query(&list[0], "auxiliary (us)"));
+        assert!(!matches_query(&list[0], "missing"));
+    }
+
+    #[test]
     fn merge_keeps_highest_confidence_and_unions_attribution() {
         let mut low = entry("github:o/r", "from-awesome");
         low.source = "awesome-dsh-plugin".to_string();
@@ -4518,7 +4569,7 @@ mod tests {
         let m = &merged[0];
         assert_eq!(m.source, "dsh-plugins");
         assert_eq!(m.confidence, Confidence::Official);
-        assert_eq!(m.name, "from-official");
+        assert_eq!(name_of(m), "from-official");
         // stars take the max across sources, attribution is unioned.
         assert_eq!(m.stars, Some(10));
         assert_eq!(m.category.as_deref(), Some("ui"));
@@ -4549,7 +4600,7 @@ mod tests {
         second.confidence = Confidence::Aggregated;
         second.repo = Some("a/x".to_string());
         let merged3 = merge_plugins(vec![(0, vec![first]), (1, vec![second])]);
-        assert_eq!(merged3[0].name, "first");
+        assert_eq!(name_of(&merged3[0]), "first");
         assert_eq!(merged3[0].source, "s1");
         assert_eq!(merged3[0].repo.as_deref(), Some("a/x"));
     }
@@ -4705,7 +4756,7 @@ mod tests {
         assert_eq!(result.warnings[0].source_id, s.id);
         let got = result.plugins;
         assert_eq!(got.len(), 1);
-        assert_eq!(got[0].name, "from-cache");
+        assert_eq!(name_of(&got[0]), "from-cache");
 
         // With no cache, the failure is surfaced (the caller logs and skips it).
         let empty_dir = dir.join("empty");
