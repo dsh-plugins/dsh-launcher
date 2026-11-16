@@ -193,6 +193,18 @@ async fn has_running_instances(app: &AppHandle) -> bool {
     count > 0
 }
 
+fn instance_tray_enabled(app: &AppHandle, id: &str) -> bool {
+    let (always, notify) = {
+        let state = app.state::<AppState>();
+        let config = state.config.lock().unwrap();
+        (
+            config.settings.per_instance_tray,
+            config.settings.notification_tray,
+        )
+    };
+    always || (notify && crate::notifications::pending(app, id))
+}
+
 /// 菜单只响应实例集合与名称变化，慢速资源读取在同步锁外执行。
 pub async fn sync_tray_icons(app: &AppHandle) {
     let sync_lock = app.state::<AppState>().tray_sync_lock.clone();
@@ -215,7 +227,13 @@ pub async fn sync_tray_icons(app: &AppHandle) {
             menus.revision += 1;
             menus.revision
         };
-        let desired = desired_trays(&snapshot, enabled);
+        let mut desired = desired_trays(&snapshot, enabled);
+        desired.extend(
+            snapshot
+                .iter()
+                .filter(|(id, _, _)| instance_tray_enabled(app, id))
+                .map(|(id, _, _)| id.clone()),
+        );
         let stale: Vec<String> = app
             .state::<AppState>()
             .instance_trays
@@ -227,7 +245,13 @@ pub async fn sync_tray_icons(app: &AppHandle) {
         for id in stale {
             remove_instance_tray(app, &id).await;
         }
-        (if enabled { snapshot } else { Vec::new() }, revision)
+        (
+            snapshot
+                .into_iter()
+                .filter(|(id, _, _)| desired.contains(id))
+                .collect::<Vec<_>>(),
+            revision,
+        )
     };
 
     let mut resolved = Vec::with_capacity(snapshot.len());
@@ -244,19 +268,14 @@ pub async fn sync_tray_icons(app: &AppHandle) {
         .unwrap()
         .revision
         != revision
-        || !app
-            .state::<AppState>()
-            .config
-            .lock()
-            .unwrap()
-            .settings
-            .per_instance_tray
     {
         return;
     }
     let current = running_snapshot(app).await;
     for (id, name, profile, icon, tooltip) in resolved {
-        if !current.contains(&(id.clone(), name.clone(), profile.clone())) {
+        if !current.contains(&(id.clone(), name.clone(), profile.clone()))
+            || !instance_tray_enabled(app, id)
+        {
             continue;
         }
         if let Err(error) = apply_instance_tray(app, id, name, profile, icon, &tooltip) {
@@ -272,13 +291,7 @@ async fn refresh_activity(app: &AppHandle) {
         let tooltip = tooltip_for(app, &id, &name, &profile).await;
         let lock = app.state::<AppState>().tray_sync_lock.clone();
         let _guard = lock.lock().await;
-        if !app
-            .state::<AppState>()
-            .config
-            .lock()
-            .unwrap()
-            .settings
-            .per_instance_tray
+        if !instance_tray_enabled(app, &id)
             || !running_snapshot(app)
                 .await
                 .contains(&(id.clone(), name, profile))
@@ -559,7 +572,7 @@ fn quit(app: &AppHandle) {
     app.exit(0);
 }
 
-fn open_instance_from_tray(app: &AppHandle, instance_id: &str) {
+pub(crate) fn open_instance_from_tray(app: &AppHandle, instance_id: &str) {
     let app = app.clone();
     let id = instance_id.to_string();
     tauri::async_runtime::spawn(async move {

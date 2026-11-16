@@ -6,8 +6,9 @@
   "type": "module",
   "packageManager": "pnpm@11.17.0",
   "scripts": {
+    "build:bridge": "tsc -p tsconfig.bridge.json && tsdown --config tsdown.bridge.config.mjs",
     "dev": "vite",
-    "build": "vue-tsc --noEmit && vite build",
+    "build": "pnpm build:bridge && vue-tsc --noEmit && vite build",
     "tauri": "tauri",
     "tauri-dev": "tauri dev",
     "test:network": "node --experimental-strip-types --test ci/network-access.test.mjs",
@@ -41,6 +42,7 @@
     "@types/semver": "7.7.1",
     "@vitejs/plugin-vue": "^5.2.1",
     "sass": "^1.85.0",
+    "tsdown": "^0.15.12",
     "typescript": "^5.7.3",
     "vite": "^6.3.5",
     "vue-tsc": "^2.2.8"

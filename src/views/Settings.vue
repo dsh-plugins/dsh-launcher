@@ -20,9 +20,7 @@ import HintIcon from '@/components/HintIcon.vue'
 const { t } = useI18n()
 const store = useLauncherStore()
 
-// Sidebar sections (issue #70, extended by issue #72): launch / personalization
-// / network / resources / about.
-type SettingsSection = 'launch' | 'personal' | 'network' | 'resources' | 'about'
+type SettingsSection = 'launch' | 'notifications' | 'personal' | 'network' | 'resources' | 'about'
 const section = ref<SettingsSection>('launch')
 
 /** Project links shown on the About section (issue #72). */
@@ -563,6 +561,7 @@ const pluginSourceColumns = computed(() => [
         @menu-item-click="(key: string) => (section = key as SettingsSection)"
       >
         <a-menu-item key="launch">{{ t('settings.sections.launch') }}</a-menu-item>
+        <a-menu-item key="notifications">{{ t('settings.notifications.title') }}</a-menu-item>
         <a-menu-item key="personal">{{ t('settings.sections.personal') }}</a-menu-item>
         <a-menu-item key="network">{{ t('settings.sections.network') }}</a-menu-item>
         <a-menu-item key="resources">{{ t('settings.sections.resources') }}</a-menu-item>
@@ -655,6 +654,23 @@ const pluginSourceColumns = computed(() => [
     </div>
     </template>
 
+    <template v-else-if="section === 'notifications'">
+      <div class="dl-card">
+        <div class="dl-card-title"><h3>{{ t('settings.notifications.title') }}</h3></div>
+        <p>{{ t('settings.notifications.hint') }}</p>
+        <a-space direction="vertical" size="large">
+          <a-checkbox :model-value="store.settings.notification_system" @change="(value) => patchSettings({ notification_system: Boolean(value) })">
+            {{ t('settings.notifications.system') }}
+          </a-checkbox>
+          <a-checkbox :model-value="store.settings.notification_sound" @change="(value) => patchSettings({ notification_sound: Boolean(value) })">
+            {{ t('settings.notifications.sound') }}
+          </a-checkbox>
+          <a-checkbox :model-value="store.settings.notification_tray" @change="(value) => patchSettings({ notification_tray: Boolean(value) })">
+            {{ t('settings.notifications.tray') }}
+          </a-checkbox>
+        </a-space>
+      </div>
+    </template>
     <template v-else-if="section === 'launch'">
     <div class="dl-card">
       <div class="dl-card-title">

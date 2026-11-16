@@ -36,6 +36,7 @@ Tauri 2 + Vue 3 + TypeScript + Sass + vue-router + vue-i18n + Arco Design Vue。
   - 自动允许依赖的 buildScripts（`onlyBuiltDependencies: ['*']`），并在 Profile 的 `package.json`（`dsh.profile.bundles` + `dependencies`）注册插件，非 bundle 插件额外写入 `cordis.patch.yml` insert 行。
 - **按 Profile 管理插件**（实例设置 → 插件页）：筛选 Profile 查看其下插件，单个启用/禁用，支持多选批量启用/禁用；核心 `@deepseek-ai/*` 包不显示。
 - **插件更新检查**（实例设置 → 插件页）：先按插件 id 查询已配置的官方 `format: 1` 插件源，来源没有收录时再回退 npm 注册表渠道标签；Git 安装的插件按索引固定的提交更新。更新偏好（设置 → 资源 → 插件更新）可选 Release（仅正式版，对应 npm `latest`）或 Beta（含预发布版本，在 npm `latest` 与 `next` 中取发布时间更晚的一个）。
+- **Web 实例通知**：在启动器“通知设置”中独立启用系统提醒、声音提醒和状态栏图标提醒。后台实例进入计划待审、问题待回答或完成未查看时提醒，点击系统通知可打开对应实例，详见[通知说明](docs/NOTIFICATIONS.md)。
 - **系统托盘**：
   - 左键单击启动器托盘：打开并聚焦启动器窗口；
   - 右键菜单：「运行中的 Profile」二级菜单为每个运行中实例提供「打开 / 停止」；另有「打开启动器 / 退出启动器」。

@@ -23,6 +23,8 @@ pub struct RunningInstance {
     web: Option<WebLaunch>,
     launch_failed: bool,
     stopping: bool,
+    /// 桥接文件由进程持有，避免读取任务结束时提前删除客户端资源。
+    _notification_bridge: Option<crate::notifications::Bridge>,
 }
 
 impl RunningInstance {
@@ -297,6 +299,19 @@ pub async fn start_instance_process(
     let is_web = is_web_profile(&profile_dir, profile)
         || (profile == "web" && !profile_dir.join("profiles/web/package.json").exists());
     let mut cli_args = vec!["--profile".to_string(), profile.to_string()];
+    let bridge = if is_web {
+        let bridge = crate::notifications::prepare(&state.data_dir, wsl_distro.as_deref()).await?;
+        let patch = match wsl_distro.as_deref() {
+            Some(distro) => {
+                crate::wsl::to_wsl_path(distro, &bridge.patch.to_string_lossy()).await?
+            }
+            None => bridge.patch.to_string_lossy().into_owned(),
+        };
+        cli_args.extend(["--patch".to_string(), patch]);
+        Some(bridge)
+    } else {
+        None
+    };
     let web = if is_web {
         let startup = crate::web_launch::startup_script(
             &crate::wsl::version_fs_path(version),
@@ -388,6 +403,10 @@ pub async fn start_instance_process(
     let needs_announcement = web
         .as_ref()
         .is_some_and(|plan| plan.mode != crate::web_access::WebMode::Local);
+    let notification_marker = bridge.as_ref().map(|bridge| bridge.marker.clone());
+    if let Some(marker) = &notification_marker {
+        crate::notifications::begin(app, instance_id, marker);
+    }
     let entry = RunningInstance {
         kill: kill_switch.clone(),
         profile: profile.to_string(),
@@ -395,6 +414,7 @@ pub async fn start_instance_process(
         web,
         launch_failed: false,
         stopping: false,
+        _notification_bridge: bridge,
     };
     let mut status = entry.status(instance_id);
     status.state = InstanceState::Starting;
@@ -439,6 +459,7 @@ pub async fn start_instance_process(
             }
             let stopped = stopped && !entry.launch_failed;
             state.window_urls.lock().unwrap().remove(&waiter_id);
+            crate::notifications::clear(&waiter_app, &waiter_id);
             if stopped {
                 crate::log_info!("实例 {waiter_id} 已停止（exit code: {code:?}）");
             } else {
@@ -527,6 +548,18 @@ pub async fn start_instance_process(
                     if let Some(sender) = reader_pid.take() {
                         let _ = sender.send(pid);
                     }
+                    continue;
+                }
+                if let Some(payload) = notification_marker
+                    .as_ref()
+                    .and_then(|marker| line.strip_prefix(marker))
+                {
+                    crate::notifications::receive(
+                        &reader_app,
+                        &reader_id,
+                        notification_marker.as_deref().unwrap(),
+                        payload,
+                    );
                     continue;
                 }
                 log_line(&reader_log, &line).await;

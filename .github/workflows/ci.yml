@@ -46,6 +46,8 @@ jobs:
           key: ${{ matrix.platform }}-quality
       - name: Install locked dependencies
         run: pnpm install --frozen-lockfile
+      - name: 验证通知客户端构建产物
+        run: pnpm build:bridge
       - name: Format check
         run: cargo fmt --manifest-path src-tauri/Cargo.toml --all -- --check
       - name: Clippy (deny warnings)

@@ -12,6 +12,7 @@ mod market_index;
 mod mcp;
 mod migrate;
 mod modpack;
+mod notifications;
 mod plugins;
 mod process;
 mod providers;
@@ -138,6 +139,12 @@ pub fn run() {
         // activation) forwards its argv to the running instance and exits.
         .plugin(tauri_plugin_single_instance::init(|app, argv, _cwd| {
             let link = deep_link_from_args(&argv);
+            if link
+                .as_deref()
+                .is_some_and(|link| notifications::open_link(app, link))
+            {
+                return;
+            }
             // launch links are headless: start the instance without popping
             // the launcher window up (issue #9).
             let is_launch = link
@@ -182,6 +189,9 @@ pub fn run() {
                 let handle = app.handle().clone();
                 app.deep_link().on_open_url(move |event| {
                     for url in event.urls() {
+                        if notifications::open_link(&handle, url.as_str()) {
+                            continue;
+                        }
                         crate::log_info!("收到 deep link: {url}");
                         let _ = handle.emit("deep-link", url.to_string());
                     }
@@ -256,6 +266,7 @@ pub fn run() {
             });
 
             // System tray with dynamic menu.
+            notifications::start(app.handle());
             tray::build_tray(app.handle())?;
             // Per-instance tray icons (issue #72): refresh running instances
             // periodically so the tooltip's active-conversation count tracks

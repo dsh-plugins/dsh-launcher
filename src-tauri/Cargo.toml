@@ -37,9 +37,13 @@ tauri-plugin-deep-link = "2"
 tauri-plugin-single-instance = "2"
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "ico"] }
 node-semver = "2.2.0"
+rodio = { version = "0.21", default-features = false, features = ["playback"] }
+
+[target.'cfg(not(windows))'.dependencies]
+notify-rust = "4.19"
 
 [target.'cfg(windows)'.dependencies]
-windows = { version = "0.61", features = ["Win32_UI_WindowsAndMessaging"] }
+windows = { version = "0.61", features = ["Win32_UI_WindowsAndMessaging", "UI_Notifications", "Data_Xml_Dom", "Win32_System_WinRT"] }
 
 [profile.release]
 codegen-units = 1

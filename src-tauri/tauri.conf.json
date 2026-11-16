@@ -4,7 +4,7 @@
   "version": "0.2.9",
   "identifier": "in.dsh-plug.dsh-launcher",
   "build": {
-    "beforeDevCommand": "pnpm dev",
+    "beforeDevCommand": "pnpm build:bridge && pnpm dev",
     "devUrl": "http://localhost:1420",
     "beforeBuildCommand": "pnpm build",
     "frontendDist": "../dist"

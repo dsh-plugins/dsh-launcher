@@ -277,6 +277,13 @@
       "clear": "Restore default",
       "saved": "Icon updated"
     },
+    "notifications": {
+      "title": "Notifications",
+      "hint": "Notify when a background instance needs a plan review or an answer, or finishes with an unread result. Click a system notification to open the instance. Viewing the corresponding session stops its tray icon flashing.",
+      "system": "System notifications",
+      "sound": "Sound alerts",
+      "tray": "Tray icon alerts"
+    },
     "sections": {
       "launch": "Startup",
       "personal": "Personalization",

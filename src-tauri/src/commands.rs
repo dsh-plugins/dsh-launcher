@@ -1800,6 +1800,15 @@ pub fn update_settings(
     if let Some(v) = settings.per_instance_tray {
         cfg.settings.per_instance_tray = v;
     }
+    if let Some(v) = settings.notification_system {
+        cfg.settings.notification_system = v;
+    }
+    if let Some(v) = settings.notification_sound {
+        cfg.settings.notification_sound = v;
+    }
+    if let Some(v) = settings.notification_tray {
+        cfg.settings.notification_tray = v;
+    }
     if let Some(v) = settings.news_source {
         cfg.settings.news_source = v.trim().to_string();
     }
@@ -1896,7 +1905,7 @@ pub fn update_settings(
     // (and turning them on must create them) rather than at the next restart.
     // Spawning the serialized sync rather than removing trays inline also
     // closes a race with an in-flight sync that already read the old value.
-    if settings.per_instance_tray.is_some() {
+    if settings.per_instance_tray.is_some() || settings.notification_tray.is_some() {
         let app = app.clone();
         tauri::async_runtime::spawn(async move {
             crate::tray::sync_tray_icons(&app).await;

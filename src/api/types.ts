@@ -109,6 +109,9 @@ export interface LauncherSettings {
    * icon, a tooltip with name / profile / active conversations, a left click
    * that opens or focuses its window, and a right-click menu. */
   per_instance_tray: boolean
+  notification_system: boolean
+  notification_sound: boolean
+  notification_tray: boolean
   /** Root directory of the most recent storage redirection (issue #65),
    * offered as the "last used" preset. Advisory UI memory only. */
   last_link_root?: string | null

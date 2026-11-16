@@ -394,7 +394,12 @@ pub fn open_instance_window(
         return Err("实例未在运行或尚未就绪".to_string());
     }
     let parsed = WebviewUrl::External(url.parse().map_err(|e| format!("实例启动地址无效: {e}"))?);
+    let notification_app = app.clone();
+    let notification_id = instance_id.to_string();
     let builder = WebviewWindowBuilder::new(app, label, parsed)
+        .on_navigation(move |url| {
+            crate::notifications::viewed_navigation(&notification_app, &notification_id, url)
+        })
         .title(format!("{name} — DSH"))
         .inner_size(1024.0, 576.0)
         .min_inner_size(800.0, 500.0)

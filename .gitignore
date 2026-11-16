@@ -4,6 +4,7 @@ node_modules/
 # Build output
 dist/
 dist-ssr/
+src-tauri/bridge/generated/
 
 # Tauri
 src-tauri/target/

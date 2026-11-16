@@ -264,6 +264,13 @@ pub struct LauncherSettings {
     /// reachable through the launcher tray's "running profiles" submenu.
     #[serde(default = "default_true")]
     pub per_instance_tray: bool,
+    /// 实例在后台等待用户或完成时，分别控制三种提醒渠道。
+    #[serde(default = "default_true")]
+    pub notification_system: bool,
+    #[serde(default = "default_true")]
+    pub notification_sound: bool,
+    #[serde(default = "default_true")]
+    pub notification_tray: bool,
     /// Plugin marketplace catalog sources (issue #46). Defaults to the built-in
     /// three catalogs plus the (disabled) live GitHub topic channel.
     #[serde(default = "default_plugin_sources")]
@@ -380,6 +387,9 @@ impl Default for LauncherSettings {
             auto_open_on_launch: true,
             hide_launcher_on_window_open: false,
             per_instance_tray: true,
+            notification_system: true,
+            notification_sound: true,
+            notification_tray: true,
             plugin_sources: default_plugin_sources(),
             plugin_update_channel: default_plugin_update_channel(),
             last_link_root: None,
@@ -448,6 +458,12 @@ pub struct SettingsPatch {
     pub hide_launcher_on_window_open: Option<bool>,
     #[serde(default)]
     pub per_instance_tray: Option<bool>,
+    #[serde(default)]
+    pub notification_system: Option<bool>,
+    #[serde(default)]
+    pub notification_sound: Option<bool>,
+    #[serde(default)]
+    pub notification_tray: Option<bool>,
     #[serde(default)]
     pub last_instance_id: Option<String>,
     #[serde(default)]

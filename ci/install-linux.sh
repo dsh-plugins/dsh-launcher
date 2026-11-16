@@ -10,6 +10,7 @@ sudo apt-get install -y \
   libgtk-3-dev \
   libxdo-dev \
   libssl-dev \
+  libasound2-dev \
   build-essential \
   curl \
   wget \
