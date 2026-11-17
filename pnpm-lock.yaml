@@ -12,8 +12,8 @@ importers:
         specifier: ^2.59.0
         version: 2.59.0(vue@3.5.41(typescript@5.9.3))
       '@dsh-plugin/dsh-ui-components-vue':
-        specifier: 0.1.0-dev.44157029422
-        version: 0.1.0-dev.44157029422(vue@3.5.41(typescript@5.9.3))
+        specifier: 0.1.0-dev.44172196807
+        version: 0.1.0-dev.44172196807(vue@3.5.41(typescript@5.9.3))
       '@tauri-apps/api':
         specifier: ^2.9.0
         version: 2.11.1
@@ -147,8 +147,8 @@ packages:
   '@chevrotain/types@11.1.2':
     resolution: {integrity: sha512-U+HFai5+zmJCkK86QsaJtoITlboZHBqrVketcO2ROv865xfCMSFpELQoz1GkX5GzME8pTa+3kbKrZHQtI0gdbw==}
 
-  '@dsh-plugin/dsh-ui-components-vue@0.1.0-dev.44157029422':
-    resolution: {integrity: sha512-aZrIAs5X+hfigmeTFxcmZtyOoo5ADqESXuqe96Zxji/IJLdkkQtDXJJKd1x47mR//N9Icz2zr7gfulSL8xXydw==}
+  '@dsh-plugin/dsh-ui-components-vue@0.1.0-dev.44172196807':
+    resolution: {integrity: sha512-xynRhVNA1mdxULvGfEB+Cd86VXwa2vNPiUAAn91GrPBx14+ux1bKnK52Z+0MUhuhjSQnIOFfuOxHiuhiG1yaww==}
     engines: {node: '>=24.9.0'}
     peerDependencies:
       vue: ^3.5.0
@@ -2163,7 +2163,7 @@ snapshots:
 
   '@chevrotain/types@11.1.2': {}
 
-  '@dsh-plugin/dsh-ui-components-vue@0.1.0-dev.44157029422(vue@3.5.41(typescript@5.9.3))':
+  '@dsh-plugin/dsh-ui-components-vue@0.1.0-dev.44172196807(vue@3.5.41(typescript@5.9.3))':
     dependencies:
       '@arco-design/web-vue': 2.59.0(vue@3.5.41(typescript@5.9.3))
       dayjs: 1.11.23

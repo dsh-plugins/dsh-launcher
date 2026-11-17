@@ -3,4 +3,4 @@ allowBuilds:
   esbuild: true
   vue-demi: true
 minimumReleaseAgeExclude:
-  - '@dsh-plugin/dsh-ui-components-vue@0.1.0-dev.44157029422'
+  - '@dsh-plugin/dsh-ui-components-vue@0.1.0-dev.44172196807'
