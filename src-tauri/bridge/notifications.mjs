@@ -31,8 +31,8 @@ export function apply(ctx, config) {
   };
   const observeAgent = ({ agent }) => {
     const session = agent.session;
-    if (session.meta.origin === 'subagent' && session.meta.parentSession) {
-      parents.set(session.id, session.meta.parentSession);
+    if (session.header.origin === 'subagent' && session.header.parentSession) {
+      parents.set(session.id, session.header.parentSession);
     }
     if (agent.status === 'running') {
       running.add(session.id);
@@ -77,7 +77,7 @@ export function apply(ctx, config) {
     }
   }, { global: true, prepend: true });
   ctx.on('session/event', (session, event) => {
-    if (session.meta.origin === 'subagent') {
+    if (session.header.origin === 'subagent') {
       return;
     }
     let resolved;
