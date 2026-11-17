@@ -354,9 +354,6 @@ pub fn open_instance_window(
         let _ = win.show();
         let _ = win.unminimize();
         let _ = win.set_focus();
-        if let Some(origin) = origin.as_deref() {
-            prune_auth_cookies(&win, origin, instance_id);
-        }
         // Re-enter through the current token URL. The window keeps whatever
         // URL it was built with, which is stale after the instance restarted;
         // reloading a token-less / would only re-render the 401 page and the
@@ -374,15 +371,21 @@ pub fn open_instance_window(
             clear_webview_data(&win, app, instance_id);
             return Err("实例未在运行或尚未就绪".to_string());
         }
-        let stale = win
-            .url()
-            .map(|current| current.as_str() != url)
+        // 登录跳转和会话路由会改变页面 URL，只比较加载过的启动地址。
+        let stale = app
+            .try_state::<AppState>()
+            .and_then(|state| state.window_urls.lock().unwrap().get(instance_id).cloned())
+            .map(|loaded| loaded != url)
             .unwrap_or(true);
         if stale {
+            if let Some(origin) = origin.as_deref() {
+                prune_auth_cookies(&win, origin, instance_id);
+            }
             crate::log_info!("实例 {instance_id}：窗口已打开，重新导航到当前会话地址");
             let parsed = url.parse().map_err(|e| format!("实例启动地址无效: {e}"))?;
             if let Err(e) = win.navigate(parsed) {
                 crate::log_warn!("实例 {instance_id}：重新导航失败: {e}");
+                return Err(format!("重新导航失败: {e}"));
             }
             remember_window_url(app, instance_id, &url);
         }
