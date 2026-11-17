@@ -1,5 +1,4 @@
 import { defineStore } from 'pinia'
-import { Message } from '@arco-design/web-vue'
 import { api } from '@/api'
 import type {
   DshHome,
@@ -328,8 +327,6 @@ export const useLauncherStore = defineStore('launcher', {
       this.remoteLoading = true
       try {
         this.remoteVersions = await api.fetchAvailableVersions()
-      } catch (e) {
-        Message.error(String(e))
       } finally {
         this.remoteLoading = false
       }
@@ -355,13 +352,9 @@ export const useLauncherStore = defineStore('launcher', {
 
     /** Load the configurable plugin source registry (cached until force=true). */
     async refreshPluginSources(force = false) {
-      if (!force && this.pluginSources.length > 0 && this.pluginSourcesLoadedAt) return
-      try {
-        this.pluginSources = await api.listPluginSources()
-        this.pluginSourcesLoadedAt = Date.now()
-      } catch (e) {
-        Message.error(String(e))
-      }
+      if (!force && this.pluginSources.length > 0 && this.pluginSourcesLoadedAt) { return }
+      this.pluginSources = await api.listPluginSources()
+      this.pluginSourcesLoadedAt = Date.now()
     },
 
     /** Load the PackForge modpack market index (issue #17; cached until

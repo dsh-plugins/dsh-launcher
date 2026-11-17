@@ -2,13 +2,15 @@
 import { computed, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
-import { Message } from '@arco-design/web-vue'
+import { useFeedback } from '@dsh-plugin/dsh-ui-components-vue'
 import { api } from '@/api'
 import { useLauncherStore } from '@/stores/launcher'
 import type { RemoteVersion } from '@/api/types'
 
 // keep-alive name: the download page caches this view (list state).
 defineOptions({ name: 'CreatePickPage' })
+
+const { message: Message } = useFeedback()
 
 const router = useRouter()
 const { t } = useI18n()
@@ -18,7 +20,7 @@ const remote = computed(() => store.remoteVersions)
 const loading = computed(() => store.remoteLoading)
 
 onMounted(() => {
-  store.refreshRemoteVersions()
+  store.refreshRemoteVersions().catch((error) => Message.error(String(error)))
 })
 
 const collator = new Intl.Collator('en', { numeric: true })
@@ -78,119 +80,120 @@ async function onRemove(id: string, version: string) {
 </script>
 
 <template>
-  <div class="create-pick" v-loading="loading">
-    <!-- Latest versions (always rendered; empty state when no data) -->
-    <div class="dl-card">
-      <div class="dl-card-title">
-        <h3>{{ t('download.latest') }}</h3>
-        <a-button size="small" type="text" :loading="loading" @click="store.refreshRemoteVersions()">
-          {{ t('common.refresh') }}
-        </a-button>
-      </div>
-      <template v-if="latest.length">
-        <div
-          v-for="row in latest"
-          :key="row.v.version"
-          class="version-row"
-          @click="pick(row.v.version)"
-        >
-          <span class="version-icon" :class="{ pre: isPrerelease(row.v.version) }">◆</span>
-          <div class="version-meta">
-            <div class="version-name">
-              {{ row.v.version }}
-              <a-tag v-if="row.v.source === 'github'" size="small" color="orange">
-                {{ t('download.sourceBuildTag') }}
-              </a-tag>
-              <a-tag v-if="installedSet.has(row.v.version)" size="small" color="green">
-                {{ t('download.installedTag') }}
-              </a-tag>
-            </div>
-            <div class="version-sub">
-              {{ row.label }}<template v-if="row.v.released_at">，{{ t('download.releasedAt', { date: formatDate(row.v.released_at) }) }}</template>
-            </div>
-          </div>
-          <span class="version-arrow">›</span>
+  <dsh-spin :loading="loading" style="display: block">
+    <div class="create-pick">
+      <!-- Latest versions (always rendered; empty state when no data) -->
+      <div class="dl-card">
+        <div class="dl-card-title">
+          <h3>{{ t('download.latest') }}</h3>
+          <dsh-button variant="ghost" size="sm" :loading="loading" @click="store.refreshRemoteVersions().catch((error) => Message.error(String(error)))">
+            {{ t('common.refresh') }}
+          </dsh-button>
         </div>
-      </template>
-      <div v-else class="card-empty">{{ loading ? t('common.loading') : t('download.noData') }}</div>
-    </div>
-
-    <!-- Grouped version lists -->
-    <a-collapse :default-active-key="['stable', 'prerelease']" class="version-groups">
-      <a-collapse-item key="stable" :header="t('download.stable')">
-        <template v-if="stable.length">
-          <div v-for="v in stable" :key="v.version" class="version-row" @click="pick(v.version)">
-            <span class="version-icon">◆</span>
-            <div class="version-meta">
-              <div class="version-name">
-                {{ v.version }}
-                <a-tag v-if="v.source === 'github'" size="small" color="orange">
-                  {{ t('download.sourceBuildTag') }}
-                </a-tag>
-                <a-tag v-if="installedSet.has(v.version)" size="small" color="green">
-                  {{ t('download.installedTag') }}
-                </a-tag>
-              </div>
-              <div class="version-sub">{{ formatDate(v.released_at) }}</div>
-            </div>
-            <span class="version-arrow">›</span>
-          </div>
-        </template>
-        <div v-else class="card-empty">{{ t('download.noData') }}</div>
-      </a-collapse-item>
-      <a-collapse-item key="prerelease" :header="t('download.prerelease')">
-        <template v-if="prerelease.length">
-          <div v-for="v in prerelease" :key="v.version" class="version-row" @click="pick(v.version)">
-            <span class="version-icon pre">◆</span>
-            <div class="version-meta">
-              <div class="version-name">
-                {{ v.version }}
-                <a-tag v-if="v.source === 'github'" size="small" color="orange">
-                  {{ t('download.sourceBuildTag') }}
-                </a-tag>
-                <a-tag v-if="installedSet.has(v.version)" size="small" color="green">
-                  {{ t('download.installedTag') }}
-                </a-tag>
-              </div>
-              <div class="version-sub">{{ formatDate(v.released_at) }}</div>
-            </div>
-            <span class="version-arrow">›</span>
-          </div>
-        </template>
-        <div v-else class="card-empty">{{ t('download.noData') }}</div>
-      </a-collapse-item>
-    </a-collapse>
-
-    <!-- Installed versions -->
-    <div class="dl-card installed-card">
-      <div class="dl-card-title">
-        <h3>{{ t('download.installedTitle') }}</h3>
-      </div>
-      <div v-for="v in store.versions" :key="v.id" class="installed-row">
-        <span class="version-icon">◆</span>
-        <div class="version-meta">
-          <div class="version-name">{{ v.version }}</div>
-          <div class="version-sub">{{ v.dir }}</div>
-        </div>
-        <span class="used-by">{{ t('download.usedBy', { count: usedByCount(v.id) }) }}</span>
-        <a-popconfirm
-          :content="t('download.confirmDeleteVersion', { version: v.version })"
-          :disabled="removingId !== null"
-          @ok="onRemove(v.id, v.version)"
-        >
-          <a-button
-            size="small"
-            status="danger"
-            :loading="removingId === v.id"
-            :disabled="removingId !== null && removingId !== v.id"
+        <template v-if="latest.length">
+          <div
+            v-for="row in latest"
+            :key="row.v.version"
+            class="version-row"
+            @click="pick(row.v.version)"
           >
-            {{ t('download.deleteVersion') }}
-          </a-button>
-        </a-popconfirm>
+            <span class="version-icon" :class="{ pre: isPrerelease(row.v.version) }">◆</span>
+            <div class="version-meta">
+              <div class="version-name">
+                {{ row.v.version }}
+                <dsh-tag v-if="row.v.source === 'github'" size="small" color="orange">
+                  {{ t('download.sourceBuildTag') }}
+                </dsh-tag>
+                <dsh-tag v-if="installedSet.has(row.v.version)" size="small" color="green">
+                  {{ t('download.installedTag') }}
+                </dsh-tag>
+              </div>
+              <div class="version-sub">
+                {{ row.label }}<template v-if="row.v.released_at">，{{ t('download.releasedAt', { date: formatDate(row.v.released_at) }) }}</template>
+              </div>
+            </div>
+            <span class="version-arrow">›</span>
+          </div>
+        </template>
+        <div v-else class="card-empty">{{ loading ? t('common.loading') : t('download.noData') }}</div>
       </div>
-      <a-empty v-if="store.versions.length === 0" :description="t('download.emptyInstalled')" />
+
+      <!-- Grouped version lists -->
+      <dsh-collapse :default-active-key="['stable', 'prerelease']" class="version-groups">
+        <dsh-collapse-item key="stable" :header="t('download.stable')">
+          <template v-if="stable.length">
+            <div v-for="v in stable" :key="v.version" class="version-row" @click="pick(v.version)">
+              <span class="version-icon">◆</span>
+              <div class="version-meta">
+                <div class="version-name">
+                  {{ v.version }}
+                  <dsh-tag v-if="v.source === 'github'" size="small" color="orange">
+                    {{ t('download.sourceBuildTag') }}
+                  </dsh-tag>
+                  <dsh-tag v-if="installedSet.has(v.version)" size="small" color="green">
+                    {{ t('download.installedTag') }}
+                  </dsh-tag>
+                </div>
+                <div class="version-sub">{{ formatDate(v.released_at) }}</div>
+              </div>
+              <span class="version-arrow">›</span>
+            </div>
+          </template>
+          <div v-else class="card-empty">{{ t('download.noData') }}</div>
+        </dsh-collapse-item>
+        <dsh-collapse-item key="prerelease" :header="t('download.prerelease')">
+          <template v-if="prerelease.length">
+            <div v-for="v in prerelease" :key="v.version" class="version-row" @click="pick(v.version)">
+              <span class="version-icon pre">◆</span>
+              <div class="version-meta">
+                <div class="version-name">
+                  {{ v.version }}
+                  <dsh-tag v-if="v.source === 'github'" size="small" color="orange">
+                    {{ t('download.sourceBuildTag') }}
+                  </dsh-tag>
+                  <dsh-tag v-if="installedSet.has(v.version)" size="small" color="green">
+                    {{ t('download.installedTag') }}
+                  </dsh-tag>
+                </div>
+                <div class="version-sub">{{ formatDate(v.released_at) }}</div>
+              </div>
+              <span class="version-arrow">›</span>
+            </div>
+          </template>
+          <div v-else class="card-empty">{{ t('download.noData') }}</div>
+        </dsh-collapse-item>
+      </dsh-collapse>
+
+      <!-- Installed versions -->
+      <div class="dl-card installed-card">
+        <div class="dl-card-title">
+          <h3>{{ t('download.installedTitle') }}</h3>
+        </div>
+        <div v-for="v in store.versions" :key="v.id" class="installed-row">
+          <span class="version-icon">◆</span>
+          <div class="version-meta">
+            <div class="version-name">{{ v.version }}</div>
+            <div class="version-sub">{{ v.dir }}</div>
+          </div>
+          <span class="used-by">{{ t('download.usedBy', { count: usedByCount(v.id) }) }}</span>
+          <dsh-popconfirm
+            :content="t('download.confirmDeleteVersion', { version: v.version })"
+            :disabled="removingId !== null"
+            @ok="onRemove(v.id, v.version)"
+          >
+            <dsh-button variant="danger"
+              size="sm"
+              :loading="removingId === v.id"
+              :disabled="removingId !== null && removingId !== v.id"
+            >
+              {{ t('download.deleteVersion') }}
+            </dsh-button>
+          </dsh-popconfirm>
+        </div>
+        <dsh-empty v-if="store.versions.length === 0" :description="t('download.emptyInstalled')" />
+      </div>
     </div>
-  </div>
+  </dsh-spin>
 </template>
 
 <style lang="scss" scoped>

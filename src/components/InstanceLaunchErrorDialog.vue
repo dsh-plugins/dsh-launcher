@@ -1,9 +1,11 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { Message } from '@arco-design/web-vue'
+import { useFeedback } from '@dsh-plugin/dsh-ui-components-vue'
 import { api } from '@/api'
 import { useLauncherStore } from '@/stores/launcher'
+
+const { message: Message } = useFeedback()
 
 const { t } = useI18n()
 const store = useLauncherStore()
@@ -115,32 +117,32 @@ function close() {
 </script>
 
 <template>
-  <a-modal
+  <dsh-modal
     :visible="visible"
     :title="t('launchError.title')"
     :closable="true"
     @cancel="close"
   >
     <template #footer>
-      <a-button @click="copyError">{{ t('launchError.copy') }}</a-button>
-      <a-button :loading="exporting" @click="exportLog">{{ t('launchError.exportLog') }}</a-button>
-      <a-button @click="revealLog">{{ t('launchError.revealLog') }}</a-button>
-      <a-button type="primary" @click="close">{{ t('launchError.close') }}</a-button>
+      <dsh-button variant="secondary" @click="copyError">{{ t('launchError.copy') }}</dsh-button>
+      <dsh-button variant="secondary" :loading="exporting" @click="exportLog">{{ t('launchError.exportLog') }}</dsh-button>
+      <dsh-button variant="secondary" @click="revealLog">{{ t('launchError.revealLog') }}</dsh-button>
+      <dsh-button variant="primary" @click="close">{{ t('launchError.close') }}</dsh-button>
     </template>
 
     <div class="err-body">
-      <a-alert type="error" :message="summary" />
-      <a-alert v-if="suspect" type="warning">
+      <dsh-alert type="error" :message="summary" />
+      <dsh-alert v-if="suspect" type="warning">
         <div>{{ t('launchError.suspect', { name: suspect }) }}</div>
         <div class="err-suspect-hint">{{ t('launchError.suspectHint') }}</div>
-      </a-alert>
+      </dsh-alert>
       <div class="err-tail-title">{{ t('launchError.tailTitle') }}</div>
-      <a-spin :loading="tailLoading" style="width: 100%">
+      <dsh-spin :loading="tailLoading" style="width: 100%">
         <pre v-if="tail.length" class="err-tail">{{ tail.join('\n') }}</pre>
         <div v-else class="err-tail-empty">{{ t('launchError.tailEmpty') }}</div>
-      </a-spin>
+      </dsh-spin>
     </div>
-  </a-modal>
+  </dsh-modal>
 </template>
 
 <style scoped>

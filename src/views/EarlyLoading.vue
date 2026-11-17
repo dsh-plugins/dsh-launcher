@@ -4,11 +4,13 @@
 // open the window) while an instance starts. A real OS window, not a modal.
 import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { Message } from '@arco-design/web-vue'
+import { useFeedback } from '@dsh-plugin/dsh-ui-components-vue'
 import { api } from '@/api'
 import type { CompatibilityReport, EarlyLoadingContext, LaunchStage } from '@/api/types'
 import FramelessTitleBar from '@/components/FramelessTitleBar.vue'
 import CompatReport from '@/components/CompatibilityReport.vue'
+
+const { message: Message } = useFeedback()
 
 const props = defineProps<{ instanceId: string }>()
 
@@ -123,7 +125,7 @@ async function onCancel() {
 
     <div class="loading-body">
       <div v-if="ctx?.profile" class="loading-profile">
-        <a-tag size="small">{{ ctx.profile }}</a-tag>
+        <dsh-tag size="small">{{ ctx.profile }}</dsh-tag>
       </div>
 
       <ul class="stage-list">
@@ -135,7 +137,7 @@ async function onCancel() {
         >
           <span class="stage-dot" />
           <span class="stage-name">{{ t(`earlyLoading.stages.${s}`) }}</span>
-          <a-spin v-if="stageState(s) === 'active'" :size="14" class="stage-spin" />
+          <dsh-spin v-if="stageState(s) === 'active'" :size="14" class="stage-spin" />
         </li>
       </ul>
 
@@ -150,7 +152,7 @@ async function onCancel() {
 
       <!-- Compatibility report: rendered inline (the launcher main window no
            longer shows it as a separate modal during launch). -->
-      <a-scrollbar
+      <dsh-scrollbar
         v-if="compat"
         type="track"
         outer-style="max-height: 220px"
@@ -158,19 +160,18 @@ async function onCancel() {
         class="compat-area"
       >
         <CompatReport :report="compat" />
-      </a-scrollbar>
+      </dsh-scrollbar>
     </div>
 
     <div class="loading-actions">
-      <a-button @click="onClose">{{ t('earlyLoading.close') }}</a-button>
-      <a-button
-        status="danger"
+      <dsh-button variant="secondary" @click="onClose">{{ t('earlyLoading.close') }}</dsh-button>
+      <dsh-button variant="danger"
         :disabled="terminal"
         :loading="cancelling"
         @click="onCancel"
       >
         {{ t('earlyLoading.cancel') }}
-      </a-button>
+      </dsh-button>
     </div>
   </div>
 </template>

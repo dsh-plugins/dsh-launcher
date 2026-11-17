@@ -97,46 +97,46 @@ onMounted(() => {
     <div class="dl-card">
       <div class="dl-card-title">
         <h3>{{ t('modpack.marketTitle') }}</h3>
-        <a-space>
-          <a-link @click="api.openExternal(PUBLISH_URL)">
+        <dsh-space>
+          <dsh-link href="#" @click.prevent="api.openExternal(PUBLISH_URL)">
             {{ t('modpack.marketPublish') }}
-          </a-link>
-          <a-input
+          </dsh-link>
+          <dsh-input
             v-model="search"
             :placeholder="t('modpack.marketSearch')"
             allow-clear
             size="small"
             class="search-input"
           />
-          <a-button size="small" type="text" :loading="store.modpackMarketLoading" @click="load">
+          <dsh-button variant="ghost" size="sm" :loading="store.modpackMarketLoading" @click="load">
             {{ t('modpack.marketRefresh') }}
-          </a-button>
-        </a-space>
+          </dsh-button>
+        </dsh-space>
       </div>
 
       <div class="type-filter">
-        <a-radio-group v-model="typeFilter" type="button" size="small">
-          <a-radio value="">{{ t('modpack.marketTypeAll') }}</a-radio>
-          <a-radio value="profile">{{ t('modpack.marketTypeProfile') }}</a-radio>
-          <a-radio value="dshhome">{{ t('modpack.marketTypeDshhome') }}</a-radio>
-        </a-radio-group>
+        <dsh-radio-group v-model="typeFilter" type="button" size="small">
+          <dsh-radio value="">{{ t('modpack.marketTypeAll') }}</dsh-radio>
+          <dsh-radio value="profile">{{ t('modpack.marketTypeProfile') }}</dsh-radio>
+          <dsh-radio value="dshhome">{{ t('modpack.marketTypeDshhome') }}</dsh-radio>
+        </dsh-radio-group>
       </div>
 
       <div v-if="error" class="market-error">
-        <a-alert :title="t('modpack.marketError')" type="error">
+        <dsh-alert :title="t('modpack.marketError')" type="error">
           <template #action>
-            <a-button size="mini" @click="load">{{ t('modpack.marketRetry') }}</a-button>
+            <dsh-button variant="secondary" size="sm" @click="load">{{ t('modpack.marketRetry') }}</dsh-button>
           </template>
-        </a-alert>
+        </dsh-alert>
       </div>
 
       <div v-if="!error && store.modpackMarketLoading" class="market-loading">
-        <a-spin />
+        <dsh-spin />
       </div>
 
       <template v-else-if="!error">
         <div v-if="filtered.length === 0" class="market-empty">
-          <a-empty
+          <dsh-empty
             :description="search || typeFilter ? t('modpack.marketNoMatch') : t('modpack.marketEmpty')"
           />
         </div>
@@ -146,39 +146,39 @@ onMounted(() => {
             <div class="modpack-name">
               {{ localized(p.displayName) || p.name }}
               <span class="modpack-id">{{ p.id }}</span>
-              <a-tag size="small" :color="p.type === 'dshhome' ? 'orangered' : 'arcoblue'">
+              <dsh-tag size="small" :color="p.type === 'dshhome' ? 'orangered' : 'arcoblue'">
                 {{ p.type === 'dshhome' ? t('modpack.marketTypeDshhome') : t('modpack.marketTypeProfile') }}
-              </a-tag>
-              <a-tag size="small">{{ p.version }}</a-tag>
+              </dsh-tag>
+              <dsh-tag size="small">{{ p.version }}</dsh-tag>
             </div>
             <div class="modpack-desc">{{ localized(p.description) }}</div>
             <div class="modpack-tags">
-              <a-tag v-if="p.author" size="small" color="gray">{{ p.author }}</a-tag>
-              <a-tag v-if="p.dshVersion" size="small" color="gray">
+              <dsh-tag v-if="p.author" size="small" color="gray">{{ p.author }}</dsh-tag>
+              <dsh-tag v-if="p.dshVersion" size="small" color="gray">
                 {{ t('modpack.marketDshVersion', { version: p.dshVersion }) }}
-              </a-tag>
-              <a-tag v-if="fmtSize(p.size)" size="small" color="gray">{{ fmtSize(p.size) }}</a-tag>
-              <a-tag v-if="p.profileCount" size="small" color="gray">
+              </dsh-tag>
+              <dsh-tag v-if="fmtSize(p.size)" size="small" color="gray">{{ fmtSize(p.size) }}</dsh-tag>
+              <dsh-tag v-if="p.profileCount" size="small" color="gray">
                 {{ t('modpack.marketProfiles', { count: p.profileCount }) }}
-              </a-tag>
-              <a-tag v-if="p.bundleCount" size="small" color="gray">
+              </dsh-tag>
+              <dsh-tag v-if="p.bundleCount" size="small" color="gray">
                 {{ t('modpack.marketBundles', { count: p.bundleCount }) }}
-              </a-tag>
-              <a-tag v-if="p.depCount" size="small" color="gray">
+              </dsh-tag>
+              <dsh-tag v-if="p.depCount" size="small" color="gray">
                 {{ t('modpack.marketDeps', { count: p.depCount }) }}
-              </a-tag>
-              <a-tag v-if="p.updatedAt" size="small" color="gray">
+              </dsh-tag>
+              <dsh-tag v-if="p.updatedAt" size="small" color="gray">
                 {{ t('modpack.marketUpdated', { date: p.updatedAt }) }}
-              </a-tag>
+              </dsh-tag>
             </div>
           </div>
           <div class="modpack-side">
-            <a-button size="small" type="primary" @click="install(p)">
+            <dsh-button variant="primary" size="sm" @click="install(p)">
               {{ t('modpack.marketInstall') }}
-            </a-button>
+            </dsh-button>
           </div>
         </div>
-        <a-pagination
+        <dsh-pagination
           v-model:current="page"
           class="market-pagination"
           :total="filtered.length"

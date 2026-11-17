@@ -1,12 +1,14 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
-import { Message } from '@arco-design/web-vue'
+import { useFeedback } from '@dsh-plugin/dsh-ui-components-vue'
 import { useI18n } from 'vue-i18n'
 import { api } from '@/api'
 import type { DshInstance, WebAccess, WebInterface, WebMode } from '@/api/types'
 import { useLauncherStore } from '@/stores/launcher'
 import { validNetworkRanges } from '@/utils/network-ranges'
 import InstanceAccessLinks from './InstanceAccessLinks.vue'
+
+const { message: Message } = useFeedback()
 
 const props = defineProps<{ instance: DshInstance }>()
 const store = useLauncherStore()
@@ -125,54 +127,54 @@ async function openGuide() {
   <div class="dl-card edit-card">
     <h3>{{ t('network.title') }}</h3>
     <p>{{ t('network.description') }}</p>
-    <a-space v-if="status.web_mode" direction="vertical" fill>
-      <a-tag color="green">{{ t('network.active', { mode: t('network.modes.' + status.web_mode) }) }}</a-tag>
+    <dsh-space v-if="status.web_mode" direction="vertical" fill>
+      <dsh-tag color="green">{{ t('network.active', { mode: t('network.modes.' + status.web_mode) }) }}</dsh-tag>
       <span v-if="status.web_mode === 'lan'">{{ t('network.activeNetworks', { networks: status.allowed_networks?.join(', ') }) }}</span>
       <InstanceAccessLinks :status="status" />
-    </a-space>
-    <a-form :model="{ mode, address, port, publicUrl, networks, hosts, tls, cert, key }" layout="vertical" class="network-form">
-      <a-form-item :label="t('network.mode')">
-        <a-select :model-value="mode" @change="(value) => chooseMode(value as WebMode)">
-          <a-option v-for="item in modes" :key="item" :value="item">{{ t('network.modes.' + item) }}</a-option>
-        </a-select>
-      </a-form-item>
-      <a-form-item v-if="needsAddress || mode === 'proxy'" :label="t('network.interface')" :extra="mode === 'proxy' ? t('network.proxyAddress') : undefined">
-        <a-space fill>
-          <a-select :model-value="address || undefined" :allow-clear="mode === 'proxy'" :placeholder="mode === 'proxy' ? '127.0.0.1' : t('network.chooseInterface')" @change="(value) => chooseAddress(typeof value === 'string' ? value : '')">
-            <a-option v-for="item in interfaces" :key="item.name + item.address" :value="item.address">
+    </dsh-space>
+    <dsh-form :model="{ mode, address, port, publicUrl, networks, hosts, tls, cert, key }" layout="vertical" class="network-form">
+      <dsh-form-item :label="t('network.mode')">
+        <dsh-select :model-value="mode" @change="(value) => chooseMode(value as WebMode)">
+          <dsh-option v-for="item in modes" :key="item" :value="item">{{ t('network.modes.' + item) }}</dsh-option>
+        </dsh-select>
+      </dsh-form-item>
+      <dsh-form-item v-if="needsAddress || mode === 'proxy'" :label="t('network.interface')" :extra="mode === 'proxy' ? t('network.proxyAddress') : undefined">
+        <dsh-space fill>
+          <dsh-select :model-value="address || undefined" :allow-clear="mode === 'proxy'" :placeholder="mode === 'proxy' ? '127.0.0.1' : t('network.chooseInterface')" @change="(value) => chooseAddress(typeof value === 'string' ? value : '')">
+            <dsh-option v-for="item in interfaces" :key="item.name + item.address" :value="item.address">
               {{ item.name }} · {{ item.address }}
-            </a-option>
-          </a-select>
-          <a-button @click="loadInterfaces">{{ t('network.refresh') }}</a-button>
-        </a-space>
-      </a-form-item>
-      <a-form-item :label="t('instanceEdit.port')" :extra="mode === 'proxy' ? t('network.fixedPort') : t('instanceEdit.portPlaceholder')">
-        <a-input v-model="port" :placeholder="mode === 'proxy' ? '3080' : t('instanceEdit.portPlaceholder')" allow-clear />
-      </a-form-item>
-      <a-form-item v-if="mode === 'lan'" :label="t('network.networks')" :extra="t('network.networksHint')">
-        <a-textarea v-model="networks" placeholder="192.168.1.0/24&#10;fd00::/64" />
-      </a-form-item>
+            </dsh-option>
+          </dsh-select>
+          <dsh-button variant="secondary" @click="loadInterfaces">{{ t('network.refresh') }}</dsh-button>
+        </dsh-space>
+      </dsh-form-item>
+      <dsh-form-item :label="t('instanceEdit.port')" :extra="mode === 'proxy' ? t('network.fixedPort') : t('instanceEdit.portPlaceholder')">
+        <dsh-input v-model="port" :placeholder="mode === 'proxy' ? '3080' : t('instanceEdit.portPlaceholder')" allow-clear />
+      </dsh-form-item>
+      <dsh-form-item v-if="mode === 'lan'" :label="t('network.networks')" :extra="t('network.networksHint')">
+        <dsh-textarea v-model="networks" placeholder="192.168.1.0/24&#10;fd00::/64" />
+      </dsh-form-item>
       <template v-if="mode === 'proxy'">
-        <a-form-item :label="t('network.publicUrl')"><a-input v-model="publicUrl" placeholder="https://dsh.example/ui/" /></a-form-item>
-        <a-alert>
+        <dsh-form-item :label="t('network.publicUrl')"><dsh-input v-model="publicUrl" placeholder="https://dsh.example/ui/" /></dsh-form-item>
+        <dsh-alert>
           {{ t('network.proxyGuide') }}
-          <a-link @click="openGuide">{{ t('network.guide') }}</a-link>
-        </a-alert>
+          <dsh-link href="#" @click.prevent="openGuide">{{ t('network.guide') }}</dsh-link>
+        </dsh-alert>
       </template>
-      <a-form-item v-if="mode !== 'local'" :label="t('network.hosts')" :extra="t('network.hostsHint')">
-        <a-textarea v-model="hosts" placeholder="dsh.example:8443" />
-      </a-form-item>
-      <a-form-item :label="t('network.tls')" :extra="t('network.tlsHint')"><a-switch v-model="tls" /></a-form-item>
+      <dsh-form-item v-if="mode !== 'local'" :label="t('network.hosts')" :extra="t('network.hostsHint')">
+        <dsh-textarea v-model="hosts" placeholder="dsh.example:8443" />
+      </dsh-form-item>
+      <dsh-form-item :label="t('network.tls')" :extra="t('network.tlsHint')"><dsh-switch v-model="tls" /></dsh-form-item>
       <template v-if="tls">
-        <a-form-item :label="t('network.cert')"><a-input-group><a-input v-model="cert" /><a-button @click="pickFile('cert')">{{ t('network.browse') }}</a-button></a-input-group></a-form-item>
-        <a-form-item :label="t('network.key')"><a-input-group><a-input v-model="key" /><a-button @click="pickFile('key')">{{ t('network.browse') }}</a-button></a-input-group></a-form-item>
+        <dsh-form-item :label="t('network.cert')"><dsh-input-group><dsh-input v-model="cert" /><dsh-button variant="secondary" @click="pickFile('cert')">{{ t('network.browse') }}</dsh-button></dsh-input-group></dsh-form-item>
+        <dsh-form-item :label="t('network.key')"><dsh-input-group><dsh-input v-model="key" /><dsh-button variant="secondary" @click="pickFile('key')">{{ t('network.browse') }}</dsh-button></dsh-input-group></dsh-form-item>
       </template>
-      <a-alert v-if="plainHttp" type="warning">{{ t('network.plainHttp') }}</a-alert>
-      <a-space class="network-actions">
-        <a-button type="primary" :loading="busy" @click="save(false)">{{ t('common.save') }}</a-button>
-        <a-button v-if="status.state === 'running' && status.web_mode" :disabled="busy" @click="save(true)">{{ t('network.restart') }}</a-button>
-      </a-space>
-    </a-form>
+      <dsh-alert v-if="plainHttp" type="warning">{{ t('network.plainHttp') }}</dsh-alert>
+      <dsh-space class="network-actions">
+        <dsh-button variant="primary" :loading="busy" @click="save(false)">{{ t('common.save') }}</dsh-button>
+        <dsh-button variant="secondary" v-if="status.state === 'running' && status.web_mode" :disabled="busy" @click="save(true)">{{ t('network.restart') }}</dsh-button>
+      </dsh-space>
+    </dsh-form>
   </div>
 </template>
 

@@ -3,12 +3,13 @@ import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { useLauncherStore } from '@/stores/launcher'
-import type { ThemeMode } from '@/api/types'
 import { api } from '@/api'
-import { Message } from '@arco-design/web-vue'
+import { useFeedback } from '@dsh-plugin/dsh-ui-components-vue'
 import ModpackImportDialog from '@/components/ModpackImportDialog.vue'
 import PluginFileImportDialog from '@/components/PluginFileImportDialog.vue'
 import InstanceLaunchErrorDialog from '@/components/InstanceLaunchErrorDialog.vue'
+
+const { message: Message } = useFeedback()
 
 const route = useRoute()
 const router = useRouter()
@@ -16,38 +17,9 @@ const { t, locale } = useI18n()
 const store = useLauncherStore()
 const isTauri = api.isTauri
 
-// --- Theme: light / dark / follow system -------------------------------------
-
-const themeMedia = window.matchMedia('(prefers-color-scheme: dark)')
-
-/** Applies the effective Arco theme to <body> (body[arco-theme='dark']). */
-function applyTheme(mode: ThemeMode) {
-  const dark = mode === 'dark' || (mode === 'system' && themeMedia.matches)
-  if (dark) {
-    document.body.setAttribute('arco-theme', 'dark')
-  } else {
-    document.body.removeAttribute('arco-theme')
-  }
-  // Native scrollbars and UA widgets follow the browser color-scheme, not
-  // Arco's CSS variables: declare it on the root so dark mode stops
-  // rendering light scrollbar tracks inside dialogs and scroll wrappers.
-  document.documentElement.style.colorScheme = dark ? 'dark' : 'light'
-}
-
-function onSystemThemeChange() {
-  if (store.settings.theme === 'system') applyTheme('system')
-}
-
 onMounted(async () => {
-  // Bare frameless windows (early-loading / update-notice) only need the
-  // theme — applying it before the heavy store.init() keeps them from
-  // flashing light while the full catalog loads. The watch below re-applies
-  // once settings resolve.
-  applyTheme(store.settings.theme || 'system')
   await store.init()
   locale.value = store.settings.locale || 'zh-CN'
-  applyTheme(store.settings.theme || 'system')
-  themeMedia.addEventListener('change', onSystemThemeChange)
   // If Node.js is missing, guide the user to install it before anything else.
   // A managed runtime that exists but cannot work (issue #101: pre-0.2.7
   // extraction dropped exec bits and npm symlinks) routes there too — the
@@ -188,7 +160,6 @@ watch(
 )
 
 onUnmounted(() => {
-  themeMedia.removeEventListener('change', onSystemThemeChange)
   unlistenDrag?.()
   unlistenDeepLink?.()
 })
@@ -200,12 +171,6 @@ watch(
   },
 )
 
-watch(
-  () => store.settings.theme,
-  (v) => {
-    if (v) applyTheme(v)
-  },
-)
 
 const selectedKeys = computed(() => {
   const name = route.name as string
@@ -317,13 +282,13 @@ async function onHeaderMouseDown(e: MouseEvent) {
 <template>
   <!-- Standalone frameless windows render bare, without the app shell. -->
   <router-view v-if="['tui-terminal', 'update-notice', 'early-loading'].includes(route.name as string)" />
-  <a-layout v-else class="app-shell">
-    <a-layout-header class="app-header" @mousedown="onHeaderMouseDown">
+  <dsh-layout v-else class="app-shell">
+    <dsh-layout-header class="app-header" @mousedown="onHeaderMouseDown">
       <!-- Brand; dragging is handled manually via onHeaderMouseDown. -->
       <div v-if="!onInstancePage" class="app-brand">
         <img src="@/assets/launcher-icon.png" class="app-logo" alt="" />
         <span class="app-title">{{ t('app.title') }}</span>
-        <a-tag v-if="!isTauri" size="small" color="orange">{{ t('app.mockBadge') }}</a-tag>
+        <dsh-tag v-if="!isTauri" size="small" color="orange">{{ t('app.mockBadge') }}</dsh-tag>
       </div>
       <template v-if="onInstancePage">
         <div class="header-back">
@@ -331,17 +296,17 @@ async function onHeaderMouseDown(e: MouseEvent) {
           <span class="header-back-title">{{ instancePageTitle }}</span>
         </div>
       </template>
-      <a-menu
+      <dsh-menu
         v-else
         mode="horizontal"
         :selected-keys="selectedKeys"
         class="app-menu"
         @menu-item-click="onMenuSelect"
       >
-        <a-menu-item key="home">{{ t('nav.home') }}</a-menu-item>
-        <a-menu-item key="download">{{ t('nav.download') }}</a-menu-item>
-        <a-menu-item key="settings">{{ t('nav.settings') }}</a-menu-item>
-      </a-menu>
+        <dsh-menu-item key="home">{{ t('nav.home') }}</dsh-menu-item>
+        <dsh-menu-item key="download">{{ t('nav.download') }}</dsh-menu-item>
+        <dsh-menu-item key="settings">{{ t('nav.settings') }}</dsh-menu-item>
+      </dsh-menu>
       <div class="window-controls">
         <button class="wc-btn" title="最小化" @click="minimize">
           <svg viewBox="0 0 12 12" width="12" height="12"><line x1="1" y1="6" x2="11" y2="6" stroke="currentColor" stroke-width="1.4"/></svg>
@@ -350,22 +315,22 @@ async function onHeaderMouseDown(e: MouseEvent) {
           <svg viewBox="0 0 12 12" width="12" height="12"><path d="M1 1 L11 11 M11 1 L1 11" stroke="currentColor" stroke-width="1.4"/></svg>
         </button>
       </div>
-    </a-layout-header>
-    <a-layout-content class="app-content">
-      <a-scrollbar
+    </dsh-layout-header>
+    <dsh-layout-content class="app-content">
+      <dsh-scrollbar
         type="track"
         outer-style="height: 100%"
         style="height: 100%; overflow-y: auto"
       >
         <router-view />
-      </a-scrollbar>
-    </a-layout-content>
+      </dsh-scrollbar>
+    </dsh-layout-content>
 
     <!-- Floating task manager entry (bottom-right); becomes a back button on the tasks page. -->
     <div ref="taskFabRef" class="task-fab" @click="onFabClick">
-      <a-badge v-if="!onTasksPage" :count="store.runningTaskCount" :max-count="99">
+      <dsh-badge v-if="!onTasksPage" :count="store.runningTaskCount" :max-count="99">
         <span class="task-fab-icon">⏱</span>
-      </a-badge>
+      </dsh-badge>
       <span v-else class="task-fab-icon">←</span>
       <span class="task-fab-text">{{ onTasksPage ? t('download.back') : t('tasks.fab') }}</span>
     </div>
@@ -377,7 +342,7 @@ async function onHeaderMouseDown(e: MouseEvent) {
       :initial-instance-id="dropInstanceId"
     />
     <InstanceLaunchErrorDialog />
-  </a-layout>
+  </dsh-layout>
 </template>
 <style lang="scss" scoped>
 .app-shell {

@@ -2,7 +2,7 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
-import { Message } from '@arco-design/web-vue'
+import { useFeedback } from '@dsh-plugin/dsh-ui-components-vue'
 import { Marked } from 'marked'
 import markedAlert from 'marked-alert'
 import markedFootnote from 'marked-footnote'
@@ -18,6 +18,8 @@ import launcherDefaultIcon from '@/assets/launcher-icon.png'
 import 'katex/dist/katex.min.css'
 
 // --- Instance icons (issue #8): the launch panel avatar follows the instance --
+
+const { message: Message } = useFeedback()
 
 const iconMap = ref<Record<string, string | null>>({})
 
@@ -534,68 +536,67 @@ function goEditSelected() {
       <div class="identity-block">
         <div class="instance-avatar"><img :src="selectedIcon ?? launcherDefaultIcon" alt="" /></div>
         <div class="instance-name">{{ selectedInstance?.name ?? '—' }}</div>
-        <a-tag
+        <dsh-tag
           v-if="selectedStatus"
           :color="selectedStatus.state === 'running' ? 'green' : selectedStatus.state === 'starting' ? 'orange' : 'gray'"
           size="small"
         >
           {{ t(`home.status.${selectedStatus.state}`) }}
-        </a-tag>
+        </dsh-tag>
         <InstanceAccessLinks v-if="running && selectedStatus?.url" :status="selectedStatus" @opened="onDshWindowOpened" />
-        <a-tooltip v-if="sharedHome" :content="t('home.sharedHomeWarning')">
-          <a-tag color="orangered" size="small">{{ t('home.sharedHome') }}</a-tag>
-        </a-tooltip>
+        <dsh-tooltip v-if="sharedHome" :content="t('home.sharedHomeWarning')">
+          <dsh-tag color="orangered" size="small">{{ t('home.sharedHome') }}</dsh-tag>
+        </dsh-tooltip>
       </div>
 
       <div class="selector-block">
         <div class="field">
           <span class="field-label">{{ t('home.instance') }}</span>
-          <a-select
+          <dsh-select
             v-model="selectedInstanceId"
             :placeholder="t('home.selectInstance')"
             allow-clear
           >
-            <a-option v-for="inst in store.instances" :key="inst.id" :value="inst.id">
+            <dsh-option v-for="inst in store.instances" :key="inst.id" :value="inst.id">
               <span class="option-line">
                 {{ inst.name }}
-                <a-tag
+                <dsh-tag
                   v-if="store.statusOf(inst.id).state === 'running'"
                   size="small"
                   color="green"
                 >
                   {{ t('home.status.running') }}
-                </a-tag>
+                </dsh-tag>
               </span>
-            </a-option>
-          </a-select>
+            </dsh-option>
+          </dsh-select>
         </div>
         <div class="field">
           <span class="field-label">{{ t('home.profile') }}</span>
-          <a-select
+          <dsh-select
             v-model="selectedProfile"
             :placeholder="t('home.selectProfile')"
             :loading="profilesLoading"
             :disabled="!selectedInstance"
             allow-clear
           >
-            <a-option v-for="p in profiles" :key="p" :value="p">
+            <dsh-option v-for="p in profiles" :key="p" :value="p">
               <span class="option-line">
                 {{ p }}
-                <a-tag v-if="profileKinds[p] === 'tui'" size="small" color="purple">
+                <dsh-tag v-if="profileKinds[p] === 'tui'" size="small" color="purple">
                   {{ t('home.profileTui') }}
-                </a-tag>
-                <a-tag v-else-if="profileKinds[p] === 'web'" size="small" color="green">Web</a-tag>
+                </dsh-tag>
+                <dsh-tag v-else-if="profileKinds[p] === 'web'" size="small" color="green">Web</dsh-tag>
               </span>
-            </a-option>
-          </a-select>
+            </dsh-option>
+          </dsh-select>
         </div>
       </div>
 
       <div class="action-block">
         <template v-if="!running">
-          <a-button
-            type="primary"
-            size="large"
+          <dsh-button variant="primary"
+            size="lg"
             long
             :disabled="!canStart"
             :loading="starting"
@@ -604,34 +605,34 @@ function goEditSelected() {
           >
             <span class="launch-text">{{ starting ? t('home.starting') : t('home.start') }}</span>
             <span v-if="launchSubtitle && !starting" class="launch-sub">{{ launchSubtitle }}</span>
-          </a-button>
-          <a-button long :disabled="!canStart || compatibilityBusy" :loading="compatibilityBusy" @click="onCompatibleStart">
+          </dsh-button>
+          <dsh-button variant="secondary" long :disabled="!canStart || compatibilityBusy" :loading="compatibilityBusy" @click="onCompatibleStart">
             {{ t('compat.launch') }}
-          </a-button>
+          </dsh-button>
         </template>
         <template v-else>
-          <a-button type="primary" size="large" long class="launch-button" @click="onOpenWindow">
+          <dsh-button variant="primary" size="lg" long class="launch-button" @click="onOpenWindow">
             <span class="launch-text">{{ t('home.openWindow') }}</span>
             <span class="launch-sub">{{ launchSubtitle }}</span>
-          </a-button>
-          <a-button status="danger" long class="stop-button" @click="onStop">
+          </dsh-button>
+          <dsh-button variant="danger" long class="stop-button" @click="onStop">
             {{ t('home.stop') }}
-          </a-button>
+          </dsh-button>
         </template>
         <div class="mini-actions">
-          <a-button class="mini-button" @click="router.push({ name: 'instances' })">
+          <dsh-button variant="secondary" class="mini-button" @click="router.push({ name: 'instances' })">
             {{ t('home.instanceList') }}
-          </a-button>
-          <a-button class="mini-button" :disabled="!selectedInstance" @click="goEditSelected">
+          </dsh-button>
+          <dsh-button variant="secondary" class="mini-button" :disabled="!selectedInstance" @click="goEditSelected">
             {{ t('home.editSelected') }}
-          </a-button>
+          </dsh-button>
         </div>
       </div>
     </aside>
 
     <!-- Compatibility result pops up instead of stacking under the buttons;
          it hides the moment the DSH window opens (details stay in the log). -->
-    <a-modal
+    <dsh-modal
       :visible="compatModalVisible"
       :title="t('compat.title')"
       :closable="!compatibilityBusy"
@@ -642,30 +643,30 @@ function goEditSelected() {
       @ok="closeCompatModal"
       @cancel="closeCompatModal"
     >
-      <a-scrollbar type="track" outer-style="max-height: 60vh" style="max-height: 60vh; overflow-y: auto">
+      <dsh-scrollbar type="track" outer-style="max-height: 60vh" style="max-height: 60vh; overflow-y: auto">
         <div class="compat-modal-body">
           <div v-if="compatibilityBusy && !compatibility" class="compat-checking">
-            <a-spin :size="22" />
+            <dsh-spin :size="22" />
             <span>{{ t('compat.checking') }}</span>
           </div>
           <CompatibilityReport v-else-if="compatibility" :report="compatibility" />
         </div>
-      </a-scrollbar>
-    </a-modal>
+      </dsh-scrollbar>
+    </dsh-modal>
 
     <!-- Right news area: renders the configured md/html source (XSS-sanitized) -->
     <section class="news-area">
       <div v-if="!newsSource" class="news-placeholder">{{ t('home.newsPlaceholder') }}</div>
       <div v-else-if="newsLoading" class="news-placeholder">
-        <a-spin :size="20" />
+        <dsh-spin :size="20" />
       </div>
       <div v-else-if="newsError" class="news-placeholder news-error">
         <span>{{ newsError }}</span>
-        <a-button size="mini" @click="loadNews">{{ t('common.refresh') }}</a-button>
+        <dsh-button variant="secondary" size="sm" @click="loadNews">{{ t('common.refresh') }}</dsh-button>
       </div>
-      <a-scrollbar v-else outer-style="height: 100%" style="height: 100%; overflow-y: auto">
+      <dsh-scrollbar v-else outer-style="height: 100%" style="height: 100%; overflow-y: auto">
         <article class="news-body" v-html="newsHtml" @click="onNewsClick"></article>
-      </a-scrollbar>
+      </dsh-scrollbar>
     </section>
   </div>
 </template>
@@ -753,7 +754,7 @@ function goEditSelected() {
 
 .compat-checking { display: flex; align-items: center; gap: 12px; padding: 24px 4px; font-size: 13px; color: var(--color-text-2); }
 
-.launch-button {
+.launch-panel .launch-button {
   height: 64px;
   display: flex;
   flex-direction: column;

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { IconInfoCircleFill } from '@arco-design/web-vue/es/icon'
+import { IconInfoCircleFill } from '@dsh-plugin/dsh-ui-components-vue/icons'
 
 /** Small info icon that reveals a hint in a tooltip; used after card titles
  * and option labels instead of inline hint paragraphs. */
@@ -7,9 +7,9 @@ defineProps<{ content: string }>()
 </script>
 
 <template>
-  <a-tooltip :content="content" position="top" mini>
+  <dsh-tooltip :content="content" position="top" mini>
     <IconInfoCircleFill class="hint-icon" />
-  </a-tooltip>
+  </dsh-tooltip>
 </template>
 
 <style scoped>

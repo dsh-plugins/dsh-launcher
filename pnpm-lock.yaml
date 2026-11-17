@@ -9,8 +9,11 @@ importers:
   .:
     dependencies:
       '@arco-design/web-vue':
-        specifier: ^2.57.0
-        version: 2.58.0(vue@3.5.41(typescript@5.9.3))
+        specifier: ^2.59.0
+        version: 2.59.0(vue@3.5.41(typescript@5.9.3))
+      '@dsh-plugin/dsh-ui-components-vue':
+        specifier: 0.1.0-dev.44009856440
+        version: 0.1.0-dev.44009856440(vue@3.5.41(typescript@5.9.3))
       '@tauri-apps/api':
         specifier: ^2.9.0
         version: 2.11.1
@@ -99,8 +102,8 @@ packages:
   '@arco-design/color@0.4.0':
     resolution: {integrity: sha512-s7p9MSwJgHeL8DwcATaXvWT3m2SigKpxx4JA1BGPHL4gfvaQsmQfrLBDpjOJFJuJ2jG2dMt3R3P8Pm9E65q18g==}
 
-  '@arco-design/web-vue@2.58.0':
-    resolution: {integrity: sha512-b1vdPYOmjG5VAkVa7jlVwCb+WynBK+rnKN8zH3yKohpZObZbostRd3HgYNtjjZjGVU3OqR0Yy2FX7ftgF0bcOw==}
+  '@arco-design/web-vue@2.59.0':
+    resolution: {integrity: sha512-i2e5oJpAwnfHdsps7X7+AIGUzE3Y1Lz7Q4lvsE+3itfOXj7IYKQzs2+P1bnW7X+XX6m51SFBQu+s2XQKg4k3Jw==}
     peerDependencies:
       vue: '>=3.1.0'
 
@@ -143,6 +146,12 @@ packages:
 
   '@chevrotain/types@11.1.2':
     resolution: {integrity: sha512-U+HFai5+zmJCkK86QsaJtoITlboZHBqrVketcO2ROv865xfCMSFpELQoz1GkX5GzME8pTa+3kbKrZHQtI0gdbw==}
+
+  '@dsh-plugin/dsh-ui-components-vue@0.1.0-dev.44009856440':
+    resolution: {integrity: sha512-WCDp0E6p99yMfNIm3Jvu1sifzxgDtj7el93WLrls1pjJmIJVZZSqtlVejYfK2exrDpC0gdwTYdH52OkRdpYPeg==}
+    engines: {node: '>=24.9.0'}
+    peerDependencies:
+      vue: ^3.5.0
 
   '@emnapi/core@1.11.3':
     resolution: {integrity: sha512-zLpS5asjEb7lq8jYLq37N6XKaE41DIexlY1rF/z4/tIl3wo13Sqm28fRyfIsKZD+NZ8mM5RoKkpW/rBcuoSZSg==}
@@ -2106,7 +2115,7 @@ snapshots:
     dependencies:
       color: 3.2.1
 
-  '@arco-design/web-vue@2.58.0(vue@3.5.41(typescript@5.9.3))':
+  '@arco-design/web-vue@2.59.0(vue@3.5.41(typescript@5.9.3))':
     dependencies:
       '@arco-design/color': 0.4.0
       b-tween: 0.3.3
@@ -2153,6 +2162,12 @@ snapshots:
   '@braintree/sanitize-url@7.1.2': {}
 
   '@chevrotain/types@11.1.2': {}
+
+  '@dsh-plugin/dsh-ui-components-vue@0.1.0-dev.44009856440(vue@3.5.41(typescript@5.9.3))':
+    dependencies:
+      '@arco-design/web-vue': 2.59.0(vue@3.5.41(typescript@5.9.3))
+      dayjs: 1.11.23
+      vue: 3.5.41(typescript@5.9.3)
 
   '@emnapi/core@1.11.3':
     dependencies:
@@ -2861,7 +2876,7 @@ snapshots:
 
   '@vue/compiler-core@3.5.41':
     dependencies:
-      '@babel/parser': 7.29.8
+      '@babel/parser': 7.29.14
       '@vue/shared': 3.5.41
       entities: 7.0.1
       estree-walker: 2.0.2

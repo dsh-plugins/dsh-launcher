@@ -2,3 +2,5 @@ allowBuilds:
   '@parcel/watcher': true
   esbuild: true
   vue-demi: true
+minimumReleaseAgeExclude:
+  - '@dsh-plugin/dsh-ui-components-vue@0.1.0-dev.44009856440'

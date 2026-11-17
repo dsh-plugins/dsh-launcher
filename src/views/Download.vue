@@ -1,10 +1,13 @@
 <script setup lang="ts">
+import { useFeedback } from '@dsh-plugin/dsh-ui-components-vue'
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { useLauncherStore } from '@/stores/launcher'
 import { provideDownloadScroll } from '@/composables/download-scroll'
-import type { ScrollbarInstance } from '@arco-design/web-vue'
+import type { ScrollbarInstance } from '@dsh-plugin/dsh-ui-components-vue'
+
+const { message: Message } = useFeedback()
 
 const route = useRoute()
 const router = useRouter()
@@ -51,7 +54,7 @@ function onMenuSelect(key: string) {
 }
 
 function onRefreshVersions() {
-  store.refreshRemoteVersions()
+  store.refreshRemoteVersions().catch((error) => Message.error(String(error)))
 }
 
 // --- Scroll memory -------------------------------------------------------------
@@ -91,28 +94,27 @@ onUnmounted(() => scroller()?.removeEventListener('scroll', onScroll))
 <template>
   <div class="download-page">
     <aside class="download-sidebar">
-      <a-menu :selected-keys="selectedKeys" @menu-item-click="onMenuSelect">
-        <a-menu-item key="create">
+      <dsh-menu :selected-keys="selectedKeys" @menu-item-click="onMenuSelect">
+        <dsh-menu-item key="create">
           <span class="menu-line">
             {{ t('download.createInstance') }}
-            <a-button
+            <dsh-button variant="ghost"
               v-if="onCreatePage"
-              type="text"
-              size="mini"
+              size="sm"
               class="refresh-btn"
               :loading="store.remoteLoading"
               @click.stop="onRefreshVersions"
             >
               ⟳
-            </a-button>
+            </dsh-button>
           </span>
-        </a-menu-item>
-        <a-menu-item key="plugins">{{ t('download.plugins') }}</a-menu-item>
-        <a-menu-item key="modpacks">{{ t('download.modpacks') }}</a-menu-item>
-      </a-menu>
+        </dsh-menu-item>
+        <dsh-menu-item key="plugins">{{ t('download.plugins') }}</dsh-menu-item>
+        <dsh-menu-item key="modpacks">{{ t('download.modpacks') }}</dsh-menu-item>
+      </dsh-menu>
     </aside>
     <section class="download-content">
-      <a-scrollbar
+      <dsh-scrollbar
         ref="scrollbar"
         type="track"
         outer-style="height: 100%"
@@ -125,7 +127,7 @@ onUnmounted(() => scroller()?.removeEventListener('scroll', onScroll))
             </keep-alive>
           </router-view>
         </div>
-      </a-scrollbar>
+      </dsh-scrollbar>
     </section>
   </div>
 </template>

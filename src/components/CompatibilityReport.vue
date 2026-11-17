@@ -22,7 +22,7 @@ const { t } = useI18n()
     <div v-if="report.findings.length">
       <strong>{{ t('compat.after') }}</strong>
       <p v-for="(f, i) in report.findings" :key="`${f.code}-${i}`">
-        <a-tag :color="f.severity === 'confirmed' ? 'red' : f.severity === 'unknown' ? 'orange' : 'blue'">{{ t(`compat.${f.severity}`) }}</a-tag>
+        <dsh-tag :color="f.severity === 'confirmed' ? 'red' : f.severity === 'unknown' ? 'orange' : 'blue'">{{ t(`compat.${f.severity}`) }}</dsh-tag>
         {{ f.code }}: {{ f.packages.join(', ') }} {{ f.entries.join(', ') }}. {{ f.evidence }}. {{ f.action }}
       </p>
     </div>

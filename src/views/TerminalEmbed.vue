@@ -13,8 +13,10 @@ import { Terminal } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import '@xterm/xterm/css/xterm.css'
 import { useI18n } from 'vue-i18n'
-import { Message } from '@arco-design/web-vue'
+import { useFeedback } from '@dsh-plugin/dsh-ui-components-vue'
 import { api } from '@/api'
+
+const { message: Message } = useFeedback()
 
 const props = defineProps<{
   instanceId: string
@@ -158,12 +160,12 @@ defineExpose({
 <template>
   <div class="terminal-embed">
     <div class="terminal-toolbar">
-      <a-tag :color="starting ? 'arcoblue' : 'green'" size="small">
+      <dsh-tag :color="starting ? 'arcoblue' : 'green'" size="small">
         {{ starting ? t('instanceEdit.terminalStarting') : t('instanceEdit.terminalRunning') }}
-      </a-tag>
-      <a-button size="mini" :loading="starting" @click="startSession">
+      </dsh-tag>
+      <dsh-button variant="secondary" size="sm" :loading="starting" @click="startSession">
         {{ t('instanceEdit.terminalRestart') }}
-      </a-button>
+      </dsh-button>
     </div>
     <div ref="containerRef" class="terminal-container"></div>
   </div>

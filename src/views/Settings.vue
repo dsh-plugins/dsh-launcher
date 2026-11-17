@@ -1,8 +1,8 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { Message } from '@arco-design/web-vue'
-import { IconArrowUp, IconArrowDown } from '@arco-design/web-vue/es/icon'
+import { useFeedback } from '@dsh-plugin/dsh-ui-components-vue'
+import { IconArrowUp, IconArrowDown } from '@dsh-plugin/dsh-ui-components-vue/icons'
 import { api } from '@/api'
 import type {
   Confidence,
@@ -16,6 +16,8 @@ import { SUPPORTED_LOCALES } from '@/i18n'
 import { useLauncherStore } from '@/stores/launcher'
 import ImportScanDialog from '@/components/ImportScanDialog.vue'
 import HintIcon from '@/components/HintIcon.vue'
+
+const { message: Message } = useFeedback()
 
 const { t } = useI18n()
 const store = useLauncherStore()
@@ -556,101 +558,99 @@ const pluginSourceColumns = computed(() => [
 <template>
   <div class="dl-page settings-page">
     <aside class="settings-sidebar">
-      <a-menu
+      <dsh-menu
         :selected-keys="[section]"
         @menu-item-click="(key: string) => (section = key as SettingsSection)"
       >
-        <a-menu-item key="launch">{{ t('settings.sections.launch') }}</a-menu-item>
-        <a-menu-item key="notifications">{{ t('settings.notifications.title') }}</a-menu-item>
-        <a-menu-item key="personal">{{ t('settings.sections.personal') }}</a-menu-item>
-        <a-menu-item key="network">{{ t('settings.sections.network') }}</a-menu-item>
-        <a-menu-item key="resources">{{ t('settings.sections.resources') }}</a-menu-item>
-        <a-menu-item key="about">{{ t('settings.sections.about') }}</a-menu-item>
-      </a-menu>
+        <dsh-menu-item key="launch">{{ t('settings.sections.launch') }}</dsh-menu-item>
+        <dsh-menu-item key="notifications">{{ t('settings.notifications.title') }}</dsh-menu-item>
+        <dsh-menu-item key="personal">{{ t('settings.sections.personal') }}</dsh-menu-item>
+        <dsh-menu-item key="network">{{ t('settings.sections.network') }}</dsh-menu-item>
+        <dsh-menu-item key="resources">{{ t('settings.sections.resources') }}</dsh-menu-item>
+        <dsh-menu-item key="about">{{ t('settings.sections.about') }}</dsh-menu-item>
+      </dsh-menu>
     </aside>
     <section class="settings-content">
-      <a-scrollbar type="track" outer-style="height: 100%" style="height: 100%; overflow-y: auto">
+      <dsh-scrollbar type="track" outer-style="height: 100%" style="height: 100%; overflow-y: auto">
         <div class="settings-inner">
     <template v-if="section === 'personal'">
     <div class="dl-card">
       <div class="dl-card-title">
         <h3>{{ t('settings.general') }}</h3>
       </div>
-      <a-form :model="store.settings" layout="vertical" class="settings-form">
-        <a-form-item :label="t('settings.language')">
-          <a-select
+      <dsh-form :model="store.settings" layout="vertical" class="settings-form">
+        <dsh-form-item :label="t('settings.language')">
+          <dsh-select
             :model-value="store.settings.locale"
             style="width: 220px"
             @change="onLocaleChange"
           >
-            <a-option v-for="l in SUPPORTED_LOCALES" :key="l.value" :value="l.value">
+            <dsh-option v-for="l in SUPPORTED_LOCALES" :key="l.value" :value="l.value">
               {{ l.label }}
-            </a-option>
-          </a-select>
-        </a-form-item>
-        <a-form-item :label="t('settings.theme.label')">
-          <a-select
+            </dsh-option>
+          </dsh-select>
+        </dsh-form-item>
+        <dsh-form-item :label="t('settings.theme.label')">
+          <dsh-select
             :model-value="store.settings.theme"
             style="width: 220px"
             @change="onThemeChange"
           >
-            <a-option v-for="o in THEME_OPTIONS" :key="o.value" :value="o.value">
+            <dsh-option v-for="o in THEME_OPTIONS" :key="o.value" :value="o.value">
               {{ o.label }}
-            </a-option>
-          </a-select>
-        </a-form-item>
-        <a-form-item><template #label>{{ t('settings.newsSource') }}<HintIcon :content="t('settings.newsSourceHint')" /></template>
-          <a-input
+            </dsh-option>
+          </dsh-select>
+        </dsh-form-item>
+        <dsh-form-item><template #label>{{ t('settings.newsSource') }}<HintIcon :content="t('settings.newsSourceHint')" /></template>
+          <dsh-input
             v-model="newsSource"
             :placeholder="t('settings.newsSourcePlaceholder')"
             allow-clear
             @blur="onNewsSourceSave"
             @press-enter="onNewsSourceSave"
           />
-          </a-form-item>
-        <a-form-item>
+          </dsh-form-item>
+        <dsh-form-item>
           <template #label>
             {{ t('settings.launcherIcon.window') }}
             <HintIcon :content="t('settings.launcherIcon.windowHint')" />
           </template>
-          <a-space>
+          <dsh-space>
             <img v-if="launcherIcons.window" :src="launcherIcons.window" class="launcher-icon-preview" alt="" />
-            <a-button size="small" :loading="launcherIconBusy === 'window'" @click="onPickLauncherIcon('window')">
+            <dsh-button variant="secondary" size="sm" :loading="launcherIconBusy === 'window'" @click="onPickLauncherIcon('window')">
               {{ t('settings.launcherIcon.pick') }}
-            </a-button>
-            <a-button
+            </dsh-button>
+            <dsh-button variant="danger"
               v-if="launcherIcons.window"
-              size="small"
-              status="danger"
+              size="sm"
               :loading="launcherIconBusy === 'window'"
               @click="onClearLauncherIcon('window')"
             >
               {{ t('settings.launcherIcon.clear') }}
-            </a-button>
-          </a-space>
-        </a-form-item>
-        <a-form-item>
+            </dsh-button>
+          </dsh-space>
+        </dsh-form-item>
+        <dsh-form-item>
           <template #label>
             {{ t('settings.launcherIcon.tray') }}
             <HintIcon :content="t('settings.launcherIcon.trayHint')" />
           </template>
-          <a-space>
+          <dsh-space>
             <img v-if="launcherIcons.tray" :src="launcherIcons.tray" class="launcher-icon-preview" alt="" />
-            <a-button size="small" :loading="launcherIconBusy === 'tray'" @click="onPickLauncherIcon('tray')">
+            <dsh-button variant="secondary" size="sm" :loading="launcherIconBusy === 'tray'" @click="onPickLauncherIcon('tray')">
               {{ t('settings.launcherIcon.pick') }}
-            </a-button>
-            <a-button
+            </dsh-button>
+            <dsh-button variant="danger"
               v-if="launcherIcons.tray"
-              size="small"
-              status="danger"
+              size="sm"
               :loading="launcherIconBusy === 'tray'"
               @click="onClearLauncherIcon('tray')"
             >
               {{ t('settings.launcherIcon.clear') }}
-            </a-button>
-          </a-space>
-        </a-form-item>
-      </a-form>
+            </dsh-button>
+          </dsh-space>
+        </dsh-form-item>
+      </dsh-form>
     </div>
     </template>
 
@@ -658,17 +658,17 @@ const pluginSourceColumns = computed(() => [
       <div class="dl-card">
         <div class="dl-card-title"><h3>{{ t('settings.notifications.title') }}</h3></div>
         <p>{{ t('settings.notifications.hint') }}</p>
-        <a-space direction="vertical" size="large">
-          <a-checkbox :model-value="store.settings.notification_system" @change="(value) => patchSettings({ notification_system: Boolean(value) })">
+        <dsh-space direction="vertical" size="large">
+          <dsh-checkbox :model-value="store.settings.notification_system" @change="(value) => patchSettings({ notification_system: Boolean(value) })">
             {{ t('settings.notifications.system') }}
-          </a-checkbox>
-          <a-checkbox :model-value="store.settings.notification_sound" @change="(value) => patchSettings({ notification_sound: Boolean(value) })">
+          </dsh-checkbox>
+          <dsh-checkbox :model-value="store.settings.notification_sound" @change="(value) => patchSettings({ notification_sound: Boolean(value) })">
             {{ t('settings.notifications.sound') }}
-          </a-checkbox>
-          <a-checkbox :model-value="store.settings.notification_tray" @change="(value) => patchSettings({ notification_tray: Boolean(value) })">
+          </dsh-checkbox>
+          <dsh-checkbox :model-value="store.settings.notification_tray" @change="(value) => patchSettings({ notification_tray: Boolean(value) })">
             {{ t('settings.notifications.tray') }}
-          </a-checkbox>
-        </a-space>
+          </dsh-checkbox>
+        </dsh-space>
       </div>
     </template>
     <template v-else-if="section === 'launch'">
@@ -676,27 +676,27 @@ const pluginSourceColumns = computed(() => [
       <div class="dl-card-title">
         <h3>{{ t('settings.launchBehavior.title') }}</h3>
       </div>
-      <a-form :model="store.settings" layout="vertical" class="settings-form">
-        <a-form-item>
-          <a-switch :model-value="store.settings.autostart" @change="onAutostartChange" />
+      <dsh-form :model="store.settings" layout="vertical" class="settings-form">
+        <dsh-form-item>
+          <dsh-switch :model-value="store.settings.autostart" @change="onAutostartChange" />
           <span class="switch-label">{{ t('settings.autostart') }}</span>
-        </a-form-item>
-        <a-form-item>
-          <a-switch :model-value="store.settings.minimize_to_tray" @change="onTrayChange" />
+        </dsh-form-item>
+        <dsh-form-item>
+          <dsh-switch :model-value="store.settings.minimize_to_tray" @change="onTrayChange" />
           <span class="switch-label">
             {{ t('settings.minimizeToTray') }}
             <HintIcon :content="t('settings.minimizeToTrayHint')" />
           </span>
-        </a-form-item>
-        <a-form-item>
-          <a-switch :model-value="store.settings.auto_open_on_launch" @change="onAutoOpenChange" />
+        </dsh-form-item>
+        <dsh-form-item>
+          <dsh-switch :model-value="store.settings.auto_open_on_launch" @change="onAutoOpenChange" />
           <span class="switch-label">
             {{ t('settings.launchBehavior.autoOpenOnLaunch') }}
             <HintIcon :content="t('settings.launchBehavior.autoOpenOnLaunchHint')" />
           </span>
-        </a-form-item>
-        <a-form-item>
-          <a-switch
+        </dsh-form-item>
+        <dsh-form-item>
+          <dsh-switch
             :model-value="store.settings.hide_launcher_on_window_open"
             @change="onHideLauncherChange"
           />
@@ -704,9 +704,9 @@ const pluginSourceColumns = computed(() => [
             {{ t('settings.launchBehavior.hideLauncherOnWindowOpen') }}
             <HintIcon :content="t('settings.launchBehavior.hideLauncherOnWindowOpenHint')" />
           </span>
-        </a-form-item>
-        <a-form-item>
-          <a-switch
+        </dsh-form-item>
+        <dsh-form-item>
+          <dsh-switch
             :model-value="store.settings.per_instance_tray"
             @change="onPerInstanceTrayChange"
           />
@@ -714,8 +714,8 @@ const pluginSourceColumns = computed(() => [
             {{ t('settings.perInstanceTray') }}
             <HintIcon :content="t('settings.perInstanceTrayHint')" />
           </span>
-        </a-form-item>
-      </a-form>
+        </dsh-form-item>
+      </dsh-form>
     </div>
 
     <!-- Silent autostart + instance auto-launch (issue #100). Only meaningful
@@ -728,12 +728,12 @@ const pluginSourceColumns = computed(() => [
           <HintIcon :content="t('settings.silentAutostart.hint')" />
         </h3>
       </div>
-      <a-alert v-if="!store.settings.autostart" type="info" class="autostart-note">
+      <dsh-alert v-if="!store.settings.autostart" type="info" class="autostart-note">
         {{ t('settings.silentAutostart.needsAutostart') }}
-      </a-alert>
-      <a-form :model="store.settings" layout="vertical" class="settings-form">
-        <a-form-item>
-          <a-switch
+      </dsh-alert>
+      <dsh-form :model="store.settings" layout="vertical" class="settings-form">
+        <dsh-form-item>
+          <dsh-switch
             :model-value="store.settings.silent_autostart"
             :disabled="!store.settings.autostart"
             @change="onSilentAutostartChange"
@@ -742,9 +742,9 @@ const pluginSourceColumns = computed(() => [
             {{ t('settings.silentAutostart.silent') }}
             <HintIcon :content="t('settings.silentAutostart.silentHint')" />
           </span>
-        </a-form-item>
-        <a-form-item>
-          <a-switch
+        </dsh-form-item>
+        <dsh-form-item>
+          <dsh-switch
             :model-value="store.settings.autostart_open_windows"
             :disabled="!store.settings.autostart"
             @change="onAutostartOpenWindowsChange"
@@ -753,8 +753,8 @@ const pluginSourceColumns = computed(() => [
             {{ t('settings.silentAutostart.openWindows') }}
             <HintIcon :content="t('settings.silentAutostart.openWindowsHint')" />
           </span>
-        </a-form-item>
-      </a-form>
+        </dsh-form-item>
+      </dsh-form>
 
       <div class="autostart-instances">
         <h4>{{ t('settings.silentAutostart.instances') }}</h4>
@@ -764,20 +764,18 @@ const pluginSourceColumns = computed(() => [
         </div>
         <div v-for="entry in autostartInstances" :key="entry.instance_id" class="autostart-row">
           <span class="autostart-name">{{ autostartInstanceName(entry.instance_id) }}</span>
-          <a-tag v-if="entry.profile" size="small">{{ entry.profile }}</a-tag>
-          <a-tag v-else size="small" color="gray">{{ t('settings.silentAutostart.defaultProfile') }}</a-tag>
-          <a-button
-            size="mini"
-            type="text"
-            status="danger"
+          <dsh-tag v-if="entry.profile" size="small">{{ entry.profile }}</dsh-tag>
+          <dsh-tag v-else size="small" color="gray">{{ t('settings.silentAutostart.defaultProfile') }}</dsh-tag>
+          <dsh-button variant="danger-soft"
+            size="sm"
             :disabled="!store.settings.autostart"
             @click="onRemoveAutostartInstance(entry.instance_id)"
           >
             {{ t('settings.silentAutostart.remove') }}
-          </a-button>
+          </dsh-button>
         </div>
         <div class="autostart-add">
-          <a-select
+          <dsh-select
             v-model="newAutostartInstance"
             :placeholder="t('settings.silentAutostart.pickInstance')"
             :options="autostartCandidates"
@@ -785,20 +783,19 @@ const pluginSourceColumns = computed(() => [
             :disabled="!store.settings.autostart"
             class="autostart-pick"
           />
-          <a-input
+          <dsh-input
             v-model="newAutostartProfile"
             :placeholder="t('settings.silentAutostart.profilePlaceholder')"
             allow-clear
             :disabled="!store.settings.autostart"
             class="autostart-profile"
           />
-          <a-button
-            type="primary"
+          <dsh-button variant="primary"
             :disabled="!store.settings.autostart || !newAutostartInstance"
             @click="onAddAutostartInstance"
           >
             {{ t('settings.silentAutostart.add') }}
-          </a-button>
+          </dsh-button>
         </div>
       </div>
     </div>
@@ -809,13 +806,13 @@ const pluginSourceColumns = computed(() => [
       </div>
       <div class="update-row">
         <span class="data-dir-path" :title="dataDir">{{ dataDir || t('settings.dataDir.unknown') }}</span>
-        <a-button size="small" @click="onOpenDataDir">{{ t('settings.dataDir.open') }}</a-button>
-        <a-button size="small" type="primary" @click="onMoveDataDir">{{ t('settings.dataDir.moveTo') }}</a-button>
+        <dsh-button variant="secondary" size="sm" @click="onOpenDataDir">{{ t('settings.dataDir.open') }}</dsh-button>
+        <dsh-button variant="primary" size="sm" @click="onMoveDataDir">{{ t('settings.dataDir.moveTo') }}</dsh-button>
       </div>
       <div class="data-dir-source" :class="`source-${dataDirSource}`">
         {{ dataDirSourceTip }}
       </div>
-      <a-modal
+      <dsh-modal
         v-model:visible="moveModalVisible"
         :title="t('settings.dataDir.moveTo')"
         :ok-text="t('common.confirm')"
@@ -825,7 +822,7 @@ const pluginSourceColumns = computed(() => [
       >
         <p class="move-target">{{ moveTarget }}</p>
         <p class="move-hint">{{ t('settings.dataDir.restartHint') }}</p>
-      </a-modal>
+      </dsh-modal>
     </div>
 
     <div class="dl-card">
@@ -834,24 +831,24 @@ const pluginSourceColumns = computed(() => [
       </div>
 
       <div class="home-add-row">
-        <a-input v-model="newHomeName" :placeholder="t('settings.homeNamePlaceholder')" style="width: 200px" />
-        <a-input v-model="newHomePath" :placeholder="t('settings.homePathPlaceholder')" class="home-path-input" />
-        <a-button @click="onPickDir">{{ t('settings.pickDir') }}</a-button>
-        <a-button type="primary" :disabled="!newHomeName.trim() || !newHomePath.trim()" @click="onAddHome">
+        <dsh-input v-model="newHomeName" :placeholder="t('settings.homeNamePlaceholder')" style="width: 200px" />
+        <dsh-input v-model="newHomePath" :placeholder="t('settings.homePathPlaceholder')" class="home-path-input" />
+        <dsh-button variant="secondary" @click="onPickDir">{{ t('settings.pickDir') }}</dsh-button>
+        <dsh-button variant="primary" :disabled="!newHomeName.trim() || !newHomePath.trim()" @click="onAddHome">
           {{ t('settings.addHome') }}
-        </a-button>
+        </dsh-button>
       </div>
 
-      <a-table :columns="homeColumns" :data="store.homes" :pagination="false" :scroll="{ x: 700 }" row-key="id">
+      <dsh-table :columns="homeColumns" :data="store.homes" :pagination="false" :scroll="{ x: 700 }" row-key="id">
         <template #actions="{ record }">
-          <a-popconfirm
+          <dsh-popconfirm
             :content="t('settings.confirmDeleteHome', { name: record.name })"
             @ok="onRemoveHome(record.id)"
           >
-            <a-button size="small" status="danger">{{ t('settings.deleteHome') }}</a-button>
-          </a-popconfirm>
+            <dsh-button variant="danger" size="sm">{{ t('settings.deleteHome') }}</dsh-button>
+          </dsh-popconfirm>
         </template>
-      </a-table>
+      </dsh-table>
     </div>
 
     <div class="dl-card">
@@ -859,31 +856,31 @@ const pluginSourceColumns = computed(() => [
         <h3>{{ t('settings.importScan.title') }}</h3>
       </div>
       <p class="news-source-hint">{{ t('settings.importScan.hint') }}</p>
-      <a-button type="primary" @click="importScanVisible = true">
+      <dsh-button variant="primary" @click="importScanVisible = true">
         {{ t('settings.importScan.open') }}
-      </a-button>
+      </dsh-button>
     </div>
 
     <div class="dl-card">
       <div class="dl-card-title">
         <h3>{{ t('settings.log.title') }}<HintIcon :content="t('settings.logLevel.hint')" /></h3>
       </div>
-      <a-form :model="store.settings" layout="vertical" class="settings-form">
-        <a-form-item :label="t('settings.logLevel.label')">
-          <a-select
+      <dsh-form :model="store.settings" layout="vertical" class="settings-form">
+        <dsh-form-item :label="t('settings.logLevel.label')">
+          <dsh-select
             :model-value="store.settings.log_level"
             style="width: 220px"
             @change="onLogLevelChange"
           >
-            <a-option v-for="o in LOG_LEVEL_OPTIONS" :key="o.value" :value="o.value">
+            <dsh-option v-for="o in LOG_LEVEL_OPTIONS" :key="o.value" :value="o.value">
               {{ o.label }}
-            </a-option>
-          </a-select>
-        </a-form-item>
-        <a-form-item>
-          <a-button size="small" @click="onOpenLauncherLog">{{ t('settings.dataDir.viewLog') }}</a-button>
-        </a-form-item>
-      </a-form>
+            </dsh-option>
+          </dsh-select>
+        </dsh-form-item>
+        <dsh-form-item>
+          <dsh-button variant="secondary" size="sm" @click="onOpenLauncherLog">{{ t('settings.dataDir.viewLog') }}</dsh-button>
+        </dsh-form-item>
+      </dsh-form>
     </div>
     </template>
 
@@ -892,22 +889,22 @@ const pluginSourceColumns = computed(() => [
       <div class="dl-card-title">
         <h3>{{ t('settings.proxy.title') }}</h3>
       </div>
-      <a-form :model="store.settings" layout="vertical" class="settings-form">
-        <a-form-item>
-          <a-switch :model-value="store.settings.proxy_enabled" @change="onProxyEnabledChange" />
+      <dsh-form :model="store.settings" layout="vertical" class="settings-form">
+        <dsh-form-item>
+          <dsh-switch :model-value="store.settings.proxy_enabled" @change="onProxyEnabledChange" />
           <span class="switch-label">{{ t('settings.proxy.enabled') }}<HintIcon :content="t('settings.proxy.enabledHint')" /></span>
-        </a-form-item>
-        <a-form-item :label="t('settings.proxy.url')">
-          <a-input
+        </dsh-form-item>
+        <dsh-form-item :label="t('settings.proxy.url')">
+          <dsh-input
             v-model="proxyUrl"
             :disabled="!store.settings.proxy_enabled"
             placeholder="http://127.0.0.1"
             @blur="onProxyFieldsSave"
             @press-enter="onProxyFieldsSave"
           />
-        </a-form-item>
-        <a-form-item :label="t('settings.proxy.port')">
-          <a-input-number
+        </dsh-form-item>
+        <dsh-form-item :label="t('settings.proxy.port')">
+          <dsh-input-number
             v-model="proxyPort"
             :disabled="!store.settings.proxy_enabled"
             :min="1"
@@ -915,25 +912,25 @@ const pluginSourceColumns = computed(() => [
             style="width: 220px"
             @blur="onProxyFieldsSave"
           />
-        </a-form-item>
-        <a-form-item><template #label>{{ t('settings.proxy.noProxy') }}<HintIcon :content="t('settings.proxy.noProxyHint')" /></template>
-          <a-input
+        </dsh-form-item>
+        <dsh-form-item><template #label>{{ t('settings.proxy.noProxy') }}<HintIcon :content="t('settings.proxy.noProxyHint')" /></template>
+          <dsh-input
             v-model="noProxy"
             :disabled="!store.settings.proxy_enabled"
             placeholder="127.0.0.1,localhost,::1"
             @blur="onProxyFieldsSave"
             @press-enter="onProxyFieldsSave"
           />
-          </a-form-item>
-        <a-form-item>
-          <a-switch
+          </dsh-form-item>
+        <dsh-form-item>
+          <dsh-switch
             :model-value="store.settings.proxy_apply_dsh"
             :disabled="!store.settings.proxy_enabled"
             @change="onProxyApplyDshChange"
           />
           <span class="switch-label">{{ t('settings.proxy.applyDsh') }}<HintIcon :content="t('settings.proxy.applyDshHint')" /></span>
-        </a-form-item>
-      </a-form>
+        </dsh-form-item>
+      </dsh-form>
     </div>
     </template>
 
@@ -943,31 +940,31 @@ const pluginSourceColumns = computed(() => [
         <h3>{{ t('settings.skillRepos.title') }}<HintIcon :content="t('settings.skillRepos.hint')" /></h3>
       </div>
       <div class="skill-repo-add">
-        <a-input
+        <dsh-input
           v-model="newSkillRepo"
           :placeholder="t('settings.skillRepos.placeholder')"
           allow-clear
           @press-enter="onAddSkillRepo"
         />
-        <a-button :loading="skillRepoBusy" :disabled="!newSkillRepo.trim()" @click="onAddSkillRepo">
+        <dsh-button variant="secondary" :loading="skillRepoBusy" :disabled="!newSkillRepo.trim()" @click="onAddSkillRepo">
           {{ t('settings.skillRepos.add') }}
-        </a-button>
+        </dsh-button>
       </div>
-      <a-list :data="store.settings.skill_repos" size="small">
+      <dsh-list :data="store.settings.skill_repos" size="small">
         <template #item="{ item }">
-          <a-list-item>
+          <dsh-list-item>
             <span class="skill-repo-url">{{ item }}</span>
             <template #actions>
-              <a-button size="mini" status="danger" type="text" @click="onRemoveSkillRepo(item)">
+              <dsh-button variant="danger-soft" size="sm" @click="onRemoveSkillRepo(item)">
                 {{ t('instances.table.delete') }}
-              </a-button>
+              </dsh-button>
             </template>
-          </a-list-item>
+          </dsh-list-item>
         </template>
         <template #empty>
-          <a-empty :description="t('settings.skillRepos.empty')" />
+          <dsh-empty :description="t('settings.skillRepos.empty')" />
         </template>
-      </a-list>
+      </dsh-list>
     </div>
 
     <div class="dl-card">
@@ -975,32 +972,32 @@ const pluginSourceColumns = computed(() => [
         <h3>{{ t('settings.pluginSources.title') }}<HintIcon :content="t('settings.pluginSources.hint')" /></h3>
       </div>
       <div class="plugin-source-add">
-        <a-input
+        <dsh-input
           v-model="newSourceId"
           :placeholder="t('settings.pluginSources.id')"
           allow-clear
           style="width: 170px"
         />
-        <a-select v-model="newSourceKind" style="width: 150px">
-          <a-option v-for="o in SOURCE_KIND_OPTIONS" :key="o.value" :value="o.value">
+        <dsh-select v-model="newSourceKind" style="width: 150px">
+          <dsh-option v-for="o in SOURCE_KIND_OPTIONS" :key="o.value" :value="o.value">
             {{ o.label }}
-          </a-option>
-        </a-select>
-        <a-input
+          </dsh-option>
+        </dsh-select>
+        <dsh-input
           v-model="newSourceUrl"
           :placeholder="t('settings.pluginSources.url')"
           allow-clear
           class="plugin-source-url-input"
         />
-        <a-button
+        <dsh-button variant="secondary"
           :loading="pluginSourceBusy"
           :disabled="!newSourceId.trim() || (newSourceKind !== 'github-topic' && !newSourceUrl.trim())"
           @click="onAddPluginSource"
         >
           {{ t('settings.pluginSources.add') }}
-        </a-button>
+        </dsh-button>
       </div>
-      <a-table
+      <dsh-table
         :columns="pluginSourceColumns"
         :data="store.settings.plugin_sources"
         :pagination="false"
@@ -1009,46 +1006,45 @@ const pluginSourceColumns = computed(() => [
         size="small"
       >
         <template #psEnable="{ record }">
-          <a-switch
+          <dsh-switch
             :model-value="record.enabled"
             :disabled="pluginSourceBusy"
             @change="(v) => onPluginSourceEnabledChange(record, v)"
           />
         </template>
         <template #psKind="{ record }">
-          <a-tag size="small">{{ t(`settings.pluginSources.sourceKinds.${
+          <dsh-tag size="small">{{ t(`settings.pluginSources.sourceKinds.${
             record.kind === 'dsh-get' ? 'dshGet' : record.kind === 'github-topic' ? 'githubTopic' : record.kind
-          }`) }}</a-tag>
+          }`) }}</dsh-tag>
         </template>
         <template #psConf="{ record }">
-          <a-tag size="small" :color="CONFIDENCE_TAG_COLORS[record.confidence as Confidence]">
+          <dsh-tag size="small" :color="CONFIDENCE_TAG_COLORS[record.confidence as Confidence]">
             {{ t(`plugins.confidence.${record.confidence}`) }}
-          </a-tag>
+          </dsh-tag>
         </template>
         <template #psActions="{ record, rowIndex }">
-          <a-space :size="4">
-            <a-button size="mini" type="text" :title="t('settings.pluginSources.moveUp')" :aria-label="t('settings.pluginSources.moveUp')" :disabled="pluginSourceBusy || rowIndex === 0" @click="onMovePluginSource(rowIndex, -1)">
+          <dsh-space :size="4">
+            <dsh-button variant="ghost" size="sm" :title="t('settings.pluginSources.moveUp')" :aria-label="t('settings.pluginSources.moveUp')" :disabled="pluginSourceBusy || rowIndex === 0" @click="onMovePluginSource(rowIndex, -1)">
               <IconArrowUp />
-            </a-button>
-            <a-button
-              size="mini"
-              type="text"
+            </dsh-button>
+            <dsh-button variant="ghost"
+              size="sm"
               :title="t('settings.pluginSources.moveDown')"
               :aria-label="t('settings.pluginSources.moveDown')"
               :disabled="pluginSourceBusy || rowIndex === store.settings.plugin_sources.length - 1"
               @click="onMovePluginSource(rowIndex, 1)"
             >
               <IconArrowDown />
-            </a-button>
-            <a-button size="mini" status="danger" type="text" :disabled="pluginSourceBusy" @click="onRemovePluginSource(record.id)">
+            </dsh-button>
+            <dsh-button variant="danger-soft" size="sm" :disabled="pluginSourceBusy" @click="onRemovePluginSource(record.id)">
               {{ t('settings.pluginSources.delete') }}
-            </a-button>
-          </a-space>
+            </dsh-button>
+          </dsh-space>
         </template>
         <template #empty>
-          <a-empty :description="t('settings.pluginSources.empty')" />
+          <dsh-empty :description="t('settings.pluginSources.empty')" />
         </template>
-      </a-table>
+      </dsh-table>
     </div>
 
     <div class="dl-card">
@@ -1056,15 +1052,15 @@ const pluginSourceColumns = computed(() => [
         <h3>{{ t('settings.pluginUpdates.title') }}<HintIcon :content="t('settings.pluginUpdates.hint')" /></h3>
       </div>
       <div class="update-row">
-        <a-select
+        <dsh-select
           :model-value="pluginUpdateChannel"
           style="width: 200px"
           @change="onPluginUpdateChannelChange"
         >
-          <a-option v-for="o in PLUGIN_UPDATE_CHANNEL_OPTIONS" :key="o.value" :value="o.value">
+          <dsh-option v-for="o in PLUGIN_UPDATE_CHANNEL_OPTIONS" :key="o.value" :value="o.value">
             {{ o.label }}
-          </a-option>
-        </a-select>
+          </dsh-option>
+        </dsh-select>
         <span class="update-hint">{{ t('settings.pluginUpdates.channelHint') }}</span>
       </div>
     </div>
@@ -1078,35 +1074,35 @@ const pluginSourceColumns = computed(() => [
       </div>
       <div class="update-row">
         <span class="update-current">v{{ launcherVersion }}</span>
-        <a-tag v-if="updateInfo?.channel === 'dev' || launcherVersion.includes('-dev.')" color="orange" size="small">
+        <dsh-tag v-if="updateInfo?.channel === 'dev' || launcherVersion.includes('-dev.')" color="orange" size="small">
           {{ t('settings.update.devChannel') }}
-        </a-tag>
-        <a-select
+        </dsh-tag>
+        <dsh-select
           :model-value="updateChannel"
           class="update-channel-select"
           size="small"
           @change="onUpdateChannelChange"
         >
-          <a-option v-for="o in UPDATE_CHANNEL_OPTIONS" :key="o.value" :value="o.value">
+          <dsh-option v-for="o in UPDATE_CHANNEL_OPTIONS" :key="o.value" :value="o.value">
             {{ o.label }}
-          </a-option>
-        </a-select>
-        <a-button size="small" :loading="checkingUpdate" @click="onCheckUpdate">
+          </dsh-option>
+        </dsh-select>
+        <dsh-button variant="secondary" size="sm" :loading="checkingUpdate" @click="onCheckUpdate">
           {{ t('settings.update.check') }}
-        </a-button>
+        </dsh-button>
       </div>
       <div class="update-result">
         <span class="about-channel-hint">{{ t('settings.update.channelHint') }}</span>
       </div>
       <div v-if="updateInfo && !updateInfo.up_to_date" class="update-result">
-        <a-alert type="info" :show-icon="true">
+        <dsh-alert type="info" :show-icon="true">
           {{ t('settings.update.available', { version: updateInfo.latest }) }}
           <template v-if="updateInfo.url">
-            <a-link class="update-link" @click="api.openExternal(updateInfo.url!)">
+            <dsh-link href="#" class="update-link" @click.prevent="api.openExternal(updateInfo.url!)">
               {{ t('settings.update.viewRelease') }}
-            </a-link>
+            </dsh-link>
           </template>
-        </a-alert>
+        </dsh-alert>
       </div>
       <div v-else-if="updateInfo?.up_to_date" class="update-result">
         <span class="update-up-to-date">{{ t('settings.update.upToDate') }}</span>
@@ -1118,21 +1114,21 @@ const pluginSourceColumns = computed(() => [
         <h3>{{ t('settings.about.project') }}</h3>
       </div>
       <div class="about-links">
-        <a-button size="small" @click="api.openExternal(REPO_URL)">
+        <dsh-button variant="secondary" size="sm" @click="api.openExternal(REPO_URL)">
           {{ t('settings.about.repository') }}
-        </a-button>
-        <a-button size="small" @click="api.openExternal(ISSUES_URL)">
+        </dsh-button>
+        <dsh-button variant="secondary" size="sm" @click="api.openExternal(ISSUES_URL)">
           {{ t('settings.about.issues') }}
-        </a-button>
-        <a-button size="small" @click="api.openExternal(RELEASES_URL)">
+        </dsh-button>
+        <dsh-button variant="secondary" size="sm" @click="api.openExternal(RELEASES_URL)">
           {{ t('settings.about.releases') }}
-        </a-button>
+        </dsh-button>
       </div>
       <p class="about-meta">{{ t('settings.about.license') }}</p>
     </div>
     </template>
         </div>
-      </a-scrollbar>
+      </dsh-scrollbar>
     </section>
 
     <ImportScanDialog v-model:visible="importScanVisible" />

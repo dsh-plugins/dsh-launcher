@@ -2,10 +2,12 @@
 import { computed, onMounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
-import { Message } from '@arco-design/web-vue'
+import { useFeedback } from '@dsh-plugin/dsh-ui-components-vue'
 import { api } from '@/api'
 import type { ModpackManifest } from '@/api/types'
 import { useLauncherStore } from '@/stores/launcher'
+
+const { message: Message } = useFeedback()
 
 const props = defineProps<{
   visible: boolean
@@ -152,7 +154,7 @@ function close() {
 </script>
 
 <template>
-  <a-modal
+  <dsh-modal
     :visible="visible"
     :title="t('modpack.importTitle')"
     :ok-loading="busy"
@@ -160,77 +162,77 @@ function close() {
     @ok="confirm"
     @cancel="close"
   >
-    <a-form :model="{ source, instanceName, profileName }" layout="vertical">
-      <a-form-item :label="t('modpack.source')" required>
-        <a-input
+    <dsh-form :model="{ source, instanceName, profileName }" layout="vertical">
+      <dsh-form-item :label="t('modpack.source')" required>
+        <dsh-input
           v-model="source"
           :placeholder="t('modpack.sourceHint')"
           allow-clear
           @press-enter="loadManifest"
         >
           <template #append>
-            <a-button @click="pickFile">{{ t('modpack.pickFile') }}</a-button>
+            <dsh-button variant="secondary" @click="pickFile">{{ t('modpack.pickFile') }}</dsh-button>
           </template>
-        </a-input>
-      </a-form-item>
-      <a-form-item>
-        <a-button size="small" :loading="loading" :disabled="!source.trim()" @click="loadManifest">
+        </dsh-input>
+      </dsh-form-item>
+      <dsh-form-item>
+        <dsh-button variant="secondary" size="sm" :loading="loading" :disabled="!source.trim()" @click="loadManifest">
           {{ t('modpack.load') }}
-        </a-button>
-      </a-form-item>
+        </dsh-button>
+      </dsh-form-item>
 
       <template v-if="manifest">
-        <a-alert type="info" class="modpack-summary">
+        <dsh-alert type="info" class="modpack-summary">
           {{ manifest.name }} v{{ manifest.version }}
           <template v-if="manifest.author"> · {{ manifest.author }}</template>
           <template v-if="manifest.dshVersion"> · DSH {{ manifest.dshVersion }}</template>
           <template v-if="manifest.files?.length">
             · {{ t('modpack.filesCount', { count: manifest.files.length }) }}
           </template>
-        </a-alert>
-        <a-alert v-if="isDshhome" type="warning" class="modpack-summary">
+        </dsh-alert>
+        <dsh-alert v-if="isDshhome" type="warning" class="modpack-summary">
           {{
             t('modpack.dshhomeHint', {
               count: Object.keys(manifest.profiles ?? {}).length,
               default: manifest.defaultProfile,
             })
           }}
-        </a-alert>
-        <a-form-item v-if="isDshhome && distros.length > 0" :label="t('modpack.wslTarget')">
-          <a-select v-model="wslDistro" allow-clear :placeholder="t('modpack.wslTargetHint')">
-            <a-option v-for="d in distros" :key="d" :value="d">{{ d }}</a-option>
-          </a-select>
-        </a-form-item>
-        <a-alert v-if="isDshhome && wslDistro" type="info" class="modpack-summary">
+        </dsh-alert>
+        <dsh-form-item v-if="isDshhome && distros.length > 0" :label="t('modpack.wslTarget')">
+          <dsh-select v-model="wslDistro" allow-clear :placeholder="t('modpack.wslTargetHint')">
+            <dsh-option v-for="d in distros" :key="d" :value="d">{{ d }}</dsh-option>
+          </dsh-select>
+        </dsh-form-item>
+        <dsh-alert v-if="isDshhome && wslDistro" type="info" class="modpack-summary">
           {{ t('modpack.wslInstallHint', { distro: wslDistro }) }}
-        </a-alert>
-        <a-form-item v-if="!isDshhome" :label="t('modpack.target')">
-          <a-radio-group v-model="importMode" type="button">
-            <a-radio value="new">{{ t('modpack.targetNew') }}</a-radio>
-            <a-radio value="existing" :disabled="eligibleInstances.length === 0">
+        </dsh-alert>
+        <dsh-form-item v-if="!isDshhome" :label="t('modpack.target')">
+          <dsh-radio-group v-model="importMode" type="button">
+            <dsh-radio value="new">{{ t('modpack.targetNew') }}</dsh-radio>
+            <dsh-radio value="existing" :disabled="eligibleInstances.length === 0">
               {{ t('modpack.targetExisting') }}
-            </a-radio>
-          </a-radio-group>
-        </a-form-item>
-        <a-form-item v-if="importMode === 'existing'" :label="t('modpack.existingInstance')" required>
-          <a-select v-model="existingInstanceId" :placeholder="t('modpack.existingInstanceHint')">
-            <a-option v-for="inst in eligibleInstances" :key="inst.id" :value="inst.id">
+            </dsh-radio>
+          </dsh-radio-group>
+        </dsh-form-item>
+        <dsh-form-item v-if="importMode === 'existing'" :label="t('modpack.existingInstance')" required>
+          <dsh-select v-model="existingInstanceId" :placeholder="t('modpack.existingInstanceHint')">
+            <dsh-option v-for="inst in eligibleInstances" :key="inst.id" :value="inst.id">
               {{ inst.name }}（{{ store.versionById(inst.version_id)?.version }}）
-            </a-option>
-          </a-select>
-        </a-form-item>
-        <a-form-item v-else :label="t('modpack.instanceName')" required>
-          <a-input v-model="instanceName" />
-        </a-form-item>
-        <a-form-item v-if="!isDshhome" :label="t('modpack.profileName')">
-          <a-input v-model="profileName" :placeholder="'pack'" />
-        </a-form-item>
-        <a-form-item v-if="!isDshhome">
-          <a-checkbox v-model="force">{{ t('modpack.force') }}</a-checkbox>
-        </a-form-item>
+            </dsh-option>
+          </dsh-select>
+        </dsh-form-item>
+        <dsh-form-item v-else :label="t('modpack.instanceName')" required>
+          <dsh-input v-model="instanceName" />
+        </dsh-form-item>
+        <dsh-form-item v-if="!isDshhome" :label="t('modpack.profileName')">
+          <dsh-input v-model="profileName" :placeholder="'pack'" />
+        </dsh-form-item>
+        <dsh-form-item v-if="!isDshhome">
+          <dsh-checkbox v-model="force">{{ t('modpack.force') }}</dsh-checkbox>
+        </dsh-form-item>
       </template>
-    </a-form>
-  </a-modal>
+    </dsh-form>
+  </dsh-modal>
 </template>
 
 <style scoped>

@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { useFeedback } from '@dsh-plugin/dsh-ui-components-vue'
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, toRef, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
@@ -11,6 +12,8 @@ import type { Confidence, MarketPlugin, PluginSource } from '@/api/types'
 
 // keep-alive name: the download page caches this view (search/scroll state).
 defineOptions({ name: 'MarketPage' })
+
+const { message: Message } = useFeedback()
 
 const router = useRouter()
 const { t, te, locale } = useI18n()
@@ -115,7 +118,7 @@ async function load() {
 }
 
 onMounted(() => {
-  store.refreshPluginSources().then(validateSourceFilter)
+  store.refreshPluginSources().then(validateSourceFilter).catch((error) => Message.error(String(error)))
   if (store.marketPlugins.length === 0) load()
   // Restore the saved scroll offset once the list has re-rendered.
   nextTick(() => {
@@ -137,36 +140,36 @@ onBeforeUnmount(() => {
     <div class="dl-card">
       <div class="dl-card-title">
         <h3>{{ t('plugins.title') }}</h3>
-        <a-space>
-          <a-select v-model="sourceFilter" class="source-select" size="small">
-            <a-option value="">{{ t('plugins.sourceAll') }}</a-option>
-            <a-option v-for="s in enabledSources" :key="s.id" :value="s.id">
+        <dsh-space>
+          <dsh-select v-model="sourceFilter" class="source-select" size="small">
+            <dsh-option value="">{{ t('plugins.sourceAll') }}</dsh-option>
+            <dsh-option v-for="s in enabledSources" :key="s.id" :value="s.id">
               {{ sourceLabel(s.id) }}
-            </a-option>
-          </a-select>
-          <a-input
+            </dsh-option>
+          </dsh-select>
+          <dsh-input
             v-model="search"
             :placeholder="t('plugins.searchPlaceholder')"
             allow-clear
             size="small"
             class="search-input"
           />
-          <a-button size="small" type="text" :loading="store.marketLoading" @click="load">
+          <dsh-button variant="ghost" size="sm" :loading="store.marketLoading" @click="load">
             {{ t('plugins.refresh') }}
-          </a-button>
-        </a-space>
+          </dsh-button>
+        </dsh-space>
       </div>
 
       <div v-if="error" class="market-error">
-        <a-alert :title="t('plugins.marketError')" type="error">
+        <dsh-alert :title="t('plugins.marketError')" type="error">
           {{ error }}
           <template #action>
-            <a-button size="mini" @click="load">{{ t('plugins.retry') }}</a-button>
+            <dsh-button variant="secondary" size="sm" @click="load">{{ t('plugins.retry') }}</dsh-button>
           </template>
-        </a-alert>
+        </dsh-alert>
       </div>
 
-      <a-alert
+      <dsh-alert
         v-for="warning in store.marketWarnings"
         :key="warning.source_id"
         class="market-warning"
@@ -175,15 +178,15 @@ onBeforeUnmount(() => {
       >
         <p>{{ warning.error }}</p>
         <p>{{ t(warning.cached ? 'plugins.sourceUsingCache' : 'plugins.sourceUnavailable') }}</p>
-      </a-alert>
+      </dsh-alert>
 
       <div v-if="store.marketLoading" class="market-loading">
-        <a-spin />
+        <dsh-spin />
       </div>
 
       <template v-else>
         <div v-if="filtered.length === 0 && !error" class="market-empty">
-          <a-empty :description="search ? t('plugins.noMatch') : t('plugins.empty')" />
+          <dsh-empty :description="search ? t('plugins.noMatch') : t('plugins.empty')" />
         </div>
         <div
           v-for="p in visiblePlugins"
@@ -197,34 +200,34 @@ onBeforeUnmount(() => {
             <div class="plugin-name">
               {{ localizedText(p.catalog?.title, locale) || pluginName(p.name, locale) }}
               <span class="plugin-id">{{ p.id }}</span>
-              <a-tag v-if="sourceOf(p) !== 'dsh-plugins'" size="small">
+              <dsh-tag v-if="sourceOf(p) !== 'dsh-plugins'" size="small">
                 {{ sourceLabel(sourceOf(p)) }}
-              </a-tag>
-              <a-tag
+              </dsh-tag>
+              <dsh-tag
                 size="small"
                 :color="CONFIDENCE_COLORS[confidenceOf(p)]"
               >
                 {{ t(`plugins.confidence.${confidenceOf(p)}`) }}
-              </a-tag>
+              </dsh-tag>
             </div>
             <div class="plugin-desc">{{ pickDescription(p) }}</div>
             <div v-if="relationships(p).length" class="plugin-rel">
-              <a-tag
+              <dsh-tag
                 v-for="r in relationships(p)"
                 :key="r.kind + r.id"
                 size="small"
                 :color="r.kind === 'dependency' ? 'blue' : 'red'"
               >
                 {{ r.kind === 'dependency' ? t('plugins.dependency') : t('plugins.incompatibility') }}: {{ r.id }} {{ rangeParts(r.versions).join('; ') }}
-              </a-tag>
+              </dsh-tag>
             </div>
           </div>
           <div class="plugin-side">
-            <a-tag v-for="part in rangeParts(p.support_versions)" :key="part" size="small">{{ part }}</a-tag>
+            <dsh-tag v-for="part in rangeParts(p.support_versions)" :key="part" size="small">{{ part }}</dsh-tag>
             <span class="version-arrow">›</span>
           </div>
         </div>
-        <a-pagination
+        <dsh-pagination
           v-model:current="page"
           class="market-pagination"
           :total="filtered.length"

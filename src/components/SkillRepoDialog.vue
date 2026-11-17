@@ -5,11 +5,13 @@
 // which skills to install instead of installing everything.
 import { computed, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { Message } from '@arco-design/web-vue'
+import { useFeedback } from '@dsh-plugin/dsh-ui-components-vue'
 import { api } from '@/api'
 import type { RepoSkillInfo } from '@/api/types'
 import { useLauncherStore } from '@/stores/launcher'
 import { shortRepoName } from '@/utils/repo'
+
+const { message: Message } = useFeedback()
 
 const props = defineProps<{
   visible: boolean
@@ -143,7 +145,7 @@ const columns = computed(() => [
 </script>
 
 <template>
-  <a-modal
+  <dsh-modal
     :visible="visible"
     :title="t('instanceEdit.skillRepoDialogTitle')"
     width="760px"
@@ -154,43 +156,43 @@ const columns = computed(() => [
     @cancel="emit('update:visible', false)"
   >
     <div class="skill-dialog-tools">
-      <a-select
+      <dsh-select
         v-model="sourceFilter"
         :placeholder="t('instanceEdit.skillSourceAll')"
         allow-clear
         class="skill-source-select"
       >
-        <a-option v-for="o in repoOptions" :key="o.value" :value="o.value" :label="o.label" />
-      </a-select>
-      <a-input
+        <dsh-option v-for="o in repoOptions" :key="o.value" :value="o.value" :label="o.label" />
+      </dsh-select>
+      <dsh-input
         v-model="filter"
         :placeholder="t('instanceEdit.skillFilterPlaceholder')"
         allow-clear
       />
-      <a-input
+      <dsh-input
         v-model="customUrl"
         :placeholder="t('instanceEdit.skillCustomRepoPlaceholder')"
         allow-clear
         @press-enter="loadCustom"
       >
         <template #append>
-          <a-button :loading="loading" :disabled="!customUrl.trim()" @click="loadCustom">
+          <dsh-button variant="secondary" :loading="loading" :disabled="!customUrl.trim()" @click="loadCustom">
             {{ t('instanceEdit.skillLoadRepo') }}
-          </a-button>
+          </dsh-button>
         </template>
-      </a-input>
+      </dsh-input>
     </div>
 
-    <a-alert
+    <dsh-alert
       v-for="(msg, repo) in errors"
       :key="repo"
       type="warning"
       class="skill-repo-error"
     >
       {{ shortRepoName(repo) }}: {{ msg }}
-    </a-alert>
+    </dsh-alert>
 
-    <a-table
+    <dsh-table
       v-model:selectedKeys="selectedKeys"
       :columns="columns"
       :data="filteredRows"
@@ -202,15 +204,15 @@ const columns = computed(() => [
       :scroll="{ y: 380 }"
     >
       <template #repo="{ record }">
-        <a-tooltip :content="record.repo">
+        <dsh-tooltip :content="record.repo">
           <span>{{ shortRepoName(record.repo) }}</span>
-        </a-tooltip>
+        </dsh-tooltip>
       </template>
       <template #empty>
-        <a-empty :description="t('instanceEdit.skillRepoEmpty')" />
+        <dsh-empty :description="t('instanceEdit.skillRepoEmpty')" />
       </template>
-    </a-table>
-  </a-modal>
+    </dsh-table>
+  </dsh-modal>
 </template>
 
 <style lang="scss" scoped>

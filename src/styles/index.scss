@@ -32,6 +32,13 @@ body {
   color: var(--color-text-1);
 }
 
+.launcher-ui {
+  height: 100%;
+  background: var(--color-bg-1);
+  font-family: inherit;
+  font-size: 14px;
+}
+
 .dl-page {
   max-width: var(--dl-content-max);
   margin: 0 auto;

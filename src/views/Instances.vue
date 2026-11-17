@@ -2,13 +2,15 @@
 import { computed, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
-import { Message } from '@arco-design/web-vue'
+import { useFeedback } from '@dsh-plugin/dsh-ui-components-vue'
 import { api } from '@/api'
 import InstanceAccessLinks from '@/components/InstanceAccessLinks.vue'
 import { useLauncherStore } from '@/stores/launcher'
 import type { DshInstance, InstanceState } from '@/api/types'
 import ModpackImportDialog from '@/components/ModpackImportDialog.vue'
 import HintIcon from '@/components/HintIcon.vue'
+
+const { message: Message } = useFeedback()
 
 const router = useRouter()
 const { t } = useI18n()
@@ -159,99 +161,99 @@ async function confirmCopy() {
       <div class="dl-card-title">
         <h3>{{ t('instances.title') }}</h3>
         <div class="dl-toolbar">
-          <a-button @click="modpackImportVisible = true">
+          <dsh-button variant="secondary" @click="modpackImportVisible = true">
             {{ t('modpack.importButton') }}
-          </a-button>
-          <a-button type="primary" @click="router.push({ name: 'download' })">
+          </dsh-button>
+          <dsh-button variant="primary" @click="router.push({ name: 'download' })">
             {{ t('instances.newInstance') }}
-          </a-button>
+          </dsh-button>
         </div>
       </div>
 
       <div class="table-scroll">
-        <a-table :columns="columns" :data="store.instances" :pagination="false" row-key="id">
+        <dsh-table :columns="columns" :data="store.instances" :pagination="false" row-key="id">
         <template #name="{ record }">
           <span class="inst-name">
             <img v-if="iconMap[record.id]" :src="iconMap[record.id]!" class="inst-icon" alt="" />
             <img v-else src="@/assets/launcher-icon.png" class="inst-icon" alt="" />
             {{ record.name }}
-            <a-tag v-if="store.homeById(record.home_id)?.wsl" size="small" color="arcoblue">
+            <dsh-tag v-if="store.homeById(record.home_id)?.wsl" size="small" color="arcoblue">
               WSL · {{ store.homeById(record.home_id)!.wsl }}
-            </a-tag>
+            </dsh-tag>
           </span>
         </template>
         <template #version="{ record }">
           {{ store.versionById(record.version_id)?.version ?? record.version_id }}
         </template>
         <template #home="{ record }">
-          <a-tooltip :content="store.homeById(record.home_id)?.path">
+          <dsh-tooltip :content="store.homeById(record.home_id)?.path">
             <span>{{ store.homeById(record.home_id)?.name ?? record.home_id }}</span>
-          </a-tooltip>
+          </dsh-tooltip>
         </template>
         <template #profile="{ record }">
           {{ record.last_profile ?? record.default_profile ?? '—' }}
         </template>
         <template #status="{ record }">
           <span class="cell-nowrap">
-          <a-tag :color="stateColor(store.statusOf(record.id).state)">
+          <dsh-tag :color="stateColor(store.statusOf(record.id).state)">
             {{ t(`home.status.${store.statusOf(record.id).state}`) }}
-          </a-tag>
-          <a-tooltip
+          </dsh-tag>
+          <dsh-tooltip
             v-if="store.externalOf(record.id)"
             :content="t('home.externalHint', { port: store.externalOf(record.id)!.port })"
           >
-            <a-tag size="small" color="arcoblue">
+            <dsh-tag size="small" color="arcoblue">
               {{ t('home.statusExternal') }} :{{ store.externalOf(record.id)!.port }}
-            </a-tag>
-          </a-tooltip>
+            </dsh-tag>
+          </dsh-tooltip>
           <InstanceAccessLinks :status="store.statusOf(record.id)" />
           </span>
         </template>
         <template #actions="{ record }">
-          <a-space>
-            <a-button
-              size="small"
+          <dsh-space>
+            <dsh-button variant="secondary"
+              size="sm"
               @click="router.push({ name: 'instance-edit', params: { id: record.id } })"
             >
               {{ t('instances.table.edit') }}
-            </a-button>
-            <a-button size="small" @click="openCopy(record)">
+            </dsh-button>
+            <dsh-button variant="secondary" size="sm" @click="openCopy(record)">
               {{ t('instances.table.copy') }}
-            </a-button>
-            <a-popconfirm
+            </dsh-button>
+            <dsh-popconfirm
               :content="t('instances.confirmDelete', { name: record.name })"
               @ok="onDelete(record.id, record.name)"
             >
-              <a-button size="small" status="danger">{{ t('instances.table.delete') }}</a-button>
-            </a-popconfirm>
-          </a-space>
+              <dsh-button variant="danger" size="sm">{{ t('instances.table.delete') }}</dsh-button>
+            </dsh-popconfirm>
+          </dsh-space>
         </template>
         <template #empty>
-          <a-empty :description="t('instances.emptyDesc')">
+          <dsh-empty :description="t('instances.emptyDesc')">
             <template #image>
               <div class="empty-title">{{ t('instances.emptyTitle') }}</div>
             </template>
-            <a-button type="primary" @click="router.push({ name: 'download' })">
+            <dsh-button variant="primary" @click="router.push({ name: 'download' })">
               {{ t('instances.newInstance') }}
-            </a-button>
-          </a-empty>
+            </dsh-button>
+          </dsh-empty>
         </template>
-        </a-table>
+        </dsh-table>
       </div>
 
       <div v-if="homesWithoutInstances.length > 0" class="homes-without-instances">
         <span class="homes-without-instances-title">{{ t('instances.homesWithoutInstancesTitle') }}</span>
         <span v-for="h in homesWithoutInstances" :key="h.id" class="homes-without-instances-item">
-          <a-tag size="small" color="arcoblue">{{ h.name }}</a-tag>
+          <dsh-tag size="small" color="arcoblue">{{ h.name }}</dsh-tag>
         </span>
-        <a-link @click="router.push({ name: 'settings' })">
+        <dsh-link href="#" @click.prevent="router.push({ name: 'settings' })">
           {{ t('instances.homesWithoutInstancesAction') }}
-        </a-link>
+        </dsh-link>
       </div>
     </div>
 
     <!-- Copy instance dialog: name it first, then duplicate on save -->
-    <a-modal
+    <dsh-modal
       :visible="!!copySource"
       :title="t('instances.copyTitle')"
       :ok-text="t('instanceEdit.save')"
@@ -260,25 +262,25 @@ async function confirmCopy() {
       @ok="confirmCopy"
       @cancel="closeCopy"
     >
-      <a-form layout="vertical" :model="{}">
-        <a-form-item :label="t('instances.copyNameLabel')" required>
-          <a-input v-model="copyName" :placeholder="t('instances.copyNamePlaceholder')" />
-        </a-form-item>
-        <a-form-item>
+      <dsh-form layout="vertical" :model="{}">
+        <dsh-form-item :label="t('instances.copyNameLabel')" required>
+          <dsh-input v-model="copyName" :placeholder="t('instances.copyNamePlaceholder')" />
+        </dsh-form-item>
+        <dsh-form-item>
           <template #label>
             {{ t('instances.copyHomeLabel') }}
             <HintIcon :content="t('instances.copyHint')" />
           </template>
-          <a-radio-group v-model="copyNewHome" type="button">
-            <a-radio :value="false">{{ t('instances.copyHomeReuse') }}</a-radio>
-            <a-radio :value="true">{{ t('instances.copyHomeNew') }}</a-radio>
-          </a-radio-group>
-        </a-form-item>
-        <a-form-item v-if="copyNewHome" :label="t('instances.copyHomeNameLabel')" required>
-          <a-input v-model="copyHomeName" :placeholder="t('instances.copyHomeNamePlaceholder')" />
-        </a-form-item>
-      </a-form>
-    </a-modal>
+          <dsh-radio-group v-model="copyNewHome" type="button">
+            <dsh-radio :value="false">{{ t('instances.copyHomeReuse') }}</dsh-radio>
+            <dsh-radio :value="true">{{ t('instances.copyHomeNew') }}</dsh-radio>
+          </dsh-radio-group>
+        </dsh-form-item>
+        <dsh-form-item v-if="copyNewHome" :label="t('instances.copyHomeNameLabel')" required>
+          <dsh-input v-model="copyHomeName" :placeholder="t('instances.copyHomeNamePlaceholder')" />
+        </dsh-form-item>
+      </dsh-form>
+    </dsh-modal>
 
     <ModpackImportDialog v-model:visible="modpackImportVisible" />
   </div>

@@ -2,11 +2,13 @@
 import { computed, onMounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
-import { Message } from '@arco-design/web-vue'
+import { useFeedback } from '@dsh-plugin/dsh-ui-components-vue'
 import { api } from '@/api'
 import { compatibility, pluginName, rangeParts, useCompatibilityAck } from '@/utils/market'
 import { useLauncherStore } from '@/stores/launcher'
 import HintIcon from '@/components/HintIcon.vue'
+
+const { message: Message } = useFeedback()
 
 const router = useRouter()
 const { t, locale } = useI18n()
@@ -149,7 +151,7 @@ async function startInstall() {
 
 <template>
   <div class="install-wizard">
-    <a-page-header
+    <dsh-page-header
       class="wizard-header"
       :title="t('plugins.installTitle')"
       :sub-title="state ? `${pluginTitle} ${displayVersion(state.version?.version ?? '')}` : ''"
@@ -157,7 +159,7 @@ async function startInstall() {
     />
 
     <div v-if="!state" class="wizard-empty">
-      <a-empty :description="t('plugins.noMatch')" />
+      <dsh-empty :description="t('plugins.noMatch')" />
     </div>
 
     <div v-else class="wizard-body">
@@ -177,64 +179,64 @@ async function startInstall() {
 
       <!-- Unverified source: explicit acknowledgement required -->
       <div v-if="needsUnverifiedAck" class="unverified-block">
-        <a-alert type="warning" :show-icon="true">{{ t('plugins.unverifiedConfirm') }}</a-alert>
-        <a-checkbox v-model="unverifiedAck" class="unverified-ack">
+        <dsh-alert type="warning" :show-icon="true">{{ t('plugins.unverifiedConfirm') }}</dsh-alert>
+        <dsh-checkbox v-model="unverifiedAck" class="unverified-ack">
           {{ t('plugins.unverifiedAck') }}
-        </a-checkbox>
+        </dsh-checkbox>
       </div>
 
       <!-- Instance + profile -->
       <div class="dl-card">
         <div class="dl-card-title"><h3>{{ t('plugins.chooseInstance') }}</h3></div>
         <div v-if="instances.length === 0" class="no-instance">
-          <a-empty :description="t('plugins.noInstance')">
+          <dsh-empty :description="t('plugins.noInstance')">
             <template #actions>
-              <a-button type="primary" size="small" @click="router.push({ name: 'download-create' })">
+              <dsh-button variant="primary" size="sm" @click="router.push({ name: 'download-create' })">
                 {{ t('plugins.goDownload') }}
-              </a-button>
+              </dsh-button>
             </template>
-          </a-empty>
+          </dsh-empty>
         </div>
         <template v-else>
-          <a-select
+          <dsh-select
             v-model="instanceId"
             :placeholder="t('plugins.chooseInstance')"
             style="max-width: 320px"
             allow-clear
           >
-            <a-option v-for="inst in instances" :key="inst.id" :value="inst.id">
+            <dsh-option v-for="inst in instances" :key="inst.id" :value="inst.id">
               <span class="option-line">
                 {{ inst.name }}
-                <a-tag
+                <dsh-tag
                   v-if="store.statusOf(inst.id).state === 'running'"
                   size="small"
                   color="green"
                 >
                   {{ t('home.status.running') }}
-                </a-tag>
+                </dsh-tag>
               </span>
-            </a-option>
-          </a-select>
+            </dsh-option>
+          </dsh-select>
 
           <!-- WSL (issue #49): dependencies are installed inside the distro,
                so native modules resolve to Linux binaries. Say so up front —
                the resulting node_modules is not interchangeable with a
                Windows instance's. -->
-          <a-alert v-if="selectedDistro" type="info" class="wsl-install-hint">
+          <dsh-alert v-if="selectedDistro" type="info" class="wsl-install-hint">
             {{ t('plugins.wslInstallHint', { distro: selectedDistro }) }}
-          </a-alert>
+          </dsh-alert>
 
           <div v-if="selectedInstance" class="compatibility-block">
-            <a-tag v-for="part in rangeParts(supportedVersions)" :key="part" size="small">{{ part }}</a-tag>
-            <a-alert v-if="compatibilityResult.status === 'incompatible'" type="warning">
+            <dsh-tag v-for="part in rangeParts(supportedVersions)" :key="part" size="small">{{ part }}</dsh-tag>
+            <dsh-alert v-if="compatibilityResult.status === 'incompatible'" type="warning">
               {{ t('plugins.marketIncompatible', { version: runtimeVersion, range: compatibilityResult.reason }) }}
-            </a-alert>
-            <a-checkbox v-if="compatibilityResult.status === 'incompatible'" v-model="compatibilityAck">
+            </dsh-alert>
+            <dsh-checkbox v-if="compatibilityResult.status === 'incompatible'" v-model="compatibilityAck">
               {{ t('plugins.marketCompatibilityAck') }}
-            </a-checkbox>
-            <a-alert v-if="compatibilityResult.status === 'unknown'" type="warning">
+            </dsh-checkbox>
+            <dsh-alert v-if="compatibilityResult.status === 'unknown'" type="warning">
               {{ t('plugins.marketCompatibilityUnknown', { reason: compatibilityResult.reason }) }}
-            </a-alert>
+            </dsh-alert>
             <div v-if="state.plugin.catalog" class="profile-hint">
               {{ state.plugin.catalog.index_url }}
               {{ state.version?.label }}
@@ -242,14 +244,14 @@ async function startInstall() {
           </div>
           <div class="profile-section">
             <div class="profile-label">{{ t('plugins.chooseProfile') }}</div>
-            <a-select
+            <dsh-select
               v-model="profile"
               :loading="profilesLoading"
               :placeholder="t('plugins.chooseProfile')"
               style="max-width: 320px"
             >
-              <a-option v-for="p in profiles" :key="p" :value="p">{{ p }}</a-option>
-            </a-select>
+              <dsh-option v-for="p in profiles" :key="p" :value="p">{{ p }}</dsh-option>
+            </dsh-select>
             <div v-if="profiles.length === 0 && instanceId" class="profile-hint">
               {{ t('plugins.noProfile') }}
             </div>
@@ -266,20 +268,19 @@ async function startInstall() {
           </h3>
         </div>
         <div class="build-row">
-          <a-switch v-model="allowBuildScripts" :disabled="true" :checked="true" />
+          <dsh-switch v-model="allowBuildScripts" :disabled="true" :checked="true" />
         </div>
       </div>
 
       <div class="wizard-actions">
-        <a-button @click="router.back()">{{ t('download.back') }}</a-button>
-        <a-button
-          type="primary"
+        <dsh-button variant="secondary" @click="router.back()">{{ t('download.back') }}</dsh-button>
+        <dsh-button variant="primary"
           :disabled="!canSubmit"
           :loading="submitting"
           @click="startInstall"
         >
           {{ t('plugins.startInstall') }}
-        </a-button>
+        </dsh-button>
       </div>
     </div>
   </div>
