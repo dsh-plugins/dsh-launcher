@@ -1,11 +1,12 @@
 <script setup lang="ts">
 import { useFeedback } from '@dsh-plugin/dsh-ui-components-vue'
+import { IconRefresh } from '@dsh-plugin/dsh-ui-components-vue/icons'
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { useLauncherStore } from '@/stores/launcher'
 import { provideDownloadScroll } from '@/composables/download-scroll'
-import type { ScrollbarInstance } from '@dsh-plugin/dsh-ui-components-vue'
+import PageScrollbar from '@/components/PageScrollbar.vue'
 
 const { message: Message } = useFeedback()
 
@@ -14,7 +15,7 @@ const router = useRouter()
 const { t } = useI18n()
 const store = useLauncherStore()
 
-const scrollbar = ref<ScrollbarInstance | null>(null)
+const scrollbar = ref<InstanceType<typeof PageScrollbar> | null>(null)
 
 /**
  * Read (top === null) or write the shared scrollbar's scrollTop. The scrollable
@@ -92,8 +93,8 @@ onUnmounted(() => scroller()?.removeEventListener('scroll', onScroll))
 </script>
 
 <template>
-  <div class="download-page">
-    <aside class="download-sidebar">
+  <div class="download-page dl-split-page">
+    <aside class="download-sidebar dl-sidebar">
       <dsh-menu :selected-keys="selectedKeys" @menu-item-click="onMenuSelect">
         <dsh-menu-item key="create">
           <span class="menu-line">
@@ -101,11 +102,13 @@ onUnmounted(() => scroller()?.removeEventListener('scroll', onScroll))
             <dsh-button variant="ghost"
               v-if="onCreatePage"
               size="sm"
+              icon-only
               class="refresh-btn"
+              :aria-label="t('common.refresh')"
               :loading="store.remoteLoading"
               @click.stop="onRefreshVersions"
             >
-              ⟳
+              <template #icon><IconRefresh aria-hidden="true" /></template>
             </dsh-button>
           </span>
         </dsh-menu-item>
@@ -113,13 +116,8 @@ onUnmounted(() => scroller()?.removeEventListener('scroll', onScroll))
         <dsh-menu-item key="modpacks">{{ t('download.modpacks') }}</dsh-menu-item>
       </dsh-menu>
     </aside>
-    <section class="download-content">
-      <dsh-scrollbar
-        ref="scrollbar"
-        type="track"
-        outer-style="height: 100%"
-        style="height: 100%; overflow-y: auto"
-      >
+    <section class="download-content dl-page-content">
+      <PageScrollbar ref="scrollbar">
         <div class="download-inner">
           <router-view v-slot="{ Component }">
             <keep-alive :include="['MarketPage', 'CreatePickPage', 'ModpackMarketPage']">
@@ -127,7 +125,7 @@ onUnmounted(() => scroller()?.removeEventListener('scroll', onScroll))
             </keep-alive>
           </router-view>
         </div>
-      </dsh-scrollbar>
+      </PageScrollbar>
     </section>
   </div>
 </template>
@@ -135,18 +133,12 @@ onUnmounted(() => scroller()?.removeEventListener('scroll', onScroll))
 <style lang="scss" scoped>
 .download-page {
   display: flex;
-  height: calc(100vh - var(--dl-header-height));
+  height: var(--dl-content-height);
 }
 
 .download-sidebar {
   width: 200px;
   flex-shrink: 0;
-  background: var(--color-bg-2);
-  border-right: 1px solid var(--color-border-2);
-
-  :deep(.arco-menu) {
-    height: 100%;
-  }
 }
 
 .menu-line {
@@ -156,14 +148,22 @@ onUnmounted(() => scroller()?.removeEventListener('scroll', onScroll))
   width: 100%;
 }
 
-.refresh-btn {
+.menu-line .refresh-btn.dsh-button {
+  --button-fg: var(--accent-foreground);
+  width: 24px;
+  height: 24px;
+  flex-shrink: 0;
   margin-left: auto;
-  padding: 0 4px;
+  // 16px item padding minus the 6px gap between the concentric circles.
+  margin-right: -10px;
+  padding: 0;
+  gap: 0;
   font-size: 14px;
-  color: var(--color-text-3);
+  color: var(--accent-foreground);
 
-  &:hover {
-    color: rgb(var(--primary-6));
+  :deep(.arco-btn-icon) {
+    display: flex;
+    margin: 0;
   }
 }
 
@@ -174,6 +174,6 @@ onUnmounted(() => scroller()?.removeEventListener('scroll', onScroll))
 }
 
 .download-inner {
-  padding: 20px 24px 80px;
+  padding: 20px 20px 60px 0;
 }
 </style>

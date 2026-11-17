@@ -34,6 +34,7 @@ import SkillRepoDialog from '@/components/SkillRepoDialog.vue'
 import MigratePluginsDialog from '@/components/MigratePluginsDialog.vue'
 import ModelPickerDialog from '@/components/ModelPickerDialog.vue'
 import HintIcon from '@/components/HintIcon.vue'
+import PageScrollbar from '@/components/PageScrollbar.vue'
 import { shortRepoName } from '@/utils/repo'
 
 const { message: Message } = useFeedback()
@@ -2332,8 +2333,8 @@ const terminalRunning = ref(false)
 </script>
 
 <template>
-  <div class="edit-page">
-    <aside class="edit-sidebar">
+  <div class="edit-page dl-split-page">
+    <aside class="edit-sidebar dl-sidebar">
       <dsh-menu :selected-keys="[activeTab]" @menu-item-click="(key: string) => (activeTab = key as TabKey)">
         <dsh-menu-item key="basic">{{ t('instanceEdit.tabs.basic') }}</dsh-menu-item>
         <dsh-menu-item v-if="networkInstance" key="network">{{ t('network.title') }}</dsh-menu-item>
@@ -2348,8 +2349,8 @@ const terminalRunning = ref(false)
         <dsh-menu-item key="terminal">{{ t('instanceEdit.tabs.terminal') }}</dsh-menu-item>
       </dsh-menu>
     </aside>
-    <section class="edit-content">
-      <dsh-scrollbar type="track" outer-style="height: 100%" style="height: 100%; overflow-y: auto">
+    <section class="edit-content dl-page-content">
+      <PageScrollbar>
         <div class="edit-inner">
           <!-- Basic settings -->
           <div v-if="activeTab === 'basic'" class="dl-card edit-card">
@@ -2368,7 +2369,7 @@ const terminalRunning = ref(false)
                 </template>
                 <div class="icon-editor">
                   <img v-if="iconUrl" :src="iconUrl" class="icon-preview" alt="" />
-                  <img v-else src="@/assets/launcher-icon.png" class="icon-preview" alt="" />
+                  <img v-else src="@/assets/launcher-icon-v3.png" class="icon-preview" alt="" />
                   <div class="icon-actions">
                     <dsh-input
                       v-model="iconInput"
@@ -2689,8 +2690,7 @@ const terminalRunning = ref(false)
                         <dsh-switch
                           :model-value="record.enabled"
                           :disabled="pluginsBusy"
-                          :checked-text="t('instanceEdit.pluginOn')"
-                          :unchecked-text="t('instanceEdit.pluginOff')"
+                          :aria-label="t('instanceEdit.pluginStatus') + ': ' + record.id"
                           @change="onSwitchChange(record, $event)"
                         />
                       </template>
@@ -2984,8 +2984,7 @@ const terminalRunning = ref(false)
                   <dsh-switch
                     :model-value="record.enabled"
                     :disabled="mcpBusy === record.id"
-                    :checked-text="t('instanceEdit.mcpEnabledTag')"
-                    :unchecked-text="t('instanceEdit.mcpDisabledTag')"
+                    :aria-label="t('instanceEdit.mcpColStatus') + ': ' + record.serverName"
                     @change="onToggleMcpServer(record, $event === true)"
                   />
                 </template>
@@ -3206,7 +3205,7 @@ const terminalRunning = ref(false)
             </dsh-alert>
           </div>
         </div>
-      </dsh-scrollbar>
+      </PageScrollbar>
     </section>
 
     <!-- SKILL repo install picker -->
@@ -3759,18 +3758,12 @@ const terminalRunning = ref(false)
 
 .edit-page {
   display: flex;
-  height: calc(100vh - var(--dl-header-height));
+  height: var(--dl-content-height);
 }
 
 .edit-sidebar {
   width: 200px;
   flex-shrink: 0;
-  background: var(--color-bg-2);
-  border-right: 1px solid var(--color-border-2);
-
-  :deep(.arco-menu) {
-    height: 100%;
-  }
 }
 
 .edit-content {
@@ -3780,7 +3773,7 @@ const terminalRunning = ref(false)
 }
 
 .edit-inner {
-  padding: 20px 24px 80px;
+  padding: 20px 20px 60px 0;
 }
 
 .edit-card {
@@ -3799,7 +3792,7 @@ const terminalRunning = ref(false)
   align-items: center;
   padding: 10px 12px;
   border: 1px solid var(--color-border-2);
-  border-radius: 6px;
+  border-radius: 20px;
   margin-bottom: 8px;
   background: var(--color-fill-1);
 }
@@ -4029,8 +4022,6 @@ const terminalRunning = ref(false)
   .edit-sidebar {
     width: 100%;
     height: auto;
-    border-right: none;
-    border-bottom: 1px solid var(--color-border-2);
 
     :deep(.arco-menu) {
       height: auto;
@@ -4064,7 +4055,7 @@ const terminalRunning = ref(false)
 .agents-preview {
   padding: 12px 16px;
   border: 1px solid var(--color-border-2);
-  border-radius: 4px;
+  border-radius: 20px;
   font-size: 14px;
   line-height: 1.7;
   color: var(--color-text-1);
@@ -4150,7 +4141,7 @@ const terminalRunning = ref(false)
 .model-card {
   width: 280px;
   border: 1px solid var(--color-border-2);
-  border-radius: 8px;
+  border-radius: 20px;
   padding: 14px;
   background: var(--color-bg-2);
 }

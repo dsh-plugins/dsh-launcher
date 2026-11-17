@@ -2,7 +2,7 @@
 import { computed, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
-import { useFeedback } from '@dsh-plugin/dsh-ui-components-vue'
+import { useFeedback, useDialog } from '@dsh-plugin/dsh-ui-components-vue'
 import { api } from '@/api'
 import { useLauncherStore } from '@/stores/launcher'
 import type { RemoteVersion } from '@/api/types'
@@ -11,6 +11,7 @@ import type { RemoteVersion } from '@/api/types'
 defineOptions({ name: 'CreatePickPage' })
 
 const { message: Message } = useFeedback()
+const { modal: Modal } = useDialog()
 
 const router = useRouter()
 const { t } = useI18n()
@@ -65,61 +66,74 @@ function usedByCount(versionId: string) {
 
 async function onRemove(id: string, version: string) {
   // 目录删除在后台线程执行，期间禁用其余删除按钮，避免重复提交。
-  if (removingId.value) return
+  if (removingId.value) return false
   removingId.value = id
   try {
     await api.removeVersion(id)
     await store.refreshVersions()
     Message.success(t('download.versionDeleted', { version }))
+    return true
   } catch (e) {
     Message.error(String(e))
+    return false
   } finally {
     removingId.value = null
   }
 }
+
+function confirmRemove(id: string, version: string) {
+  Modal.confirm({
+    title: t('download.deleteVersion'),
+    content: t('download.confirmDeleteVersion', { version }),
+    okText: t('download.deleteVersion'),
+    cancelText: t('common.cancel'),
+    okButtonProps: { status: 'danger' },
+    onBeforeOk: () => onRemove(id, version),
+  })
+}
 </script>
 
 <template>
-  <dsh-spin :loading="loading" style="display: block">
-    <div class="create-pick">
-      <!-- Latest versions (always rendered; empty state when no data) -->
-      <div class="dl-card">
-        <div class="dl-card-title">
-          <h3>{{ t('download.latest') }}</h3>
-          <dsh-button variant="ghost" size="sm" :loading="loading" @click="store.refreshRemoteVersions().catch((error) => Message.error(String(error)))">
-            {{ t('common.refresh') }}
-          </dsh-button>
-        </div>
-        <template v-if="latest.length">
-          <div
-            v-for="row in latest"
-            :key="row.v.version"
-            class="version-row"
-            @click="pick(row.v.version)"
-          >
-            <span class="version-icon" :class="{ pre: isPrerelease(row.v.version) }">◆</span>
-            <div class="version-meta">
-              <div class="version-name">
-                {{ row.v.version }}
-                <dsh-tag v-if="row.v.source === 'github'" size="small" color="orange">
-                  {{ t('download.sourceBuildTag') }}
-                </dsh-tag>
-                <dsh-tag v-if="installedSet.has(row.v.version)" size="small" color="green">
-                  {{ t('download.installedTag') }}
-                </dsh-tag>
-              </div>
-              <div class="version-sub">
-                {{ row.label }}<template v-if="row.v.released_at">，{{ t('download.releasedAt', { date: formatDate(row.v.released_at) }) }}</template>
-              </div>
-            </div>
-            <span class="version-arrow">›</span>
-          </div>
-        </template>
-        <div v-else class="card-empty">{{ loading ? t('common.loading') : t('download.noData') }}</div>
+  <div class="create-pick">
+    <!-- Latest versions (always rendered; empty state when no data) -->
+    <dsh-spin :loading="loading" class="dl-card card-loading">
+      <div class="dl-card-title">
+        <h3>{{ t('download.latest') }}</h3>
+        <dsh-button variant="ghost" size="sm" :loading="loading" @click="store.refreshRemoteVersions().catch((error) => Message.error(String(error)))">
+          {{ t('common.refresh') }}
+        </dsh-button>
       </div>
+      <template v-if="latest.length">
+        <div
+          v-for="row in latest"
+          :key="row.v.version"
+          class="version-row"
+          @click="pick(row.v.version)"
+        >
+          <span class="version-icon" :class="{ pre: isPrerelease(row.v.version) }">◆</span>
+          <div class="version-meta">
+            <div class="version-name">
+              {{ row.v.version }}
+              <dsh-tag v-if="row.v.source === 'github'" size="small" color="orange">
+                {{ t('download.sourceBuildTag') }}
+              </dsh-tag>
+              <dsh-tag v-if="installedSet.has(row.v.version)" size="small" color="green">
+                {{ t('download.installedTag') }}
+              </dsh-tag>
+            </div>
+            <div class="version-sub">
+              {{ row.label }}<template v-if="row.v.released_at">，{{ t('download.releasedAt', { date: formatDate(row.v.released_at) }) }}</template>
+            </div>
+          </div>
+          <span class="version-arrow">›</span>
+        </div>
+      </template>
+      <div v-else class="card-empty">{{ loading ? t('common.loading') : t('download.noData') }}</div>
+    </dsh-spin>
 
-      <!-- Grouped version lists -->
-      <dsh-collapse :default-active-key="['stable', 'prerelease']" class="version-groups">
+    <!-- Grouped version lists -->
+    <dsh-spin :loading="loading" class="card-loading">
+      <dsh-collapse :default-active-key="['stable', 'prerelease']" class="version-groups dl-glass">
         <dsh-collapse-item key="stable" :header="t('download.stable')">
           <template v-if="stable.length">
             <div v-for="v in stable" :key="v.version" class="version-row" @click="pick(v.version)">
@@ -163,37 +177,32 @@ async function onRemove(id: string, version: string) {
           <div v-else class="card-empty">{{ t('download.noData') }}</div>
         </dsh-collapse-item>
       </dsh-collapse>
+    </dsh-spin>
 
-      <!-- Installed versions -->
-      <div class="dl-card installed-card">
-        <div class="dl-card-title">
-          <h3>{{ t('download.installedTitle') }}</h3>
-        </div>
-        <div v-for="v in store.versions" :key="v.id" class="installed-row">
-          <span class="version-icon">◆</span>
-          <div class="version-meta">
-            <div class="version-name">{{ v.version }}</div>
-            <div class="version-sub">{{ v.dir }}</div>
-          </div>
-          <span class="used-by">{{ t('download.usedBy', { count: usedByCount(v.id) }) }}</span>
-          <dsh-popconfirm
-            :content="t('download.confirmDeleteVersion', { version: v.version })"
-            :disabled="removingId !== null"
-            @ok="onRemove(v.id, v.version)"
-          >
-            <dsh-button variant="danger"
-              size="sm"
-              :loading="removingId === v.id"
-              :disabled="removingId !== null && removingId !== v.id"
-            >
-              {{ t('download.deleteVersion') }}
-            </dsh-button>
-          </dsh-popconfirm>
-        </div>
-        <dsh-empty v-if="store.versions.length === 0" :description="t('download.emptyInstalled')" />
+    <!-- Installed versions -->
+    <dsh-spin :loading="loading" class="dl-card installed-card card-loading">
+      <div class="dl-card-title">
+        <h3>{{ t('download.installedTitle') }}</h3>
       </div>
-    </div>
-  </dsh-spin>
+      <div v-for="v in store.versions" :key="v.id" class="installed-row">
+        <span class="version-icon">◆</span>
+        <div class="version-meta">
+          <div class="version-name">{{ v.version }}</div>
+          <div class="version-sub">{{ v.dir }}</div>
+        </div>
+        <span class="used-by">{{ t('download.usedBy', { count: usedByCount(v.id) }) }}</span>
+        <dsh-button variant="danger"
+          size="sm"
+          :loading="removingId === v.id"
+          :disabled="removingId !== null"
+          @click="confirmRemove(v.id, v.version)"
+        >
+          {{ t('download.deleteVersion') }}
+        </dsh-button>
+      </div>
+      <dsh-empty v-if="store.versions.length === 0" :description="t('download.emptyInstalled')" />
+    </dsh-spin>
+  </div>
 </template>
 
 <style lang="scss" scoped>
@@ -203,6 +212,19 @@ async function onRemove(id: string, version: string) {
   display: flex;
   flex-direction: column;
   gap: 16px;
+}
+
+.card-loading {
+  display: block;
+  border-radius: 20px;
+
+  :deep(.arco-spin-mask) {
+    border-radius: inherit;
+  }
+
+  &.dl-card :deep(.arco-spin-mask) {
+    inset: -1px;
+  }
 }
 
 .version-row {
@@ -259,13 +281,6 @@ async function onRemove(id: string, version: string) {
 .version-arrow {
   color: var(--color-text-3);
   font-size: 20px;
-}
-
-.version-groups {
-  background: var(--color-bg-2);
-  border-radius: 8px;
-  border: none;
-  box-shadow: 0 1px 3px rgb(0 0 0 / 6%);
 }
 
 .installed-card {

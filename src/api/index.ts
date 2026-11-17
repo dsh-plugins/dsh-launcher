@@ -3,6 +3,8 @@
 // browser so the UI can be previewed without the Rust side.
 
 import { validNetworkRanges } from '@/utils/network-ranges'
+import newsPreview from '@/assets/news-preview.md?raw'
+import launcherIcon from '@/assets/launcher-icon-v3.png'
 import type {
   CopyInstanceInput,
   WebAccess,
@@ -1252,17 +1254,7 @@ async function mockCall<T>(cmd: string, args?: Record<string, unknown>): Promise
     case 'get_settings':
       return db.settings as T
     case 'fetch_news': {
-      // Browser preview: return sample markdown instead of fetching.
-      return [
-        '# DSH Launcher 新闻',
-        '',
-        '- 支持 **GFM** 表格、任务列表与`行内代码`',
-        '- 支持 <b>内联 HTML</b>（已过滤 XSS）',
-        '',
-        '| 版本 | 状态 |',
-        '| ---- | ---- |',
-        '| rc.6 | ✅   |',
-      ].join('\n') as T
+      return newsPreview.replaceAll('{{launcher-icon}}', launcherIcon) as T
     }
     case 'update_settings': {
       db.settings = { ...db.settings, ...(args?.settings as Partial<LauncherSettings>) }

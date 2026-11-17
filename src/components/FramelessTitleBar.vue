@@ -67,8 +67,10 @@ async function onClose() {
   justify-content: space-between;
   height: 36px;
   padding: 0 4px 0 12px;
-  background: var(--color-bg-2);
-  border-bottom: 1px solid var(--color-border-2);
+  background: var(--dl-glass-background);
+  border-bottom: 1px solid var(--dl-glass-border);
+  -webkit-backdrop-filter: var(--dl-glass-blur);
+  backdrop-filter: var(--dl-glass-blur);
   user-select: none;
   flex-shrink: 0;
 }
@@ -91,15 +93,16 @@ async function onClose() {
 }
 
 .bar-btn {
-  width: 32px;
+  width: 28px;
   height: 28px;
+  padding: 0;
   display: flex;
   align-items: center;
   justify-content: center;
   border: none;
   background: transparent;
   color: var(--color-text-2);
-  border-radius: 6px;
+  border-radius: 50%;
   cursor: pointer;
   flex-shrink: 0;
 }

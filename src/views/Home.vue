@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, h, nextTick, onBeforeUnmount, onMounted, ref, render, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { useFeedback } from '@dsh-plugin/dsh-ui-components-vue'
@@ -14,7 +14,8 @@ import type { CompatibilityReport as CompatibilityReportType } from '@/api/types
 import CompatibilityReport from '@/components/CompatibilityReport.vue'
 import { useLauncherStore } from '@/stores/launcher'
 import { markedSpoiler } from '@/utils/marked-spoiler'
-import launcherDefaultIcon from '@/assets/launcher-icon.png'
+import launcherDefaultIcon from '@/assets/launcher-icon-v3.png'
+import PageScrollbar from '@/components/PageScrollbar.vue'
 import 'katex/dist/katex.min.css'
 
 // --- Instance icons (issue #8): the launch panel avatar follows the instance --
@@ -67,13 +68,21 @@ DOMPurify.addHook('afterSanitizeAttributes', (node) => {
 function renderNews(content: string, source: string): string {
   const isHtml = /\.html?([?#].*)?$/i.test(source)
   const raw = isHtml ? content : (marked.parse(normalizeAlerts(content)) as string)
-  return DOMPurify.sanitize(raw, {
+  const sanitized = DOMPurify.sanitize(raw, {
     USE_PROFILES: { html: true },
     ADD_TAGS: ['input', 'section'],
     ADD_ATTR: ['type', 'checked', 'disabled', 'id', 'data-footnote-ref', 'data-footnote-backref', 'aria-describedby', 'aria-label'],
     FORBID_TAGS: ['style', 'iframe', 'object', 'embed', 'form', 'textarea', 'select', 'button'],
     FORBID_ATTR: ['srcset'],
   })
+  const document = new DOMParser().parseFromString(sanitized, 'text/html')
+  for (const table of document.querySelectorAll('table')) {
+    const wrapper = document.createElement('div')
+    wrapper.className = 'news-table'
+    table.before(wrapper)
+    wrapper.append(table)
+  }
+  return document.body.innerHTML
 }
 
 const router = useRouter()
@@ -259,6 +268,27 @@ watch(newsSource, () => loadNews())
 // heavy mermaid module is loaded lazily on first use.
 
 let mermaidApi: typeof import('mermaid').default | null = null
+const newsBody = ref<HTMLElement | null>(null)
+const newsTables = new Set<HTMLElement>()
+
+function clearNewsTables() {
+  for (const host of newsTables) render(null, host)
+  newsTables.clear()
+}
+
+function renderNewsTables(root: HTMLElement) {
+  for (const host of root.querySelectorAll<HTMLElement>('.news-table')) {
+    if (newsTables.has(host)) continue
+    const table = host.querySelector('table')
+    if (!table) continue
+    const html = table.outerHTML
+    host.replaceChildren()
+    render(h(PageScrollbar, { horizontal: true }, () => h('div', { innerHTML: html })), host)
+    newsTables.add(host)
+  }
+}
+
+onBeforeUnmount(clearNewsTables)
 
 async function renderMermaidBlocks(root: HTMLElement) {
   const blocks = root.querySelectorAll<HTMLElement>('pre > code.language-mermaid')
@@ -290,9 +320,13 @@ async function renderMermaidBlocks(root: HTMLElement) {
 }
 
 watch(newsHtml, async () => {
+  clearNewsTables()
   await nextTick()
-  const root = document.querySelector<HTMLElement>('.news-body')
-  if (root) await renderMermaidBlocks(root)
+  const root = newsBody.value
+  if (root) {
+    renderNewsTables(root)
+    await renderMermaidBlocks(root)
+  }
 })
 
 // Footnote / in-page anchor jumps: the content scrolls inside an a-scrollbar,
@@ -319,7 +353,6 @@ function onNewsClick(e: MouseEvent) {
   const containerTop = container.getBoundingClientRect().top
   const top = container.scrollTop + el.getBoundingClientRect().top - containerTop
   container.scrollTo({ top, behavior: 'smooth' })
-  history.replaceState(null, '', `#${id}`)
 }
 
 watch(
@@ -530,9 +563,9 @@ function goEditSelected() {
 </script>
 
 <template>
-  <div class="home-page">
+  <div class="home-page dl-split-page">
     <!-- Left launch panel -->
-    <aside class="launch-panel">
+    <aside class="launch-panel dl-sidebar">
       <div class="identity-block">
         <div class="instance-avatar"><img :src="selectedIcon ?? launcherDefaultIcon" alt="" /></div>
         <div class="instance-name">{{ selectedInstance?.name ?? '—' }}</div>
@@ -580,6 +613,15 @@ function goEditSelected() {
             :disabled="!selectedInstance"
             allow-clear
           >
+            <template #label>
+              <span class="option-line">
+                {{ selectedProfile }}
+                <dsh-tag v-if="selectedProfileKind === 'tui'" size="small" color="purple">
+                  {{ t('home.profileTui') }}
+                </dsh-tag>
+                <dsh-tag v-else-if="selectedProfileKind === 'web'" size="small" color="green">Web</dsh-tag>
+              </span>
+            </template>
             <dsh-option v-for="p in profiles" :key="p" :value="p">
               <span class="option-line">
                 {{ p }}
@@ -597,6 +639,7 @@ function goEditSelected() {
         <template v-if="!running">
           <dsh-button variant="primary"
             size="lg"
+            radius="full"
             long
             :disabled="!canStart"
             :loading="starting"
@@ -611,7 +654,7 @@ function goEditSelected() {
           </dsh-button>
         </template>
         <template v-else>
-          <dsh-button variant="primary" size="lg" long class="launch-button" @click="onOpenWindow">
+          <dsh-button variant="primary" size="lg" radius="full" long class="launch-button" @click="onOpenWindow">
             <span class="launch-text">{{ t('home.openWindow') }}</span>
             <span class="launch-sub">{{ launchSubtitle }}</span>
           </dsh-button>
@@ -655,7 +698,7 @@ function goEditSelected() {
     </dsh-modal>
 
     <!-- Right news area: renders the configured md/html source (XSS-sanitized) -->
-    <section class="news-area">
+    <section class="news-area dl-page-content">
       <div v-if="!newsSource" class="news-placeholder">{{ t('home.newsPlaceholder') }}</div>
       <div v-else-if="newsLoading" class="news-placeholder">
         <dsh-spin :size="20" />
@@ -664,9 +707,9 @@ function goEditSelected() {
         <span>{{ newsError }}</span>
         <dsh-button variant="secondary" size="sm" @click="loadNews">{{ t('common.refresh') }}</dsh-button>
       </div>
-      <dsh-scrollbar v-else outer-style="height: 100%" style="height: 100%; overflow-y: auto">
-        <article class="news-body" v-html="newsHtml" @click="onNewsClick"></article>
-      </dsh-scrollbar>
+      <PageScrollbar v-else>
+        <article ref="newsBody" class="news-body" v-html="newsHtml" @click="onNewsClick"></article>
+      </PageScrollbar>
     </section>
   </div>
 </template>
@@ -674,7 +717,7 @@ function goEditSelected() {
 <style lang="scss" scoped>
 .home-page {
   display: flex;
-  height: calc(100vh - var(--dl-header-height));
+  height: var(--dl-content-height);
 }
 
 .launch-panel {
@@ -683,15 +726,18 @@ function goEditSelected() {
   display: flex;
   flex-direction: column;
   padding: 20px 16px;
-  background: var(--color-bg-2);
-  border-right: 1px solid var(--color-border-2);
 }
 
 .selector-block {
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: 16px;
   margin-bottom: 14px;
+
+  :deep(.arco-select-view-single) {
+    // Include the 1px border when aligning text with the 18px capsule end.
+    padding-inline-start: 17px;
+  }
 }
 
 .field {
@@ -701,6 +747,7 @@ function goEditSelected() {
 }
 
 .field-label {
+  padding-inline-start: 18px;
   font-size: 12px;
   color: var(--color-text-3);
 }
@@ -712,7 +759,7 @@ function goEditSelected() {
   align-items: center;
   justify-content: center;
   gap: 10px;
-  min-height: 0;
+  min-height: 180px;
 }
 
 .instance-avatar {
@@ -742,7 +789,7 @@ function goEditSelected() {
 .action-block {
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: 16px;
 }
 
 // The popup caps its own height and scrolls internally (a-scrollbar track),
@@ -756,18 +803,21 @@ function goEditSelected() {
 
 .launch-panel .launch-button {
   height: 64px;
+  padding-block: 10px;
   display: flex;
   flex-direction: column;
+  gap: 4px;
 
   .launch-text {
     font-size: 17px;
+    line-height: 24px;
     font-weight: 600;
   }
 
   .launch-sub {
     font-size: 12px;
+    line-height: 16px;
     opacity: 0.8;
-    margin-top: 2px;
   }
 }
 
@@ -789,13 +839,11 @@ function goEditSelected() {
   flex: 1;
   min-width: 0;
   overflow: hidden;
-  background:
-    radial-gradient(circle at 30% 20%, rgb(22 93 255 / 6%), transparent 40%),
-    radial-gradient(circle at 70% 80%, rgb(114 46 209 / 6%), transparent 40%);
 }
 
 .news-placeholder {
   height: 100%;
+  margin-inline-start: var(--dl-sidebar-gap);
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -848,14 +896,67 @@ function goEditSelected() {
     margin: 8px 0;
   }
 
-  // Task-list checkboxes (GitHub 风格)
-  :deep(li) {
+  // Read-only task lists keep rounded-square checkboxes in both states.
+  :deep(li:has(> input[type='checkbox'])),
+  :deep(li:has(> p > input[type='checkbox'])) {
     list-style: none;
 
     input[type='checkbox'] {
-      margin-right: 6px;
-      vertical-align: -2px;
-      accent-color: rgb(var(--primary-6));
+      appearance: none;
+      -webkit-appearance: none;
+      width: 20px;
+      height: 20px;
+      margin: 0 10px 0 0;
+      border: 0;
+      border-radius: 7px;
+      vertical-align: -4px;
+      background: var(--surface);
+      opacity: 1;
+
+      &:checked {
+        background-color: var(--accent);
+        background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='m4 8 2.5 2.5L12 5' fill='none' stroke='white' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+        background-position: center;
+        background-size: 14px 14px;
+        background-repeat: no-repeat;
+      }
+    }
+  }
+
+  :deep(mark) {
+    padding: 1px 6px;
+    border-radius: 6px;
+    color: inherit;
+    background: rgb(255 214 102 / 45%);
+    -webkit-backdrop-filter: var(--dl-glass-blur);
+    backdrop-filter: var(--dl-glass-blur);
+    -webkit-box-decoration-break: clone;
+    box-decoration-break: clone;
+  }
+
+  :deep(kbd) {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 3px;
+    min-height: 24px;
+    padding: 1px 7px;
+    margin-inline: 4px;
+    border: 0;
+    border-radius: 7px;
+    background: var(--surface-secondary);
+    color: var(--muted);
+    font-family: inherit;
+    font-size: 13px;
+    font-weight: 500;
+    line-height: 20px;
+    vertical-align: middle;
+    white-space: nowrap;
+
+    .kbd-symbol {
+      color: rgb(var(--primary-6));
+      font-size: 15px;
+      line-height: 1;
     }
   }
 
@@ -912,10 +1013,54 @@ function goEditSelected() {
   :deep(pre) {
     background: #1d2129;
     color: #a9b7c6;
-    border-radius: 8px;
+    border-radius: 20px;
     padding: 12px 16px;
     overflow-x: auto;
     margin: 12px 0;
+    scrollbar-width: thin;
+    scrollbar-color: transparent transparent;
+
+    &:hover,
+    &:focus-within {
+      scrollbar-color: #69717e transparent;
+    }
+
+    &::-webkit-scrollbar {
+      height: 6px;
+      background: transparent;
+    }
+
+    &::-webkit-scrollbar-track,
+    &::-webkit-scrollbar-button {
+      display: none;
+      background: transparent;
+    }
+
+    &::-webkit-scrollbar-button {
+      width: 0;
+      height: 0;
+    }
+
+    &::-webkit-scrollbar-thumb {
+      border-radius: 999px;
+      background: transparent;
+    }
+
+    &:hover::-webkit-scrollbar-thumb,
+    &:focus-within::-webkit-scrollbar-thumb {
+      background: #69717e;
+    }
+
+    // Standard scrollbar colors override WebKit's hidden-button rules in Chromium.
+    @supports selector(::-webkit-scrollbar) {
+      scrollbar-width: auto;
+      scrollbar-color: auto;
+
+      &:hover,
+      &:focus-within {
+        scrollbar-color: auto;
+      }
+    }
 
     code {
       background: none;
@@ -926,19 +1071,22 @@ function goEditSelected() {
   :deep(blockquote) {
     margin: 12px 0;
     padding: 4px 14px;
-    border-left: 3px solid rgb(var(--primary-6));
-    background: var(--color-fill-1);
+    border-left: 3px solid var(--dl-quote-border);
+    background: transparent;
     color: var(--color-text-2);
-    border-radius: 0 6px 6px 0;
+    border-radius: 0;
   }
 
   // GitHub-style alerts: > [!NOTE] / [!TIP] / [!IMPORTANT] / [!WARNING] / [!CAUTION]
   :deep(.markdown-alert) {
     margin: 12px 0;
     padding: 10px 14px;
-    border: 1px solid;
-    border-radius: 6px;
+    border: 1px solid rgba(var(--md-alert-color), 0.22);
+    border-radius: 20px;
     font-size: 13.5px;
+    background: color-mix(in srgb, rgb(var(--md-alert-color)) 18%, rgb(255 255 255 / 8%));
+    -webkit-backdrop-filter: var(--dl-glass-blur);
+    backdrop-filter: var(--dl-glass-blur);
 
     .markdown-alert-title {
       display: flex;
@@ -946,6 +1094,7 @@ function goEditSelected() {
       gap: 6px;
       margin: 0 0 6px;
       font-weight: 600;
+      color: rgb(var(--md-alert-color));
 
       svg {
         width: 16px;
@@ -960,68 +1109,80 @@ function goEditSelected() {
   }
 
   :deep(.markdown-alert-note) {
-    border-color: rgb(var(--primary-6));
-    background: rgb(var(--primary-6) / 6%);
-
-    .markdown-alert-title {
-      color: rgb(var(--primary-6));
-    }
+    --md-alert-color: var(--primary-6);
   }
 
   :deep(.markdown-alert-tip) {
-    border-color: rgb(var(--green-6));
-    background: rgb(var(--green-6) / 6%);
-
-    .markdown-alert-title {
-      color: rgb(var(--green-6));
-    }
+    --md-alert-color: var(--green-6);
   }
 
   :deep(.markdown-alert-important) {
-    border-color: rgb(var(--purple-6));
-    background: rgb(var(--purple-6) / 6%);
-
-    .markdown-alert-title {
-      color: rgb(var(--purple-6));
-    }
+    --md-alert-color: var(--purple-6);
   }
 
   :deep(.markdown-alert-warning) {
-    border-color: rgb(var(--orange-6));
-    background: rgb(var(--orange-6) / 6%);
-
-    .markdown-alert-title {
-      color: rgb(var(--orange-6));
-    }
+    --md-alert-color: var(--orange-6);
   }
 
   :deep(.markdown-alert-caution) {
-    border-color: rgb(var(--red-6));
-    background: rgb(var(--red-6) / 6%);
-
-    .markdown-alert-title {
-      color: rgb(var(--red-6));
-    }
+    --md-alert-color: var(--red-6);
   }
 
-  :deep(table) {
-    border-collapse: collapse;
+  :deep(.news-table) {
     margin: 12px 0;
     max-width: 100%;
-    display: block;
-    overflow-x: auto;
+    padding: 0 4px 4px;
+    border-radius: 20px;
+    background: var(--surface-secondary);
+    overflow: hidden;
+
+    table {
+      width: max-content;
+      min-width: 100%;
+      border-collapse: separate;
+      border-spacing: 0;
+    }
 
     th,
     td {
-      border: 1px solid var(--color-border-2);
-      padding: 6px 12px;
-      font-size: 13px;
+      border: 0;
     }
 
     th {
-      background: var(--color-fill-2);
-      font-weight: 600;
+      position: relative;
+      padding: 10px 16px;
+      background: var(--surface-secondary);
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 500;
+      line-height: 16px;
     }
+
+    th:not(:last-child)::after {
+      content: '';
+      position: absolute;
+      right: 0;
+      top: 50%;
+      width: 1px;
+      height: 16px;
+      transform: translateY(-50%);
+      background: var(--separator);
+    }
+
+    td {
+      padding: 12px 16px;
+      background: var(--surface);
+      color: var(--foreground);
+      font-size: 14px;
+      line-height: 20px;
+      border-bottom: 1px solid color-mix(in oklab, var(--separator-tertiary) 50%, transparent);
+    }
+
+    tbody tr:first-child td:first-child { border-top-left-radius: 16px; }
+    tbody tr:first-child td:last-child { border-top-right-radius: 16px; }
+    tbody tr:last-child td:first-child { border-bottom-left-radius: 16px; }
+    tbody tr:last-child td:last-child { border-bottom-right-radius: 16px; }
+    tbody tr:hover td { background: var(--surface-hover); }
   }
 
   :deep(ul),

@@ -192,7 +192,7 @@ async function onNever() {
   display: flex;
   flex-direction: column;
   height: 100vh;
-  background: var(--color-bg-1);
+  background: var(--dl-page-background);
 }
 
 .notice-body {

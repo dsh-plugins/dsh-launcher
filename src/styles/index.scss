@@ -3,6 +3,8 @@
 :root {
   --dl-header-height: 52px;
   --dl-content-max: 1080px;
+  --dl-window-radius: 20px;
+  --dl-window-inset: 0px;
 }
 
 * {
@@ -32,11 +34,104 @@ body {
   color: var(--color-text-1);
 }
 
+body:has(.app-shell) {
+  background: transparent;
+  --dl-content-height: calc(100vh - 2 * var(--dl-window-inset) - var(--dl-header-height));
+}
+
+body:has(.launcher-window-shadow .app-shell:not(.is-maximized)) {
+  // Same as SHADOW_INSET in the Windows window configuration.
+  --dl-window-inset: 24px;
+}
+
+#app:has(.app-shell) {
+  padding: var(--dl-window-inset);
+}
+
+body:has(.app-shell.is-maximized) {
+  --dl-window-radius: 0px;
+}
+
+.launcher-ui:has(.app-shell) {
+  border-radius: var(--dl-window-radius);
+  overflow: clip;
+}
+
+.launcher-window-shadow:has(.app-shell:not(.is-maximized)) {
+  box-shadow: 0 4px 14px rgb(0 0 0 / 42%), 0 2px 5px rgb(0 0 0 / 24%);
+}
+
+body:has(.app-shell) .dsh-ui-portal :is(.arco-modal-mask, .arco-drawer-mask) {
+  inset: var(--dl-window-inset);
+  border-radius: var(--dl-window-radius);
+}
+
+body:has(.app-shell) .dsh-ui-portal .dsh-toast-region[data-position^='top'] {
+  margin-top: var(--dl-window-inset);
+}
+
+body:has(.app-shell) .dsh-ui-portal .dsh-toast-region[data-position^='bottom'] {
+  margin-bottom: var(--dl-window-inset);
+}
+
+body:has(.app-shell) .dsh-ui-portal .dsh-toast-region[data-position$='Left'] {
+  margin-left: var(--dl-window-inset);
+}
+
+body:has(.app-shell) .dsh-ui-portal .dsh-toast-region[data-position$='Right'] {
+  margin-right: var(--dl-window-inset);
+}
+
 .launcher-ui {
+  --dl-page-base: #000;
+  --dl-page-background:
+    radial-gradient(ellipse at 20% 15%, rgb(64 128 255 / 12%), transparent 50%),
+    radial-gradient(ellipse at 85% 85%, rgb(236 112 180 / 9%), transparent 50%),
+    var(--dl-page-base);
+  --dl-glass-background: rgb(40 42 48 / 58%);
+  --dl-glass-border: rgb(255 255 255 / 9%);
+  --dl-glass-shadow: 0 12px 32px rgb(0 0 0 / 16%);
+  --dl-glass-blur: blur(20px) saturate(115%);
+  --dl-scroll-shadow: rgb(0 0 0 / 45%);
+  --dl-quote-border: #1f1f20;
   height: 100%;
-  background: var(--color-bg-1);
+  background: var(--dl-page-background);
   font-family: inherit;
   font-size: 14px;
+}
+
+.launcher-ui[data-theme='light'] {
+  --dl-page-base: #f4f5f8;
+  --dl-glass-background: rgb(235 238 244 / 66%);
+  --dl-glass-border: rgb(255 255 255 / 72%);
+  --dl-glass-shadow: 0 12px 32px rgb(30 42 70 / 7%);
+  --dl-scroll-shadow: rgb(30 42 70 / 14%);
+  --dl-quote-border: #ddd;
+}
+
+// Override the component library's opaque layout surfaces.
+.launcher-ui.dsh-ui[data-theme][data-radius] .app-shell {
+  background: transparent;
+}
+
+.launcher-ui.dsh-ui[data-theme][data-radius] .app-header {
+  background: var(--dl-glass-background);
+}
+
+.launcher-ui :is(.dl-card, .dl-sidebar, .dl-glass, .arco-card) {
+  background: var(--dl-glass-background);
+  border: 1px solid var(--dl-glass-border);
+  border-radius: 20px;
+  box-shadow: var(--dl-glass-shadow);
+  -webkit-backdrop-filter: var(--dl-glass-blur);
+  backdrop-filter: var(--dl-glass-blur);
+}
+
+.dl-sidebar {
+  min-height: 0;
+  padding: 12px 0;
+  overflow-y: auto;
+  scrollbar-width: thin;
 }
 
 .dl-page {
@@ -45,11 +140,25 @@ body {
   padding: 20px 24px 40px;
 }
 
+.dl-split-page {
+  --dl-sidebar-gap: 20px;
+  gap: var(--dl-sidebar-gap);
+  padding: 20px;
+}
+
+.dl-page-content {
+  margin-block: -20px;
+  margin-right: -20px;
+  // Let card shadows extend into the gap before the scroll viewport clips them.
+  margin-inline-start: calc(-1 * var(--dl-sidebar-gap));
+}
+
+.dl-page-content > .page-scrollbar > .arco-scrollbar-container {
+  padding-inline-start: var(--dl-sidebar-gap);
+}
+
 .dl-card {
-  background: var(--color-bg-2);
-  border-radius: 8px;
   padding: 20px 24px;
-  box-shadow: 0 1px 3px rgb(0 0 0 / 6%);
 
   & + & {
     margin-top: 16px;
@@ -75,14 +184,7 @@ body {
   align-items: center;
 }
 
-// Tables (issue #13): Arco tables scroll through the a-scrollbar component,
-// whose track is a 15px strip (z-index 100) absolutely positioned over the
-// content. The page-level type="track" scrollbar in App.vue makes Arco's
-// `.arco-scrollbar-type-track .arco-scrollbar-track` rule paint EVERY nested
-// track opaque (descendant selector), covering the last row / column titles.
-// Slim the tracks down, make them transparent, and use a subtle thumb. Empty
-// tables have nothing to scroll: hide their scrollbars entirely (the strip
-// would otherwise sit right under the column titles).
+// Keep nested table scrollbars slim and transparent; empty tables need no track.
 .arco-table {
   // Three classes to out-specify / tie-and-override Arco's
   // `.arco-scrollbar.arco-scrollbar-type-track .arco-scrollbar-track`.
@@ -125,4 +227,14 @@ body {
 
 .arco-table-empty .arco-scrollbar-track {
   display: none;
+}
+
+.table-scroll {
+  scrollbar-width: thin;
+  scrollbar-color: transparent transparent;
+
+  &:hover,
+  &:focus-within {
+    scrollbar-color: var(--color-fill-4) transparent;
+  }
 }

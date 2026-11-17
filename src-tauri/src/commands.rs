@@ -2332,7 +2332,7 @@ fn uri_encode(value: &str) -> String {
 }
 
 /// Default shortcut icon when the instance has none (bundled launcher icon).
-const DEFAULT_ICON_PNG: &[u8] = include_bytes!("../icons/128x128.png");
+const DEFAULT_ICON_PNG: &[u8] = include_bytes!("../icons/launcher-v3/128x128.png");
 
 /// Writes a Windows Internet Shortcut (.url) that launches an instance via
 /// `dsh-launcher://launch?instance=<name>&profile=<profile>`. The shortcut

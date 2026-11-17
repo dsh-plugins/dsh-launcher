@@ -178,7 +178,7 @@ defineExpose({
   height: 100%;
   min-height: 320px;
   border: 1px solid var(--color-border-2);
-  border-radius: 6px;
+  border-radius: 20px;
   overflow: hidden;
   background: #1e1e1e;
 }

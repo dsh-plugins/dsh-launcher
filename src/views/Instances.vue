@@ -175,7 +175,7 @@ async function confirmCopy() {
         <template #name="{ record }">
           <span class="inst-name">
             <img v-if="iconMap[record.id]" :src="iconMap[record.id]!" class="inst-icon" alt="" />
-            <img v-else src="@/assets/launcher-icon.png" class="inst-icon" alt="" />
+            <img v-else src="@/assets/launcher-icon-v3.png" class="inst-icon" alt="" />
             {{ record.name }}
             <dsh-tag v-if="store.homeById(record.home_id)?.wsl" size="small" color="arcoblue">
               WSL · {{ store.homeById(record.home_id)!.wsl }}

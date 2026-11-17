@@ -222,7 +222,7 @@ async function onConfirm() {
   display: flex;
   flex-direction: column;
   gap: 16px;
-  min-height: calc(100vh - var(--dl-header-height) - 120px);
+  min-height: calc(var(--dl-content-height) - 120px);
 }
 
 .name-header {

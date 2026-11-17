@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { useFeedback } from '@dsh-plugin/dsh-ui-components-vue'
+import { useFeedback, useDialog } from '@dsh-plugin/dsh-ui-components-vue'
 import { IconArrowUp, IconArrowDown } from '@dsh-plugin/dsh-ui-components-vue/icons'
 import { api } from '@/api'
 import type {
@@ -16,8 +16,10 @@ import { SUPPORTED_LOCALES } from '@/i18n'
 import { useLauncherStore } from '@/stores/launcher'
 import ImportScanDialog from '@/components/ImportScanDialog.vue'
 import HintIcon from '@/components/HintIcon.vue'
+import PageScrollbar from '@/components/PageScrollbar.vue'
 
 const { message: Message } = useFeedback()
+const { modal: Modal } = useDialog()
 
 const { t } = useI18n()
 const store = useLauncherStore()
@@ -531,9 +533,22 @@ async function onRemoveHome(id: string) {
   try {
     await api.removeHome(id)
     await store.refreshHomes()
+    return true
   } catch (e) {
     Message.error(String(e))
+    return false
   }
+}
+
+function confirmRemoveHome(id: string, name: string) {
+  Modal.confirm({
+    title: t('settings.deleteHome'),
+    content: t('settings.confirmDeleteHome', { name }),
+    okText: t('settings.deleteHome'),
+    cancelText: t('common.cancel'),
+    okButtonProps: { status: 'danger' },
+    onBeforeOk: () => onRemoveHome(id),
+  })
 }
 
 const homeColumns = computed(() => [
@@ -556,8 +571,8 @@ const pluginSourceColumns = computed(() => [
 </script>
 
 <template>
-  <div class="dl-page settings-page">
-    <aside class="settings-sidebar">
+  <div class="dl-page settings-page dl-split-page">
+    <aside class="settings-sidebar dl-sidebar">
       <dsh-menu
         :selected-keys="[section]"
         @menu-item-click="(key: string) => (section = key as SettingsSection)"
@@ -570,8 +585,8 @@ const pluginSourceColumns = computed(() => [
         <dsh-menu-item key="about">{{ t('settings.sections.about') }}</dsh-menu-item>
       </dsh-menu>
     </aside>
-    <section class="settings-content">
-      <dsh-scrollbar type="track" outer-style="height: 100%" style="height: 100%; overflow-y: auto">
+    <section class="settings-content dl-page-content">
+      <PageScrollbar>
         <div class="settings-inner">
     <template v-if="section === 'personal'">
     <div class="dl-card">
@@ -841,12 +856,9 @@ const pluginSourceColumns = computed(() => [
 
       <dsh-table :columns="homeColumns" :data="store.homes" :pagination="false" :scroll="{ x: 700 }" row-key="id">
         <template #actions="{ record }">
-          <dsh-popconfirm
-            :content="t('settings.confirmDeleteHome', { name: record.name })"
-            @ok="onRemoveHome(record.id)"
-          >
-            <dsh-button variant="danger" size="sm">{{ t('settings.deleteHome') }}</dsh-button>
-          </dsh-popconfirm>
+          <dsh-button variant="danger" size="sm" @click="confirmRemoveHome(record.id, record.name)">
+            {{ t('settings.deleteHome') }}
+          </dsh-button>
         </template>
       </dsh-table>
     </div>
@@ -1061,7 +1073,7 @@ const pluginSourceColumns = computed(() => [
             {{ o.label }}
           </dsh-option>
         </dsh-select>
-        <span class="update-hint">{{ t('settings.pluginUpdates.channelHint') }}</span>
+        <HintIcon :content="t('settings.pluginUpdates.channelHint')" />
       </div>
     </div>
 
@@ -1128,7 +1140,7 @@ const pluginSourceColumns = computed(() => [
     </div>
     </template>
         </div>
-      </dsh-scrollbar>
+      </PageScrollbar>
     </section>
 
     <ImportScanDialog v-model:visible="importScanVisible" />
@@ -1139,21 +1151,14 @@ const pluginSourceColumns = computed(() => [
 // Sidebar-sectioned settings page (issue #70), mirroring the instance editor.
 .settings-page {
   display: flex;
-  height: calc(100vh - var(--dl-header-height));
+  height: var(--dl-content-height);
   max-width: none;
   margin: 0;
-  padding: 0;
 }
 
 .settings-sidebar {
   width: 200px;
   flex-shrink: 0;
-  background: var(--color-bg-2);
-  border-right: 1px solid var(--color-border-2);
-
-  :deep(.arco-menu) {
-    height: 100%;
-  }
 }
 
 .settings-content {
@@ -1163,7 +1168,7 @@ const pluginSourceColumns = computed(() => [
 }
 
 .settings-inner {
-  padding: 20px 24px 80px;
+  padding: 20px 20px 60px 0;
   max-width: var(--dl-content-max);
   margin: 0 auto;
 }

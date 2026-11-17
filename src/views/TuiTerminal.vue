@@ -156,7 +156,7 @@ onBeforeUnmount(() => {
   position: fixed;
   inset: 0;
   display: flex;
-  background: #1e1e1e;
+  background: var(--dl-page-background);
 }
 
 .tui-terminal-box {
