@@ -101,10 +101,10 @@ fn read_patch(path: &Path, optional: bool) -> Result<Vec<Yaml>, String> {
 ///
 /// Scoped names keep their scope: `@scope/name/sub` → `@scope/name` +
 /// `sub`. Every segment must be a real name: empty segments, `.`/`..`
-/// traversal and Windows separators are rejected anywhere in the reference,
+/// traversal and Windows path prefixes/separators are rejected anywhere in the reference,
 /// so a crafted entry cannot resolve to a directory outside the package.
 fn split_package_ref(name: &str) -> Option<(&str, Option<&str>)> {
-    if name.contains('\\') {
+    if name.contains(['\\', ':']) {
         return None;
     }
     let mut parts = name.split('/');
@@ -248,7 +248,12 @@ fn exported_subpath(pkg: &Json, subpath: &str) -> Option<Option<PathBuf>> {
 /// A subpath (`name/sub`) resolves only when the package root exists and the
 /// subpath is exported and present; the subpath itself is never a package
 /// root and has no `package.json` of its own.
-fn installed_package(profile: &Path, version: &Path, name: &str, bundle: bool) -> Option<PathBuf> {
+pub(crate) fn installed_package(
+    profile: &Path,
+    version: &Path,
+    name: &str,
+    bundle: bool,
+) -> Option<PathBuf> {
     // `split_package_ref` already rejects traversal in the root and subpath.
     let (root, subpath) = split_package_ref(name)?;
     let dir = package_roots(profile, version, bundle)

@@ -784,6 +784,7 @@
     "pluginImportLocal": "导入本地插件",
     "pluginsPickProfile": "请先在上方选择 Profile 以查看其中的插件",
     "pluginsEmpty": "该 Profile 下没有插件",
+    "pluginNameId": "插件名称 / ID",
     "pluginVersion": "版本",
     "pluginStatus": "状态",
     "pluginOn": "启用",

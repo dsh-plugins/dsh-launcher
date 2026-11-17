@@ -89,6 +89,7 @@ body:has(.app-shell) .dsh-ui-portal .dsh-toast-region[data-position$='Right'] {
     radial-gradient(ellipse at 85% 85%, rgb(236 112 180 / 9%), transparent 50%),
     var(--dl-page-base);
   --dl-glass-background: rgb(40 42 48 / 58%);
+  --dl-content-card-background: rgb(40 42 48 / 30%);
   --dl-glass-border: rgb(255 255 255 / 9%);
   --dl-glass-shadow: 0 12px 32px rgb(0 0 0 / 16%);
   --dl-glass-blur: blur(20px) saturate(115%);
@@ -103,6 +104,7 @@ body:has(.app-shell) .dsh-ui-portal .dsh-toast-region[data-position$='Right'] {
 .launcher-ui[data-theme='light'] {
   --dl-page-base: #f4f5f8;
   --dl-glass-background: rgb(235 238 244 / 66%);
+  --dl-content-card-background: rgb(235 238 244 / 36%);
   --dl-glass-border: rgb(255 255 255 / 72%);
   --dl-glass-shadow: 0 12px 32px rgb(30 42 70 / 7%);
   --dl-scroll-shadow: rgb(30 42 70 / 14%);
@@ -119,12 +121,16 @@ body:has(.app-shell) .dsh-ui-portal .dsh-toast-region[data-position$='Right'] {
 }
 
 .launcher-ui :is(.dl-card, .dl-sidebar, .dl-glass, .arco-card) {
-  background: var(--dl-glass-background);
+  background: var(--dl-content-card-background);
   border: 1px solid var(--dl-glass-border);
   border-radius: 20px;
   box-shadow: var(--dl-glass-shadow);
   -webkit-backdrop-filter: var(--dl-glass-blur);
   backdrop-filter: var(--dl-glass-blur);
+}
+
+.launcher-ui .dl-sidebar {
+  background: var(--dl-glass-background);
 }
 
 .dl-sidebar {
@@ -225,8 +231,52 @@ body:has(.app-shell) .dsh-ui-portal .dsh-toast-region[data-position$='Right'] {
   }
 }
 
-.arco-table-empty .arco-scrollbar-track {
-  display: none;
+// A rounded sticky cell needs an opaque backing over the columns that scroll behind it.
+.launcher-ui.dsh-ui[data-theme][data-radius] .arco-table tbody > .arco-table-tr:not(.arco-table-tr-empty, .arco-table-tr-summary) {
+  &:is(:first-child, :last-child) > :is(.arco-table-col-fixed-left:first-child, .arco-table-col-fixed-right:last-child) {
+    --dl-table-corner: calc(var(--radius) * 2);
+    border-radius: 0;
+    background: var(--surface-secondary);
+
+    &::before {
+      position: absolute;
+      z-index: -1;
+      inset: 0;
+      border-radius:
+        var(--dl-table-top-left, 0) var(--dl-table-top-right, 0)
+        var(--dl-table-bottom-right, 0) var(--dl-table-bottom-left, 0);
+      background: var(--dsh-table-row-background);
+      pointer-events: none;
+      content: '';
+    }
+  }
+
+  &:first-child > .arco-table-col-fixed-left:first-child {
+    --dl-table-top-left: var(--dl-table-corner);
+  }
+
+  &:first-child > .arco-table-col-fixed-right:last-child {
+    --dl-table-top-right: var(--dl-table-corner);
+  }
+
+  &:last-child > .arco-table-col-fixed-left:first-child {
+    --dl-table-bottom-left: var(--dl-table-corner);
+  }
+
+  &:last-child > .arco-table-col-fixed-right:last-child {
+    --dl-table-bottom-right: var(--dl-table-corner);
+  }
+}
+
+.arco-table-empty {
+  // Arco uses separate header and body containers for empty scrollable tables.
+  .arco-table-body {
+    border-radius: calc(var(--radius) * 2);
+  }
+
+  .arco-scrollbar-track {
+    display: none;
+  }
 }
 
 .table-scroll {

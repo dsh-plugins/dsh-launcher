@@ -39,6 +39,7 @@ import type {
   PluginVersionPage,
   ProfileInfo,
   RemoteVersion,
+  VersionIcons,
   RuntimeStatus,
   ScanReport,
   ScannedVersion,
@@ -513,6 +514,11 @@ async function mockCall<T>(cmd: string, args?: Record<string, unknown>): Promise
     }
     case 'list_versions':
       return db.versions as T
+    case 'load_version_icons':
+      return {
+        chat: 'https://fe-static.deepseek.com/chat/favicon.svg',
+        platform: 'https://fe-static.deepseek.com/platform/favicon.svg',
+      } as T
     case 'fetch_available_versions':
       return [
         { version: '0.1.2-alpha.1', released_at: '2026-10-01T08:00:00Z', source: 'github' },
@@ -1506,7 +1512,7 @@ async function mockCall<T>(cmd: string, args?: Record<string, unknown>): Promise
     }
     case 'list_installed_plugins': {
       return [
-        { id: '@dsh-plugin/dsh-auxiliary', version: '^0.4.1', enabled: true, cordis_id: 'dsh-auxiliary' },
+        { id: '@dsh-plugin/dsh-auxiliary', name: { zh: '辅助模型', en: 'Auxiliary models' }, version: '^0.4.1', enabled: true, cordis_id: 'dsh-auxiliary' },
         { id: '@dsh-plugin/dsh-thought-buddy', version: '^0.3.1', enabled: false, cordis_id: 'dsh-thought-buddy' },
         { id: 'my-git-plugin', version: 'github:owner/my-git-plugin#v1.0.0', enabled: true, cordis_id: 'my-git-plugin' },
       ] as T
@@ -1642,6 +1648,7 @@ export const api = {
 
   listVersions: () => call<DshVersion[]>('list_versions'),
   fetchAvailableVersions: () => call<RemoteVersion[]>('fetch_available_versions'),
+  loadVersionIcons: () => call<VersionIcons>('load_version_icons'),
   removeVersion: (id: string) => call<void>('remove_version', { id }),
 
   startCreateInstanceTask: (

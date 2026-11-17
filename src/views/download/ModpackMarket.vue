@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { ToggleButtonGroup } from '@dsh-plugin/dsh-ui-components-vue'
 import { computed, onMounted, ref, toRef, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { useI18n } from 'vue-i18n'
@@ -25,6 +26,11 @@ const search = ref(store.modpackMarketSearch)
 const error = ref<string | null>(null)
 /** '' means "all pack types". */
 const typeFilter = ref<'' | 'profile' | 'dshhome'>('')
+const typeOptions = computed(() => [
+  { value: '', label: t('modpack.marketTypeAll') },
+  { value: 'profile', label: t('modpack.marketTypeProfile') },
+  { value: 'dshhome', label: t('modpack.marketTypeDshhome') },
+])
 
 // Import dialog state: installing a pack just prefills the existing import
 // dialog with the pack's download URL (auto-loads the manifest).
@@ -114,13 +120,12 @@ onMounted(() => {
         </dsh-space>
       </div>
 
-      <div class="type-filter">
-        <dsh-radio-group v-model="typeFilter" type="button" size="small">
-          <dsh-radio value="">{{ t('modpack.marketTypeAll') }}</dsh-radio>
-          <dsh-radio value="profile">{{ t('modpack.marketTypeProfile') }}</dsh-radio>
-          <dsh-radio value="dshhome">{{ t('modpack.marketTypeDshhome') }}</dsh-radio>
-        </dsh-radio-group>
-      </div>
+      <ToggleButtonGroup
+        v-model="typeFilter"
+        :options="typeOptions"
+        :label="t('modpack.marketTitle')"
+        class="type-filter"
+      />
 
       <div v-if="error" class="market-error">
         <dsh-alert :title="t('modpack.marketError')" type="error">
@@ -184,7 +189,6 @@ onMounted(() => {
           :total="filtered.length"
           :page-size="pageSize"
           hide-on-single-page
-          size="small"
         />
       </template>
     </div>
@@ -205,6 +209,11 @@ onMounted(() => {
 
 .type-filter {
   margin-bottom: 12px;
+  border-radius: 999px;
+
+  :deep(.dsh-toggle-button) {
+    border-radius: 999px;
+  }
 }
 
 .market-error {

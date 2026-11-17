@@ -411,6 +411,7 @@ pub fn run() {
             icons::set_launcher_icon,
             icons::clear_launcher_icon,
             icons::read_launcher_icon,
+            icons::load_version_icons,
             skills::list_instance_skills,
             commands::read_agents_md,
             commands::write_agents_md,

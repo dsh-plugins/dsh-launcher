@@ -10,6 +10,82 @@ use tauri::{image::Image, Manager, State};
 
 const ICON_MAX_BYTES: usize = 16 * 1024 * 1024;
 const ICON_SIZE: u32 = 256;
+const VERSION_ICON_MAX_BYTES: usize = 64 * 1024;
+
+#[derive(serde::Serialize)]
+pub struct VersionIcons {
+    chat: Option<String>,
+    platform: Option<String>,
+}
+
+fn version_icon_data_url(bytes: &[u8]) -> Option<String> {
+    use base64::Engine;
+
+    if bytes.len() > VERSION_ICON_MAX_BYTES {
+        return None;
+    }
+    let svg = std::str::from_utf8(bytes).ok()?.trim();
+    if !svg.starts_with("<svg") || !svg.ends_with("</svg>") {
+        return None;
+    }
+    Some(format!(
+        "data:image/svg+xml;base64,{}",
+        base64::engine::general_purpose::STANDARD.encode(bytes)
+    ))
+}
+
+async fn cached_version_icon(path: PathBuf, url: &str) -> Option<String> {
+    if let Some(icon) = tokio::fs::read(&path)
+        .await
+        .ok()
+        .and_then(|bytes| version_icon_data_url(&bytes))
+    {
+        return Some(icon);
+    }
+
+    let client = crate::proxy::apply(reqwest::Client::builder())
+        .timeout(std::time::Duration::from_secs(8))
+        .user_agent("dsh-launcher")
+        .build()
+        .ok()?;
+    let mut response = client.get(url).send().await.ok()?.error_for_status().ok()?;
+    if response
+        .content_length()
+        .is_some_and(|size| size > VERSION_ICON_MAX_BYTES as u64)
+    {
+        return None;
+    }
+    let mut bytes = Vec::new();
+    while let Some(chunk) = response.chunk().await.ok()? {
+        if bytes.len() + chunk.len() > VERSION_ICON_MAX_BYTES {
+            return None;
+        }
+        bytes.extend_from_slice(&chunk);
+    }
+    let icon = version_icon_data_url(&bytes)?;
+    if let Some(dir) = path.parent() {
+        let _ = tokio::fs::create_dir_all(dir).await;
+    }
+    let _ = tokio::fs::write(&path, &bytes).await;
+    Some(icon)
+}
+
+/// 在主窗口启动时填充缓存，缺失的图标各自回退。
+#[tauri::command]
+pub async fn load_version_icons(state: State<'_, AppState>) -> Result<VersionIcons, String> {
+    let dir = state.data_dir.join("cache").join("version-icons");
+    let (chat, platform) = tokio::join!(
+        cached_version_icon(
+            dir.join("chat.svg"),
+            "https://fe-static.deepseek.com/chat/favicon.svg",
+        ),
+        cached_version_icon(
+            dir.join("platform.svg"),
+            "https://fe-static.deepseek.com/platform/favicon.svg",
+        ),
+    );
+    Ok(VersionIcons { chat, platform })
+}
 
 /// Where a local icon lives inside the instance's HOME.
 pub(crate) fn local_icon_path(home: &Path, instance_id: &str) -> PathBuf {
@@ -490,6 +566,43 @@ pub fn read_launcher_icon(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn version_icon_is_cached_and_reused_when_offline() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let cache = std::env::temp_dir().join(format!(
+            "dsh-version-icon-test-{}-{}.svg",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let svg = b"<svg xmlns=\"http://www.w3.org/2000/svg\"></svg>";
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}/favicon.svg", listener.local_addr().unwrap());
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            assert!(stream.read(&mut [0u8; 1024]).await.unwrap() > 0);
+            let header = format!(
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                svg.len()
+            );
+            stream.write_all(header.as_bytes()).await.unwrap();
+            stream.write_all(svg).await.unwrap();
+        });
+
+        let icon = cached_version_icon(cache.clone(), &url).await.unwrap();
+        server.await.unwrap();
+        assert_eq!(tokio::fs::read(&cache).await.unwrap(), svg);
+        assert_eq!(
+            cached_version_icon(cache.clone(), "not a URL").await,
+            Some(icon)
+        );
+        tokio::fs::remove_file(&cache).await.unwrap();
+        assert!(cached_version_icon(cache, "not a URL").await.is_none());
+    }
 
     #[test]
     fn launcher_icon_path_validates_kind() {

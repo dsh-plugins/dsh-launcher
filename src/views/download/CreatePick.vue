@@ -6,6 +6,7 @@ import { useFeedback, useDialog } from '@dsh-plugin/dsh-ui-components-vue'
 import { api } from '@/api'
 import { useLauncherStore } from '@/stores/launcher'
 import type { RemoteVersion } from '@/api/types'
+import MarketIcon from '@/components/MarketIcon.vue'
 
 // keep-alive name: the download page caches this view (list state).
 defineOptions({ name: 'CreatePickPage' })
@@ -43,6 +44,13 @@ const latest = computed(() => {
 })
 
 const installedSet = computed(() => new Set(store.versions.map((v) => v.version)))
+const sourceBuilds = computed(() => new Set(remote.value.filter((v) => v.source === 'github').map((v) => v.version)))
+
+function versionIcon(version: string) {
+  return sourceBuilds.value.has(version) || /-alpha(?:[.\d-]|$)/i.test(version)
+    ? store.versionIcons.chat
+    : store.versionIcons.platform
+}
 
 function formatDate(iso: string | null): string {
   if (!iso) return ''
@@ -96,48 +104,50 @@ function confirmRemove(id: string, version: string) {
 <template>
   <div class="create-pick">
     <!-- Latest versions (always rendered; empty state when no data) -->
-    <dsh-spin :loading="loading" class="dl-card card-loading">
-      <div class="dl-card-title">
-        <h3>{{ t('download.latest') }}</h3>
-        <dsh-button variant="ghost" size="sm" :loading="loading" @click="store.refreshRemoteVersions().catch((error) => Message.error(String(error)))">
-          {{ t('common.refresh') }}
-        </dsh-button>
-      </div>
-      <template v-if="latest.length">
-        <div
-          v-for="row in latest"
-          :key="row.v.version"
-          class="version-row"
-          @click="pick(row.v.version)"
-        >
-          <span class="version-icon" :class="{ pre: isPrerelease(row.v.version) }">◆</span>
-          <div class="version-meta">
-            <div class="version-name">
-              {{ row.v.version }}
-              <dsh-tag v-if="row.v.source === 'github'" size="small" color="orange">
-                {{ t('download.sourceBuildTag') }}
-              </dsh-tag>
-              <dsh-tag v-if="installedSet.has(row.v.version)" size="small" color="green">
-                {{ t('download.installedTag') }}
-              </dsh-tag>
-            </div>
-            <div class="version-sub">
-              {{ row.label }}<template v-if="row.v.released_at">，{{ t('download.releasedAt', { date: formatDate(row.v.released_at) }) }}</template>
-            </div>
-          </div>
-          <span class="version-arrow">›</span>
+    <dsh-spin :loading="loading" :aria-busy="loading" class="dl-card card-loading">
+      <div class="card-content">
+        <div class="dl-card-title">
+          <h3>{{ t('download.latest') }}</h3>
+          <dsh-button variant="ghost" size="sm" :loading="loading" @click="store.refreshRemoteVersions().catch((error) => Message.error(String(error)))">
+            {{ t('common.refresh') }}
+          </dsh-button>
         </div>
-      </template>
-      <div v-else class="card-empty">{{ loading ? t('common.loading') : t('download.noData') }}</div>
+        <template v-if="latest.length">
+          <div
+            v-for="row in latest"
+            :key="row.v.version"
+            class="version-row"
+            @click="pick(row.v.version)"
+          >
+            <MarketIcon :src="versionIcon(row.v.version)" class="version-icon" :class="{ pre: isPrerelease(row.v.version) }">◆</MarketIcon>
+            <div class="version-meta">
+              <div class="version-name">
+                {{ row.v.version }}
+                <dsh-tag v-if="row.v.source === 'github'" size="small" color="orange">
+                  {{ t('download.sourceBuildTag') }}
+                </dsh-tag>
+                <dsh-tag v-if="installedSet.has(row.v.version)" size="small" color="green">
+                  {{ t('download.installedTag') }}
+                </dsh-tag>
+              </div>
+              <div class="version-sub">
+                {{ row.label }}<template v-if="row.v.released_at">，{{ t('download.releasedAt', { date: formatDate(row.v.released_at) }) }}</template>
+              </div>
+            </div>
+            <span class="version-arrow">›</span>
+          </div>
+        </template>
+        <div v-else class="card-empty">{{ loading ? t('common.loading') : t('download.noData') }}</div>
+      </div>
     </dsh-spin>
 
     <!-- Grouped version lists -->
-    <dsh-spin :loading="loading" class="card-loading">
-      <dsh-collapse :default-active-key="['stable', 'prerelease']" class="version-groups dl-glass">
+    <dsh-spin :loading="loading" :aria-busy="loading" class="dl-glass card-loading">
+      <dsh-collapse :default-active-key="['stable', 'prerelease']" class="card-content">
         <dsh-collapse-item key="stable" :header="t('download.stable')">
           <template v-if="stable.length">
             <div v-for="v in stable" :key="v.version" class="version-row" @click="pick(v.version)">
-              <span class="version-icon">◆</span>
+              <MarketIcon :src="versionIcon(v.version)" class="version-icon">◆</MarketIcon>
               <div class="version-meta">
                 <div class="version-name">
                   {{ v.version }}
@@ -158,7 +168,7 @@ function confirmRemove(id: string, version: string) {
         <dsh-collapse-item key="prerelease" :header="t('download.prerelease')">
           <template v-if="prerelease.length">
             <div v-for="v in prerelease" :key="v.version" class="version-row" @click="pick(v.version)">
-              <span class="version-icon pre">◆</span>
+              <MarketIcon :src="versionIcon(v.version)" class="version-icon pre">◆</MarketIcon>
               <div class="version-meta">
                 <div class="version-name">
                   {{ v.version }}
@@ -180,27 +190,29 @@ function confirmRemove(id: string, version: string) {
     </dsh-spin>
 
     <!-- Installed versions -->
-    <dsh-spin :loading="loading" class="dl-card installed-card card-loading">
-      <div class="dl-card-title">
-        <h3>{{ t('download.installedTitle') }}</h3>
-      </div>
-      <div v-for="v in store.versions" :key="v.id" class="installed-row">
-        <span class="version-icon">◆</span>
-        <div class="version-meta">
-          <div class="version-name">{{ v.version }}</div>
-          <div class="version-sub">{{ v.dir }}</div>
+    <dsh-spin :loading="loading" :aria-busy="loading" class="dl-card installed-card card-loading">
+      <div class="card-content">
+        <div class="dl-card-title">
+          <h3>{{ t('download.installedTitle') }}</h3>
         </div>
-        <span class="used-by">{{ t('download.usedBy', { count: usedByCount(v.id) }) }}</span>
-        <dsh-button variant="danger"
-          size="sm"
-          :loading="removingId === v.id"
-          :disabled="removingId !== null"
-          @click="confirmRemove(v.id, v.version)"
-        >
-          {{ t('download.deleteVersion') }}
-        </dsh-button>
+        <div v-for="v in store.versions" :key="v.id" class="installed-row">
+          <MarketIcon :src="versionIcon(v.version)" class="version-icon">◆</MarketIcon>
+          <div class="version-meta">
+            <div class="version-name">{{ v.version }}</div>
+            <div class="version-sub">{{ v.dir }}</div>
+          </div>
+          <span class="used-by">{{ t('download.usedBy', { count: usedByCount(v.id) }) }}</span>
+          <dsh-button variant="danger"
+            size="sm"
+            :loading="removingId === v.id"
+            :disabled="removingId !== null"
+            @click="confirmRemove(v.id, v.version)"
+          >
+            {{ t('download.deleteVersion') }}
+          </dsh-button>
+        </div>
+        <dsh-empty v-if="store.versions.length === 0" :description="t('download.emptyInstalled')" />
       </div>
-      <dsh-empty v-if="store.versions.length === 0" :description="t('download.emptyInstalled')" />
     </dsh-spin>
   </div>
 </template>
@@ -216,14 +228,18 @@ function confirmRemove(id: string, version: string) {
 
 .card-loading {
   display: block;
-  border-radius: 20px;
 
-  :deep(.arco-spin-mask) {
-    border-radius: inherit;
+  &[aria-busy='true'] {
+    overflow: clip;
+
+    .card-content {
+      filter: blur(8px);
+    }
   }
 
-  &.dl-card :deep(.arco-spin-mask) {
-    inset: -1px;
+  :deep(> .arco-spin-mask) {
+    background: transparent;
+    border-radius: inherit;
   }
 }
 
@@ -242,19 +258,11 @@ function confirmRemove(id: string, version: string) {
 }
 
 .version-icon {
-  width: 40px;
-  height: 40px;
-  border-radius: 8px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  background: linear-gradient(135deg, #0fc6c2, #165dff);
   color: #fff;
   font-size: 16px;
-  flex-shrink: 0;
 
   &.pre {
-    background: linear-gradient(135deg, #f7ba1e, #f53f3f);
+    --market-icon-fallback: linear-gradient(135deg, #f7ba1e, #f53f3f);
   }
 }
 

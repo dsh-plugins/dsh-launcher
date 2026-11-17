@@ -36,13 +36,14 @@ import ModelPickerDialog from '@/components/ModelPickerDialog.vue'
 import HintIcon from '@/components/HintIcon.vue'
 import PageScrollbar from '@/components/PageScrollbar.vue'
 import { shortRepoName } from '@/utils/repo'
+import { pluginName } from '@/utils/market'
 
 const { message: Message } = useFeedback()
 const { modal: Modal } = useDialog()
 
 const route = useRoute()
 const router = useRouter()
-const { t, te } = useI18n()
+const { t, te, locale } = useI18n()
 const store = useLauncherStore()
 
 const editingId = computed(() => (route.params.id as string | undefined) ?? null)
@@ -697,8 +698,8 @@ function onAgentsEditorKeydown(event: KeyboardEvent) {
 const skillColumns = computed(() => [
   { title: t('instanceEdit.skillColName'), slotName: 'skillName' },
   { title: t('instanceEdit.skillColDesc'), slotName: 'skillDesc' },
-  { title: t('instanceEdit.skillColOrigin'), slotName: 'origin' },
-  { title: t('instances.table.actions'), slotName: 'skillActions', width: 170, align: 'center' as const },
+  { title: t('instanceEdit.skillColOrigin'), slotName: 'origin', headerCellClass: 'cell-nowrap' },
+  { title: t('instances.table.actions'), slotName: 'skillActions', width: 170, fixed: 'right' as const, align: 'center' as const },
 ])
 
 async function loadSkills() {
@@ -895,9 +896,11 @@ const mcpColumns = computed(() => [
   { title: t('instanceEdit.mcpColName'), slotName: 'mcpName' },
   { title: t('instanceEdit.mcpColTransport'), slotName: 'mcpTransport', width: 150 },
   { title: t('instanceEdit.mcpColTarget'), slotName: 'mcpTarget' },
-  { title: t('instanceEdit.mcpColStatus'), slotName: 'mcpStatus', width: 110 },
-  { title: t('instances.table.actions'), slotName: 'mcpActions', width: 150, align: 'center' as const },
+  { title: t('instanceEdit.mcpColStatus'), slotName: 'mcpStatus', width: 110, fixed: 'right' as const },
+  { title: t('instances.table.actions'), slotName: 'mcpActions', width: 150, fixed: 'right' as const, align: 'center' as const },
 ])
+
+const contentSizedTable = { x: 'max-content', minWidth: '100%' }
 
 /** One-line endpoint summary shown in the target column (stdio → command). */
 function mcpTargetText(server: McpServer): string {
@@ -2657,68 +2660,77 @@ const terminalRunning = ref(false)
               <CompatibilityReport v-if="compatibility" :report="compatibility" />
 
               <template v-if="pluginProfile">
-                <dsh-table
-                  :data="visiblePlugins"
-                  :loading="pluginsLoading"
-                  :row-selection="rowSelection"
-                  row-key="id"
-                  :pagination="false"
-                  :scroll="{ x: 900 }"
-                  class="plugins-table"
-                  @selection-change="onSelectionChange"
-                >
-                  <template #columns>
-                    <dsh-table-column title="ID" data-index="id" :width="320">
-                      <template #cell="{ record }">
-                        <span class="plugin-cell-id">{{ record.id }}</span>
-                      </template>
-                    </dsh-table-column>
-                    <dsh-table-column :title="t('instanceEdit.pluginVersion')" data-index="version" :width="180">
-                      <template #cell="{ record }">
-                        <span v-if="pluginUpdates[record.id]?.has_update" class="plugin-update-available">
-                          {{ pluginUpdates[record.id].current ?? displayVersion(record.version) }} →
-                          {{ pluginUpdates[record.id].latest }}
-                        </span>
-                        <span v-else-if="record.version">{{
-                          displayVersion(pluginUpdates[record.id]?.current ?? record.version)
-                        }}</span>
-                        <span v-else class="plugin-no-version">-</span>
-                      </template>
-                    </dsh-table-column>
-                    <dsh-table-column :title="t('instanceEdit.pluginStatus')" data-index="enabled" :width="120">
-                      <template #cell="{ record }">
-                        <dsh-switch
-                          :model-value="record.enabled"
-                          :disabled="pluginsBusy"
-                          :aria-label="t('instanceEdit.pluginStatus') + ': ' + record.id"
-                          @change="onSwitchChange(record, $event)"
-                        />
-                      </template>
-                    </dsh-table-column>
-                    <dsh-table-column :title="t('instanceEdit.pluginActions')" :width="160" fixed="right">
-                      <template #cell="{ record }">
-                        <dsh-space>
-                          <dsh-button variant="primary"
-                            v-if="pluginUpdates[record.id]?.has_update"
-                            size="sm"
+                <dsh-spin :loading="pluginsLoading" :aria-busy="pluginsLoading" class="plugins-table">
+                  <dsh-table
+                    :data="visiblePlugins"
+                    :row-selection="rowSelection"
+                    row-key="id"
+                    :pagination="false"
+                    :scroll="contentSizedTable"
+                    @selection-change="onSelectionChange"
+                  >
+                    <template #columns>
+                      <dsh-table-column
+                        :title="t('instanceEdit.pluginNameId')"
+                        data-index="id"
+                        :header-cell-style="{ width: '1%', whiteSpace: 'nowrap' }"
+                      >
+                        <template #cell="{ record }">
+                          <span v-if="record.name" class="plugin-cell-name" :title="pluginName(record.name, locale)">
+                            {{ pluginName(record.name, locale) }}
+                          </span>
+                          <span class="plugin-cell-id" :class="{ 'plugin-cell-id-secondary': record.name }">
+                            {{ record.id }}
+                          </span>
+                        </template>
+                      </dsh-table-column>
+                      <dsh-table-column :title="t('instanceEdit.pluginVersion')" data-index="version" cell-class="cell-nowrap">
+                        <template #cell="{ record }">
+                          <span v-if="pluginUpdates[record.id]?.has_update" class="plugin-update-available">
+                            {{ pluginUpdates[record.id].current ?? displayVersion(record.version) }} →
+                            {{ pluginUpdates[record.id].latest }}
+                          </span>
+                          <span v-else-if="record.version">{{
+                            displayVersion(pluginUpdates[record.id]?.current ?? record.version)
+                          }}</span>
+                          <span v-else class="plugin-no-version">-</span>
+                        </template>
+                      </dsh-table-column>
+                      <dsh-table-column :title="t('instanceEdit.pluginStatus')" data-index="enabled" :width="76" fixed="right">
+                        <template #cell="{ record }">
+                          <dsh-switch
+                            :model-value="record.enabled"
                             :disabled="pluginsBusy"
-                            @click="updatePlugins([record.id])"
-                          >
-                            {{ t('instanceEdit.pluginUpdate') }}
-                          </dsh-button>
-                          <dsh-popconfirm
-                            :content="t('instanceEdit.pluginUninstallConfirm', { name: record.id })"
-                            @ok="onUninstallPlugin(record)"
-                          >
-                            <dsh-button variant="danger" size="sm" :disabled="pluginsBusy">
-                              {{ t('instances.table.delete') }}
+                            :aria-label="t('instanceEdit.pluginStatus') + ': ' + record.id"
+                            @change="onSwitchChange(record, $event)"
+                          />
+                        </template>
+                      </dsh-table-column>
+                      <dsh-table-column :title="t('instanceEdit.pluginActions')" :width="160" fixed="right">
+                        <template #cell="{ record }">
+                          <dsh-space>
+                            <dsh-button variant="primary"
+                              v-if="pluginUpdates[record.id]?.has_update"
+                              size="sm"
+                              :disabled="pluginsBusy"
+                              @click="updatePlugins([record.id])"
+                            >
+                              {{ t('instanceEdit.pluginUpdate') }}
                             </dsh-button>
-                          </dsh-popconfirm>
-                        </dsh-space>
-                      </template>
-                    </dsh-table-column>
-                  </template>
-                </dsh-table>
+                            <dsh-popconfirm
+                              :content="t('instanceEdit.pluginUninstallConfirm', { name: record.id })"
+                              @ok="onUninstallPlugin(record)"
+                            >
+                              <dsh-button variant="danger" size="sm" :disabled="pluginsBusy">
+                                {{ t('instances.table.delete') }}
+                              </dsh-button>
+                            </dsh-popconfirm>
+                          </dsh-space>
+                        </template>
+                      </dsh-table-column>
+                    </template>
+                  </dsh-table>
+                </dsh-spin>
 
                 <div class="plugins-batch">
                   <dsh-button variant="primary"
@@ -2814,17 +2826,17 @@ const terminalRunning = ref(false)
                 </dsh-button>
               </div>
 
-              <div class="table-scroll">
-                <dsh-table
-                  :columns="skillColumns"
-                  :data="skills"
-                  :loading="skillsLoading"
-                  :pagination="false"
-                  :row-selection="rowSelection"
-                  row-key="name"
-                  size="small"
-                  @selection-change="onSkillSelectionChange"
-                >
+              <dsh-table
+                :columns="skillColumns"
+                :data="skills"
+                :loading="skillsLoading"
+                :pagination="false"
+                :scroll="contentSizedTable"
+                :row-selection="rowSelection"
+                row-key="name"
+                size="small"
+                @selection-change="onSkillSelectionChange"
+              >
                 <template #skillName="{ record }">
                   <span class="cell-nowrap">{{ record.name }}</span>
                 </template>
@@ -2869,8 +2881,7 @@ const terminalRunning = ref(false)
                 <template #empty>
                   <dsh-empty :description="t('instanceEdit.skillsEmpty')" />
                 </template>
-                </dsh-table>
-              </div>
+              </dsh-table>
             </template>
 
             <dsh-alert v-else type="info">
@@ -2954,15 +2965,15 @@ const terminalRunning = ref(false)
               <p class="mcp-path">{{ t('instanceEdit.mcpScopePath', { path: mcpScopePath }) }}</p>
               <p class="mcp-path">{{ t('instanceEdit.mcpPasteTip') }}</p>
 
-              <div class="table-scroll">
-                <dsh-table
-                  :columns="mcpColumns"
-                  :data="mcpServers"
-                  :loading="mcpLoading"
-                  :pagination="false"
-                  row-key="id"
-                  size="small"
-                >
+              <dsh-table
+                :columns="mcpColumns"
+                :data="mcpServers"
+                :loading="mcpLoading"
+                :pagination="false"
+                :scroll="contentSizedTable"
+                row-key="id"
+                size="small"
+              >
                 <template #mcpName="{ record }">
                   <span class="cell-nowrap">{{ record.serverName }}</span>
                 </template>
@@ -3006,8 +3017,7 @@ const terminalRunning = ref(false)
                 <template #empty>
                   <dsh-empty :description="t('instanceEdit.mcpEmpty')" />
                 </template>
-                </dsh-table>
-              </div>
+              </dsh-table>
             </template>
 
             <dsh-alert v-else type="info">
@@ -3373,6 +3383,7 @@ const terminalRunning = ref(false)
     <!-- Model provider editor (issue #89) -->
     <dsh-modal
       v-model:visible="providerEditVisible"
+      modalClass="model-provider-modal"
       :title="providerTitle"
       :width="680"
       :ok-loading="providerSaving"
@@ -3523,11 +3534,12 @@ const terminalRunning = ref(false)
     <!-- Add provider: choose built-in catalogue or custom (issue #89) -->
     <dsh-modal
       v-model:visible="addModeVisible"
+      modalClass="model-provider-modal"
       :title="t('instanceEdit.modelsAddTitle')"
       :footer="false"
       :width="560"
     >
-      <dsh-spin :loading="catalogLoading">
+      <dsh-spin :loading="catalogLoading" class="add-mode-content">
         <div class="add-mode-grid">
           <button class="add-mode-card" type="button" @click="openAddCustom">
             <span class="add-mode-title">{{ t('instanceEdit.modelsAddCustom') }}</span>
@@ -3542,7 +3554,8 @@ const terminalRunning = ref(false)
             @click="onPickCatalog(p)"
           >
             <span class="add-mode-title">{{ p.name }}</span>
-            <span class="add-mode-sub">{{ p.api }} · {{ p.baseUrl }}</span>
+            <span class="add-mode-sub" :title="p.api">{{ p.api }}</span>
+            <span class="add-mode-sub" :title="p.baseUrl">{{ p.baseUrl }}</span>
           </button>
         </div>
         <!-- A failed catalogue must say so, not masquerade as an empty one. -->
@@ -3842,7 +3855,7 @@ const terminalRunning = ref(false)
   overflow-x: auto;
 }
 
-.cell-nowrap {
+:deep(.cell-nowrap) {
   white-space: nowrap;
 }
 
@@ -3962,12 +3975,40 @@ const terminalRunning = ref(false)
 }
 
 .plugins-table {
+  display: block;
   margin-bottom: 12px;
+
+  &[aria-busy='true'] :deep(.arco-table-element > tbody) {
+    filter: blur(6px);
+    clip-path: inset(0 round calc(var(--radius) * 2));
+  }
+
+  :deep(> .arco-spin-mask) {
+    background: transparent;
+  }
+}
+
+.plugin-cell-name {
+  // Let the ID determine the column width, even when the localized name is longer.
+  display: block;
+  width: 0;
+  min-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .plugin-cell-id {
   font-family: monospace;
   font-size: 13px;
+  white-space: nowrap;
+}
+
+.plugin-cell-id-secondary {
+  display: block;
+  color: var(--color-text-3);
+  font-size: 12px;
+  line-height: 16px;
 }
 
 .plugin-no-version {
@@ -4231,14 +4272,18 @@ const terminalRunning = ref(false)
   align-self: flex-start;
 }
 
+:global(.model-provider-modal .dsh-overlay-scroll > .arco-scrollbar-container) {
+  margin-inline-end: 22px;
+}
+
+.add-mode-content {
+  display: block;
+}
+
 .add-mode-grid {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 12px;
-  /* The provider catalogue is long: cap the grid and scroll inside the
-     modal instead of letting the dialog outgrow the window. */
-  max-height: 60vh;
-  overflow-y: auto;
 }
 
 .add-mode-card {
@@ -4270,8 +4315,11 @@ const terminalRunning = ref(false)
 }
 
 .add-mode-sub {
+  align-self: stretch;
+  overflow: hidden;
   font-size: 12px;
   color: var(--color-text-3);
-  word-break: break-all;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 </style>

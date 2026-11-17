@@ -1,13 +1,14 @@
 <script setup lang="ts">
 import { useFeedback } from '@dsh-plugin/dsh-ui-components-vue'
-import { computed, nextTick, onBeforeUnmount, onMounted, ref, toRef, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, toRef, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { useLauncherStore } from '@/stores/launcher'
 import { injectDownloadScroll } from '@/composables/download-scroll'
 import { api } from '@/api'
-import { localizedText, nameValues, pluginName, rangeParts } from '@/utils/market'
+import { localizedText, nameValues, npmPluginIconUrl, pluginName, rangeParts } from '@/utils/market'
 import { usePaginatedList } from '@/composables/paginated-list'
+import MarketIcon from '@/components/MarketIcon.vue'
 import type { Confidence, MarketPlugin, PluginSource } from '@/api/types'
 
 // keep-alive name: the download page caches this view (search/scroll state).
@@ -98,6 +99,12 @@ const filtered = computed(() => {
 
 const page = toRef(store, 'pluginMarketPage')
 const { visible: visiblePlugins, pageSize } = usePaginatedList(filtered, page)
+const failedIcons = reactive(new Set<string>())
+const pluginRows = computed(() => visiblePlugins.value.map((plugin) => ({
+  plugin,
+  icon: [plugin.catalog?.icon, npmPluginIconUrl(plugin)]
+    .find((url) => url && !failedIcons.has(url)),
+})))
 
 watch([page, filtered], () => {
   // Cached markets share the download scrollbar; only move the active one.
@@ -114,6 +121,7 @@ function choose(p: MarketPlugin) {
 }
 
 async function load() {
+  failedIcons.clear()
   await store.refreshMarketPlugins(true)
 }
 
@@ -189,13 +197,12 @@ onBeforeUnmount(() => {
           <dsh-empty :description="search ? t('plugins.noMatch') : t('plugins.empty')" />
         </div>
         <div
-          v-for="p in visiblePlugins"
+          v-for="{ plugin: p, icon } in pluginRows"
           :key="p.id"
           class="plugin-row"
           @click="choose(p)"
         >
-          <img v-if="p.catalog?.icon" :src="p.catalog.icon" class="plugin-icon" alt="" loading="lazy" decoding="async" style="width: 32px; height: 32px; object-fit: contain" />
-          <span v-else class="plugin-icon">🧩</span>
+          <MarketIcon :src="icon" class="plugin-icon" @error="failedIcons.add($event)">🧩</MarketIcon>
           <div class="plugin-meta">
             <div class="plugin-name">
               {{ localizedText(p.catalog?.title, locale) || pluginName(p.name, locale) }}
@@ -233,7 +240,6 @@ onBeforeUnmount(() => {
           :total="filtered.length"
           :page-size="pageSize"
           hide-on-single-page
-          size="small"
         />
       </template>
     </div>
@@ -295,15 +301,7 @@ onBeforeUnmount(() => {
 }
 
 .plugin-icon {
-  width: 40px;
-  height: 40px;
-  border-radius: 8px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  background: linear-gradient(135deg, #0fc6c2, #165dff);
   font-size: 18px;
-  flex-shrink: 0;
 }
 
 .plugin-meta {

@@ -18,8 +18,12 @@ const router = useRouter()
 const { t, locale } = useI18n()
 const store = useLauncherStore()
 const isTauri = api.isTauri
+const standaloneWindow = computed(() => ['tui-terminal', 'update-notice', 'early-loading'].includes(route.name as string))
 
 onMounted(async () => {
+  void router.isReady().then(() => {
+    if (!standaloneWindow.value) void store.loadVersionIcons()
+  })
   await store.init()
   locale.value = store.settings.locale || 'zh-CN'
   // If Node.js is missing, guide the user to install it before anything else.
@@ -294,7 +298,7 @@ async function onHeaderMouseDown(e: MouseEvent) {
 
 <template>
   <!-- Standalone frameless windows render bare, without the app shell. -->
-  <router-view v-if="['tui-terminal', 'update-notice', 'early-loading'].includes(route.name as string)" />
+  <router-view v-if="standaloneWindow" />
   <dsh-layout v-else class="app-shell" :class="{ 'is-maximized': windowMaximized }">
     <dsh-layout-header class="app-header" @mousedown="onHeaderMouseDown">
       <!-- Brand; dragging is handled manually via onHeaderMouseDown. -->

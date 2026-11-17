@@ -17,6 +17,7 @@ import type {
   RemoteVersion,
   RuntimeStatus,
   TaskInfo,
+  VersionIcons,
 } from '@/api/types'
 
 /** Wizard state carried across the plugin install flow. */
@@ -54,6 +55,7 @@ interface LauncherState {
   statusById: Record<string, InstanceStatus>
   tasks: Record<string, TaskInfo>
   remoteVersions: RemoteVersion[]
+  versionIcons: VersionIcons
   remoteLoading: boolean
   runtime: RuntimeStatus | null
   marketPlugins: MarketPlugin[]
@@ -130,6 +132,7 @@ export const useLauncherStore = defineStore('launcher', {
     statusById: {},
     tasks: {},
     remoteVersions: [],
+    versionIcons: { chat: null, platform: null },
     remoteLoading: false,
     runtime: null,
     marketPlugins: [],
@@ -177,6 +180,14 @@ export const useLauncherStore = defineStore('launcher', {
   },
 
   actions: {
+    async loadVersionIcons() {
+      try {
+        this.versionIcons = await api.loadVersionIcons()
+      } catch {
+        // 仅用于装饰，无法加载时继续显示版本页的默认图标。
+      }
+    },
+
     async init() {
       // Attach the status listener BEFORE the initial snapshot fetch, and
       // buffer events until the snapshot is applied. Otherwise an exit event
