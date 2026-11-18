@@ -2,7 +2,7 @@
 import { computed, onBeforeUnmount, onMounted, ref, watch, type Ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
-import { Message, Modal } from '@arco-design/web-vue'
+import { useFeedback, useDialog } from '@dsh-plugin/dsh-ui-components-vue'
 import { api } from '@/api'
 import type { CompatibilityReport as CompatibilityReportType } from '@/api/types'
 import CompatibilityReport from '@/components/CompatibilityReport.vue'
@@ -34,11 +34,16 @@ import SkillRepoDialog from '@/components/SkillRepoDialog.vue'
 import MigratePluginsDialog from '@/components/MigratePluginsDialog.vue'
 import ModelPickerDialog from '@/components/ModelPickerDialog.vue'
 import HintIcon from '@/components/HintIcon.vue'
+import PageScrollbar from '@/components/PageScrollbar.vue'
 import { shortRepoName } from '@/utils/repo'
+import { pluginName } from '@/utils/market'
+
+const { message: Message } = useFeedback()
+const { modal: Modal } = useDialog()
 
 const route = useRoute()
 const router = useRouter()
-const { t, te } = useI18n()
+const { t, te, locale } = useI18n()
 const store = useLauncherStore()
 
 const editingId = computed(() => (route.params.id as string | undefined) ?? null)
@@ -693,8 +698,8 @@ function onAgentsEditorKeydown(event: KeyboardEvent) {
 const skillColumns = computed(() => [
   { title: t('instanceEdit.skillColName'), slotName: 'skillName' },
   { title: t('instanceEdit.skillColDesc'), slotName: 'skillDesc' },
-  { title: t('instanceEdit.skillColOrigin'), slotName: 'origin' },
-  { title: t('instances.table.actions'), slotName: 'skillActions', width: 170, align: 'center' as const },
+  { title: t('instanceEdit.skillColOrigin'), slotName: 'origin', headerCellClass: 'cell-nowrap' },
+  { title: t('instances.table.actions'), slotName: 'skillActions', width: 170, fixed: 'right' as const, align: 'center' as const },
 ])
 
 async function loadSkills() {
@@ -891,9 +896,11 @@ const mcpColumns = computed(() => [
   { title: t('instanceEdit.mcpColName'), slotName: 'mcpName' },
   { title: t('instanceEdit.mcpColTransport'), slotName: 'mcpTransport', width: 150 },
   { title: t('instanceEdit.mcpColTarget'), slotName: 'mcpTarget' },
-  { title: t('instanceEdit.mcpColStatus'), slotName: 'mcpStatus', width: 110 },
-  { title: t('instances.table.actions'), slotName: 'mcpActions', width: 150, align: 'center' as const },
+  { title: t('instanceEdit.mcpColStatus'), slotName: 'mcpStatus', width: 110, fixed: 'right' as const },
+  { title: t('instances.table.actions'), slotName: 'mcpActions', width: 150, fixed: 'right' as const, align: 'center' as const },
 ])
+
+const contentSizedTable = { x: 'max-content', minWidth: '100%' }
 
 /** One-line endpoint summary shown in the target column (stdio → command). */
 function mcpTargetText(server: McpServer): string {
@@ -2329,78 +2336,78 @@ const terminalRunning = ref(false)
 </script>
 
 <template>
-  <div class="edit-page">
-    <aside class="edit-sidebar">
-      <a-menu :selected-keys="[activeTab]" @menu-item-click="(key: string) => (activeTab = key as TabKey)">
-        <a-menu-item key="basic">{{ t('instanceEdit.tabs.basic') }}</a-menu-item>
-        <a-menu-item v-if="networkInstance" key="network">{{ t('network.title') }}</a-menu-item>
-        <a-menu-item key="env">{{ t('instanceEdit.tabs.env') }}</a-menu-item>
-        <a-menu-item key="profiles">{{ t('instanceEdit.tabs.profiles') }}</a-menu-item>
-        <a-menu-item key="plugins">{{ t('instanceEdit.tabs.plugins') }}</a-menu-item>
-        <a-menu-item key="skills">{{ t('instanceEdit.tabs.skills') }}</a-menu-item>
-        <a-menu-item key="agents">{{ t('instanceEdit.tabs.agents') }}</a-menu-item>
-        <a-menu-item key="mcp">{{ t('instanceEdit.tabs.mcp') }}</a-menu-item>
-        <a-menu-item key="models">{{ t('instanceEdit.tabs.models') }}</a-menu-item>
-        <a-menu-item key="storage">{{ t('instanceEdit.tabs.storage') }}</a-menu-item>
-        <a-menu-item key="terminal">{{ t('instanceEdit.tabs.terminal') }}</a-menu-item>
-      </a-menu>
+  <div class="edit-page dl-split-page">
+    <aside class="edit-sidebar dl-sidebar">
+      <dsh-menu :selected-keys="[activeTab]" @menu-item-click="(key: string) => (activeTab = key as TabKey)">
+        <dsh-menu-item key="basic">{{ t('instanceEdit.tabs.basic') }}</dsh-menu-item>
+        <dsh-menu-item v-if="networkInstance" key="network">{{ t('network.title') }}</dsh-menu-item>
+        <dsh-menu-item key="env">{{ t('instanceEdit.tabs.env') }}</dsh-menu-item>
+        <dsh-menu-item key="profiles">{{ t('instanceEdit.tabs.profiles') }}</dsh-menu-item>
+        <dsh-menu-item key="plugins">{{ t('instanceEdit.tabs.plugins') }}</dsh-menu-item>
+        <dsh-menu-item key="skills">{{ t('instanceEdit.tabs.skills') }}</dsh-menu-item>
+        <dsh-menu-item key="agents">{{ t('instanceEdit.tabs.agents') }}</dsh-menu-item>
+        <dsh-menu-item key="mcp">{{ t('instanceEdit.tabs.mcp') }}</dsh-menu-item>
+        <dsh-menu-item key="models">{{ t('instanceEdit.tabs.models') }}</dsh-menu-item>
+        <dsh-menu-item key="storage">{{ t('instanceEdit.tabs.storage') }}</dsh-menu-item>
+        <dsh-menu-item key="terminal">{{ t('instanceEdit.tabs.terminal') }}</dsh-menu-item>
+      </dsh-menu>
     </aside>
-    <section class="edit-content">
-      <a-scrollbar type="track" outer-style="height: 100%" style="height: 100%; overflow-y: auto">
+    <section class="edit-content dl-page-content">
+      <PageScrollbar>
         <div class="edit-inner">
           <!-- Basic settings -->
           <div v-if="activeTab === 'basic'" class="dl-card edit-card">
-            <a-form layout="vertical" class="edit-form" :model="{}">
-              <a-form-item :label="t('instanceEdit.name')" required>
-                <a-space>
-                  <a-input v-model="name" :placeholder="t('instanceEdit.namePlaceholder')" style="max-width: 360px" />
-                  <a-tag v-if="isWsl" color="arcoblue">WSL · {{ wslDistro }}</a-tag>
-                </a-space>
-              </a-form-item>
+            <dsh-form layout="vertical" class="edit-form" :model="{}">
+              <dsh-form-item :label="t('instanceEdit.name')" required>
+                <dsh-space>
+                  <dsh-input v-model="name" :placeholder="t('instanceEdit.namePlaceholder')" style="max-width: 360px" />
+                  <dsh-tag v-if="isWsl" color="arcoblue">WSL · {{ wslDistro }}</dsh-tag>
+                </dsh-space>
+              </dsh-form-item>
 
-              <a-form-item v-if="editingId">
+              <dsh-form-item v-if="editingId">
                 <template #label>
                   {{ t('instanceEdit.icon') }}
                   <HintIcon :content="t('instanceEdit.iconHint')" />
                 </template>
                 <div class="icon-editor">
                   <img v-if="iconUrl" :src="iconUrl" class="icon-preview" alt="" />
-                  <img v-else src="@/assets/launcher-icon.png" class="icon-preview" alt="" />
+                  <img v-else src="@/assets/launcher-icon-v3.png" class="icon-preview" alt="" />
                   <div class="icon-actions">
-                    <a-input
+                    <dsh-input
                       v-model="iconInput"
                       :placeholder="t('instanceEdit.iconUrlHint')"
                       allow-clear
                       style="max-width: 300px"
                     />
-                    <a-space>
-                      <a-button :loading="iconBusy" :disabled="!iconInput.trim()" @click="applyIconInput">
+                    <dsh-space>
+                      <dsh-button variant="secondary" :loading="iconBusy" :disabled="!iconInput.trim()" @click="applyIconInput">
                         {{ t('instanceEdit.iconApply') }}
-                      </a-button>
-                      <a-button :loading="iconBusy" @click="pickIconFile">
+                      </dsh-button>
+                      <dsh-button variant="secondary" :loading="iconBusy" @click="pickIconFile">
                         {{ t('instanceEdit.iconPickFile') }}
-                      </a-button>
-                      <a-button v-if="iconUrl" status="danger" @click="clearIcon">
+                      </dsh-button>
+                      <dsh-button variant="danger" v-if="iconUrl" @click="clearIcon">
                         {{ t('instanceEdit.iconClear') }}
-                      </a-button>
-                    </a-space>
+                      </dsh-button>
+                    </dsh-space>
                   </div>
                 </div>
-              </a-form-item>
+              </dsh-form-item>
 
-              <a-form-item :label="t('instanceEdit.version')" required>
+              <dsh-form-item :label="t('instanceEdit.version')" required>
                 <template v-if="versionOptions.length">
-                  <a-select v-model="versionId" style="max-width: 360px">
-                    <a-option v-for="v in versionOptions" :key="v.id" :value="v.id">{{ v.version }}</a-option>
-                  </a-select>
+                  <dsh-select v-model="versionId" style="max-width: 360px">
+                    <dsh-option v-for="v in versionOptions" :key="v.id" :value="v.id">{{ v.version }}</dsh-option>
+                  </dsh-select>
                 </template>
-                <a-alert v-else type="warning">
+                <dsh-alert v-else type="warning">
                   {{ t('instanceEdit.noVersion') }}
-                  <a-link @click="router.push({ name: 'download' })">{{ t('instanceEdit.goDownload') }}</a-link>
-                </a-alert>
-              </a-form-item>
+                  <dsh-link href="#" @click.prevent="router.push({ name: 'download' })">{{ t('instanceEdit.goDownload') }}</dsh-link>
+                </dsh-alert>
+              </dsh-form-item>
 
-              <a-form-item required>
+              <dsh-form-item required>
                 <template #label>
                   {{ t('instanceEdit.home') }}
                   <HintIcon v-if="isWsl" :content="t('instanceEdit.wslHomeFixed')" />
@@ -2409,63 +2416,63 @@ const terminalRunning = ref(false)
                     :content="t('instanceEdit.dedicatedHomeHint', { path: dedicatedPath })"
                   />
                 </template>
-                <a-select v-model="homeId" style="max-width: 360px" :disabled="isWsl">
-                  <a-option v-if="!isWsl" :value="DEDICATED">{{ t('instanceEdit.dedicatedHome') }}</a-option>
-                  <a-option v-for="h in homeOptions" :key="h.id" :value="h.id">
+                <dsh-select v-model="homeId" style="max-width: 360px" :disabled="isWsl">
+                  <dsh-option v-if="!isWsl" :value="DEDICATED">{{ t('instanceEdit.dedicatedHome') }}</dsh-option>
+                  <dsh-option v-for="h in homeOptions" :key="h.id" :value="h.id">
                     {{ h.name }}（{{ h.path }}）
-                  </a-option>
-                </a-select>
-                <a-input
+                  </dsh-option>
+                </dsh-select>
+                <dsh-input
                   v-if="homeId === DEDICATED && !isWsl"
                   v-model="homeName"
                   :placeholder="t('instanceEdit.homeNamePlaceholder')"
                   style="max-width: 360px; margin-top: 8px"
                 />
-              </a-form-item>
+              </dsh-form-item>
 
-              <a-form-item v-if="editingId && hasTuiProfile">
+              <dsh-form-item v-if="editingId && hasTuiProfile">
                 <template #label>
                   {{ t('instanceEdit.tuiCwd') }}
                   <HintIcon :content="t('instanceEdit.tuiCwdHint')" />
                 </template>
-                <a-space>
-                  <a-input
+                <dsh-space>
+                  <dsh-input
                     v-model="tuiCwdInput"
                     :placeholder="t('instanceEdit.tuiCwdPlaceholder')"
                     allow-clear
                     style="width: 400px"
                     @press-enter="applyTuiCwd"
                   />
-                  <a-button :loading="tuiCwdBusy" @click="browseTuiCwd">
+                  <dsh-button variant="secondary" :loading="tuiCwdBusy" @click="browseTuiCwd">
                     {{ t('instanceEdit.tuiCwdBrowse') }}
-                  </a-button>
-                  <a-button :loading="tuiCwdBusy" @click="applyTuiCwd">
+                  </dsh-button>
+                  <dsh-button variant="secondary" :loading="tuiCwdBusy" @click="applyTuiCwd">
                     {{ t('instanceEdit.tuiCwdApply') }}
-                  </a-button>
-                </a-space>
-              </a-form-item>
+                  </dsh-button>
+                </dsh-space>
+              </dsh-form-item>
 
-              <a-form-item v-if="editingId">
+              <dsh-form-item v-if="editingId">
                 <template #label>
                   {{ t('instanceEdit.files') }}
                   <HintIcon :content="t('instanceEdit.filesHint')" />
                 </template>
-                <a-space>
-                  <a-button size="small" :loading="dirBusy" @click="onOpenDirectory">
+                <dsh-space>
+                  <dsh-button variant="secondary" size="sm" :loading="dirBusy" @click="onOpenDirectory">
                     {{ t('instanceEdit.openDirectory') }}
-                  </a-button>
-                  <a-button size="small" :loading="logBusy" @click="onViewLog">
+                  </dsh-button>
+                  <dsh-button variant="secondary" size="sm" :loading="logBusy" @click="onViewLog">
                     {{ t('instanceEdit.viewLog') }}
-                  </a-button>
-                </a-space>
-              </a-form-item>
-            </a-form>
+                  </dsh-button>
+                </dsh-space>
+              </dsh-form-item>
+            </dsh-form>
 
             <div class="footer-actions">
-              <a-button type="primary" size="large" :disabled="!formValid" :loading="saving" @click="onSave">
+              <dsh-button variant="primary" size="lg" :disabled="!formValid" :loading="saving" @click="onSave">
                 {{ t('instanceEdit.save') }}
-              </a-button>
-              <a-button size="large" @click="router.push({ name: 'home' })">{{ t('instanceEdit.cancel') }}</a-button>
+              </dsh-button>
+              <dsh-button variant="secondary" size="lg" @click="router.push({ name: 'home' })">{{ t('instanceEdit.cancel') }}</dsh-button>
             </div>
           </div>
 
@@ -2479,26 +2486,26 @@ const terminalRunning = ref(false)
             </h4>
 
             <div v-for="(row, idx) in envRows" :key="idx" class="env-row">
-              <a-input
+              <dsh-input
                 v-model="row.key"
                 :placeholder="t('instanceEdit.envKey')"
                 :status="envKeyError(row) ? 'error' : undefined"
                 class="env-key"
               />
-              <a-input v-model="row.value" :placeholder="t('instanceEdit.envValue')" class="env-value" />
-              <a-button status="danger" type="text" @click="removeEnvRow(idx)">
+              <dsh-input v-model="row.value" :placeholder="t('instanceEdit.envValue')" class="env-value" />
+              <dsh-button variant="danger-soft" @click="removeEnvRow(idx)">
                 {{ t('instances.table.delete') }}
-              </a-button>
+              </dsh-button>
               <div v-if="envKeyError(row)" class="env-error">{{ envKeyError(row) }}</div>
             </div>
-            <a-empty v-if="envRows.length === 0" :description="t('instanceEdit.envAdd')" />
-            <a-button size="small" class="env-add-btn" @click="addEnvRow">{{ t('instanceEdit.envAdd') }}</a-button>
+            <dsh-empty v-if="envRows.length === 0" :description="t('instanceEdit.envAdd')" />
+            <dsh-button variant="secondary" size="sm" class="env-add-btn" @click="addEnvRow">{{ t('instanceEdit.envAdd') }}</dsh-button>
 
             <div class="footer-actions">
-              <a-button type="primary" size="large" :disabled="!formValid" :loading="saving" @click="onSave">
+              <dsh-button variant="primary" size="lg" :disabled="!formValid" :loading="saving" @click="onSave">
                 {{ t('instanceEdit.save') }}
-              </a-button>
-              <a-button size="large" @click="router.push({ name: 'home' })">{{ t('instanceEdit.cancel') }}</a-button>
+              </dsh-button>
+              <dsh-button variant="secondary" size="lg" @click="router.push({ name: 'home' })">{{ t('instanceEdit.cancel') }}</dsh-button>
             </div>
           </div>
 
@@ -2509,100 +2516,99 @@ const terminalRunning = ref(false)
               <HintIcon :content="t('instanceEdit.profilesDesc')" />
             </h4>
             <div class="profiles-toolbar">
-              <a-button size="small" @click="startExportModpackMulti">
+              <dsh-button variant="secondary" size="sm" @click="startExportModpackMulti">
                 {{ t('instanceEdit.modpackExportMulti') }}
-              </a-button>
+              </dsh-button>
             </div>
 
             <template v-if="homeId && homeId !== DEDICATED">
               <div v-if="profiles.length === 0" class="profiles-empty">
-                <a-empty :description="t('instanceEdit.profilesEmpty')" />
+                <dsh-empty :description="t('instanceEdit.profilesEmpty')" />
               </div>
 
               <div v-for="p in profiles" :key="p" class="profile-item">
                 <template v-if="renamingProfile === p">
-                  <a-input
+                  <dsh-input
                     v-model="renameValue"
                     class="profile-item-name"
                     :status="renameValue.trim() && renameValue.trim() !== p ? undefined : 'error'"
                     @press-enter="confirmRenameProfile"
                   />
-                  <a-button size="small" type="primary" :loading="busyProfile === p" @click="confirmRenameProfile">
+                  <dsh-button variant="primary" size="sm" :loading="busyProfile === p" @click="confirmRenameProfile">
                     {{ t('instanceEdit.profileRenameSave') }}
-                  </a-button>
-                  <a-button size="small" @click="cancelRenameProfile">{{ t('instanceEdit.cancel') }}</a-button>
+                  </dsh-button>
+                  <dsh-button variant="secondary" size="sm" @click="cancelRenameProfile">{{ t('instanceEdit.cancel') }}</dsh-button>
                 </template>
                 <template v-else-if="copyingProfile === p">
-                  <a-input
+                  <dsh-input
                     v-model="copyProfileName"
                     class="profile-item-name"
                     :status="copyProfileName.trim() ? undefined : 'error'"
                     @press-enter="confirmCopyProfile"
                   />
-                  <a-button size="small" type="primary" :loading="copyProfileBusy" @click="confirmCopyProfile">
+                  <dsh-button variant="primary" size="sm" :loading="copyProfileBusy" @click="confirmCopyProfile">
                     {{ t('instanceEdit.profileCopySave') }}
-                  </a-button>
-                  <a-button size="small" @click="cancelCopyProfile">{{ t('instanceEdit.cancel') }}</a-button>
+                  </dsh-button>
+                  <dsh-button variant="secondary" size="sm" @click="cancelCopyProfile">{{ t('instanceEdit.cancel') }}</dsh-button>
                 </template>
                 <template v-else>
                   <span class="profile-item-name">
                     {{ p }}
-                    <a-tag v-if="defaultProfile === p" color="arcoblue" size="small">
+                    <dsh-tag v-if="defaultProfile === p" color="arcoblue" size="small">
                       {{ t('instanceEdit.profileDefaultTag') }}
-                    </a-tag>
+                    </dsh-tag>
                   </span>
                   <span class="profile-item-actions">
-                    <a-button size="small" @click="startRenameProfile(p)">{{ t('instanceEdit.profileRename') }}</a-button>
-                    <a-button size="small" @click="startCopyProfile(p)">{{ t('instanceEdit.profileCopy') }}</a-button>
-                    <a-button size="small" @click="startExportModpack(p)">{{ t('instanceEdit.modpackExport') }}</a-button>
-                    <a-button size="small" @click="createShortcut(p)">{{ t('instanceEdit.createShortcut') }}</a-button>
-                    <a-button
+                    <dsh-button variant="secondary" size="sm" @click="startRenameProfile(p)">{{ t('instanceEdit.profileRename') }}</dsh-button>
+                    <dsh-button variant="secondary" size="sm" @click="startCopyProfile(p)">{{ t('instanceEdit.profileCopy') }}</dsh-button>
+                    <dsh-button variant="secondary" size="sm" @click="startExportModpack(p)">{{ t('instanceEdit.modpackExport') }}</dsh-button>
+                    <dsh-button variant="secondary" size="sm" @click="createShortcut(p)">{{ t('instanceEdit.createShortcut') }}</dsh-button>
+                    <dsh-button variant="primary"
                       v-if="defaultProfile !== p"
-                      size="small"
-                      type="primary"
+                      size="sm"
                       @click="setDefaultProfile(p)"
                     >
                       {{ t('instanceEdit.profileSetDefaultBtn') }}
-                    </a-button>
-                    <a-popconfirm
+                    </dsh-button>
+                    <dsh-popconfirm
                       :content="t('instanceEdit.profileDeleteConfirm', { name: p })"
                       @ok="confirmDeleteProfile(p)"
                     >
-                      <a-button size="small" status="danger" :loading="busyProfile === p">
+                      <dsh-button variant="danger" size="sm" :loading="busyProfile === p">
                         {{ t('instances.table.delete') }}
-                      </a-button>
-                    </a-popconfirm>
+                      </dsh-button>
+                    </dsh-popconfirm>
                   </span>
                 </template>
               </div>
 
               <div v-if="addingProfile" class="profile-item">
-                <a-input
+                <dsh-input
                   v-model="newProfileName"
                   :placeholder="t('instanceEdit.profileCreatePlaceholder')"
                   class="profile-item-name"
                   @press-enter="onCreateProfile"
                 />
-                <a-button size="small" type="primary" :loading="creatingProfile" @click="onCreateProfile">
+                <dsh-button variant="primary" size="sm" :loading="creatingProfile" @click="onCreateProfile">
                   {{ t('instanceEdit.profileCreate') }}
-                </a-button>
-                <a-button size="small" @click="cancelAddProfile">{{ t('instanceEdit.cancel') }}</a-button>
+                </dsh-button>
+                <dsh-button variant="secondary" size="sm" @click="cancelAddProfile">{{ t('instanceEdit.cancel') }}</dsh-button>
               </div>
 
-              <a-button v-if="!addingProfile" size="small" class="profile-add-btn" @click="addingProfile = true">
+              <dsh-button variant="secondary" v-if="!addingProfile" size="sm" class="profile-add-btn" @click="addingProfile = true">
                 {{ t('instanceEdit.profileAdd') }}
-              </a-button>
+              </dsh-button>
             </template>
 
-            <a-alert v-else type="info">
+            <dsh-alert v-else type="info">
               {{ t('instanceEdit.profilesNeedHome') }}
-            </a-alert>
+            </dsh-alert>
 
             <div class="footer-actions">
-              <a-button type="primary" size="large" :disabled="!formValid" :loading="saving" @click="onSave">
+              <dsh-button variant="primary" size="lg" :disabled="!formValid" :loading="saving" @click="onSave">
                 {{ t('instanceEdit.save') }}
-              </a-button>
-              <a-button size="large" @click="router.push({ name: 'home' })">{{ t('instanceEdit.cancel') }}</a-button>
+              </dsh-button>
+              <dsh-button variant="secondary" size="lg" @click="router.push({ name: 'home' })">{{ t('instanceEdit.cancel') }}</dsh-button>
             </div>
           </div>
 
@@ -2615,149 +2621,152 @@ const terminalRunning = ref(false)
 
             <template v-if="homeId && homeId !== DEDICATED">
               <div class="plugins-toolbar">
-                <a-button :disabled="!pluginProfile || pluginsBusy" :loading="compatibilityBusy" @click="checkCompatibility">
+                <dsh-button variant="secondary" :disabled="!pluginProfile || pluginsBusy" :loading="compatibilityBusy" @click="checkCompatibility">
                   {{ t('compat.check') }}
-                </a-button>
-                <a-select
+                </dsh-button>
+                <dsh-select
                   v-model="pluginProfile"
                   :placeholder="t('plugins.chooseProfile')"
                   style="width: 220px"
                 >
-                  <a-option v-for="p in profiles" :key="p" :value="p">{{ p }}</a-option>
-                </a-select>
-                <a-button
+                  <dsh-option v-for="p in profiles" :key="p" :value="p">{{ p }}</dsh-option>
+                </dsh-select>
+                <dsh-button variant="secondary"
                   :disabled="!pluginProfile"
                   @click="migrateVisible = true"
                 >
                   {{ t('plugins.migrateOpen') }}
-                </a-button>
-                <a-button
+                </dsh-button>
+                <dsh-button variant="secondary"
                   :disabled="!pluginProfile"
                   @click="importLocalPlugin"
                 >
                   {{ t('instanceEdit.pluginImportLocal') }}
-                </a-button>
-                <a-button
-                  type="primary"
+                </dsh-button>
+                <dsh-button variant="primary"
                   :disabled="!pluginProfile || updatableIds.length === 0 || pluginsBusy"
                   @click="updatePlugins(updatableIds)"
                 >
                   {{ t('instanceEdit.pluginUpdateAll', { count: updatableIds.length }) }}
-                </a-button>
-                <a-button
+                </dsh-button>
+                <dsh-button variant="secondary"
                   :disabled="!pluginProfile"
                   :loading="pluginsLoading"
                   @click="loadPlugins"
                 >
                   {{ t('common.refresh') }}
-                </a-button>
+                </dsh-button>
               </div>
               <CompatibilityReport v-if="compatibility" :report="compatibility" />
 
               <template v-if="pluginProfile">
-                <a-table
-                  :data="visiblePlugins"
-                  :loading="pluginsLoading"
-                  :row-selection="rowSelection"
-                  row-key="id"
-                  :pagination="false"
-                  :scroll="{ x: 900 }"
-                  class="plugins-table"
-                  @selection-change="onSelectionChange"
-                >
-                  <template #columns>
-                    <a-table-column title="ID" data-index="id" :width="320">
-                      <template #cell="{ record }">
-                        <span class="plugin-cell-id">{{ record.id }}</span>
-                      </template>
-                    </a-table-column>
-                    <a-table-column :title="t('instanceEdit.pluginVersion')" data-index="version" :width="180">
-                      <template #cell="{ record }">
-                        <span v-if="pluginUpdates[record.id]?.has_update" class="plugin-update-available">
-                          {{ pluginUpdates[record.id].current ?? displayVersion(record.version) }} →
-                          {{ pluginUpdates[record.id].latest }}
-                        </span>
-                        <span v-else-if="record.version">{{
-                          displayVersion(pluginUpdates[record.id]?.current ?? record.version)
-                        }}</span>
-                        <span v-else class="plugin-no-version">-</span>
-                      </template>
-                    </a-table-column>
-                    <a-table-column :title="t('instanceEdit.pluginStatus')" data-index="enabled" :width="120">
-                      <template #cell="{ record }">
-                        <a-switch
-                          :model-value="record.enabled"
-                          :disabled="pluginsBusy"
-                          :checked-text="t('instanceEdit.pluginOn')"
-                          :unchecked-text="t('instanceEdit.pluginOff')"
-                          @change="onSwitchChange(record, $event)"
-                        />
-                      </template>
-                    </a-table-column>
-                    <a-table-column :title="t('instanceEdit.pluginActions')" :width="160" fixed="right">
-                      <template #cell="{ record }">
-                        <a-space>
-                          <a-button
-                            v-if="pluginUpdates[record.id]?.has_update"
-                            size="small"
-                            type="primary"
+                <dsh-spin :loading="pluginsLoading" :aria-busy="pluginsLoading" class="plugins-table">
+                  <dsh-table
+                    :data="visiblePlugins"
+                    :row-selection="rowSelection"
+                    row-key="id"
+                    :pagination="false"
+                    :scroll="contentSizedTable"
+                    @selection-change="onSelectionChange"
+                  >
+                    <template #columns>
+                      <dsh-table-column
+                        :title="t('instanceEdit.pluginNameId')"
+                        data-index="id"
+                        :header-cell-style="{ width: '1%', whiteSpace: 'nowrap' }"
+                      >
+                        <template #cell="{ record }">
+                          <span v-if="record.name" class="plugin-cell-name" :title="pluginName(record.name, locale)">
+                            {{ pluginName(record.name, locale) }}
+                          </span>
+                          <span class="plugin-cell-id" :class="{ 'plugin-cell-id-secondary': record.name }">
+                            {{ record.id }}
+                          </span>
+                        </template>
+                      </dsh-table-column>
+                      <dsh-table-column :title="t('instanceEdit.pluginVersion')" data-index="version" cell-class="cell-nowrap">
+                        <template #cell="{ record }">
+                          <span v-if="pluginUpdates[record.id]?.has_update" class="plugin-update-available">
+                            {{ pluginUpdates[record.id].current ?? displayVersion(record.version) }} →
+                            {{ pluginUpdates[record.id].latest }}
+                          </span>
+                          <span v-else-if="record.version">{{
+                            displayVersion(pluginUpdates[record.id]?.current ?? record.version)
+                          }}</span>
+                          <span v-else class="plugin-no-version">-</span>
+                        </template>
+                      </dsh-table-column>
+                      <dsh-table-column :title="t('instanceEdit.pluginStatus')" data-index="enabled" :width="76" fixed="right">
+                        <template #cell="{ record }">
+                          <dsh-switch
+                            :model-value="record.enabled"
                             :disabled="pluginsBusy"
-                            @click="updatePlugins([record.id])"
-                          >
-                            {{ t('instanceEdit.pluginUpdate') }}
-                          </a-button>
-                          <a-popconfirm
-                            :content="t('instanceEdit.pluginUninstallConfirm', { name: record.id })"
-                            @ok="onUninstallPlugin(record)"
-                          >
-                            <a-button size="small" status="danger" :disabled="pluginsBusy">
-                              {{ t('instances.table.delete') }}
-                            </a-button>
-                          </a-popconfirm>
-                        </a-space>
-                      </template>
-                    </a-table-column>
-                  </template>
-                </a-table>
+                            :aria-label="t('instanceEdit.pluginStatus') + ': ' + record.id"
+                            @change="onSwitchChange(record, $event)"
+                          />
+                        </template>
+                      </dsh-table-column>
+                      <dsh-table-column :title="t('instanceEdit.pluginActions')" :width="160" fixed="right">
+                        <template #cell="{ record }">
+                          <dsh-space>
+                            <dsh-button variant="primary"
+                              v-if="pluginUpdates[record.id]?.has_update"
+                              size="sm"
+                              :disabled="pluginsBusy"
+                              @click="updatePlugins([record.id])"
+                            >
+                              {{ t('instanceEdit.pluginUpdate') }}
+                            </dsh-button>
+                            <dsh-popconfirm
+                              :content="t('instanceEdit.pluginUninstallConfirm', { name: record.id })"
+                              @ok="onUninstallPlugin(record)"
+                            >
+                              <dsh-button variant="danger" size="sm" :disabled="pluginsBusy">
+                                {{ t('instances.table.delete') }}
+                              </dsh-button>
+                            </dsh-popconfirm>
+                          </dsh-space>
+                        </template>
+                      </dsh-table-column>
+                    </template>
+                  </dsh-table>
+                </dsh-spin>
 
                 <div class="plugins-batch">
-                  <a-button
-                    size="small"
-                    type="primary"
+                  <dsh-button variant="primary"
+                    size="sm"
                     :disabled="selectedPlugins.length === 0 || pluginsBusy"
                     @click="batchSetEnabled(true)"
                   >
                     {{ t('instanceEdit.pluginsBatchEnable', { count: selectedPlugins.length }) }}
-                  </a-button>
-                  <a-button
-                    size="small"
-                    status="danger"
+                  </dsh-button>
+                  <dsh-button variant="danger"
+                    size="sm"
                     :disabled="selectedPlugins.length === 0 || pluginsBusy"
                     @click="batchSetEnabled(false)"
                   >
                     {{ t('instanceEdit.pluginsBatchDisable', { count: selectedPlugins.length }) }}
-                  </a-button>
-                  <a-button
-                    size="small"
-                    type="primary"
+                  </dsh-button>
+                  <dsh-button variant="primary"
+                    size="sm"
                     :disabled="selectedUpdatableIds.length === 0 || pluginsBusy"
                     @click="updatePlugins(selectedUpdatableIds)"
                   >
                     {{ t('instanceEdit.pluginsBatchUpdate', { count: selectedUpdatableIds.length }) }}
-                  </a-button>
+                  </dsh-button>
                 </div>
 
-                <a-empty
+                <dsh-empty
                   v-if="!pluginsLoading && visiblePlugins.length === 0"
                   :description="t('instanceEdit.pluginsEmpty')"
                 />
               </template>
-              <a-empty v-else :description="t('instanceEdit.pluginsPickProfile')" />
+              <dsh-empty v-else :description="t('instanceEdit.pluginsPickProfile')" />
             </template>
 
-            <a-alert v-else type="info">
+            <dsh-alert v-else type="info">
               {{ t('instanceEdit.profilesNeedHome') }}
-            </a-alert>
+            </dsh-alert>
 
             <MigratePluginsDialog
               v-model:visible="migrateVisible"
@@ -2776,109 +2785,108 @@ const terminalRunning = ref(false)
 
             <template v-if="homeId && editingId">
               <div class="skill-toolbar">
-                <a-button size="small" type="primary" @click="skillRepoDialogVisible = true">
+                <dsh-button variant="primary" size="sm" @click="skillRepoDialogVisible = true">
                   {{ t('instanceEdit.skillInstall') }}
-                </a-button>
-                <a-button size="small" @click="onImportSkillFile">
+                </dsh-button>
+                <dsh-button variant="secondary" size="sm" @click="onImportSkillFile">
                   {{ t('instanceEdit.skillImportFile') }}
-                </a-button>
-                <a-button size="small" @click="onImportSkillZip">
+                </dsh-button>
+                <dsh-button variant="secondary" size="sm" @click="onImportSkillZip">
                   {{ t('instanceEdit.skillImportZip') }}
-                </a-button>
-                <a-button size="small" @click="skillCreateVisible = true">
+                </dsh-button>
+                <dsh-button variant="secondary" size="sm" @click="skillCreateVisible = true">
                   {{ t('instanceEdit.skillCreate') }}
-                </a-button>
-                <a-button
-                  size="small"
+                </dsh-button>
+                <dsh-button variant="secondary"
+                  size="sm"
                   :loading="skillCheckingUpdates"
                   @click="onCheckSkillUpdates"
                 >
                   {{ t('instanceEdit.skillCheckUpdates') }}
-                </a-button>
-                <a-button size="small" :loading="skillOpeningDir" @click="onOpenSkillsDir">
+                </dsh-button>
+                <dsh-button variant="secondary" size="sm" :loading="skillOpeningDir" @click="onOpenSkillsDir">
                   {{ t('instanceEdit.skillOpenDir') }}
-                </a-button>
-                <a-button
-                  size="small"
+                </dsh-button>
+                <dsh-button variant="secondary"
+                  size="sm"
                   :disabled="skillSelectedKeys.length === 0"
                   :loading="skillExporting"
                   @click="onExportSkills"
                 >
                   {{ t('instanceEdit.skillExport') }}
-                </a-button>
-                <a-button
+                </dsh-button>
+                <dsh-button variant="secondary"
                   v-if="skillUpdates.length > 0"
-                  size="small"
+                  size="sm"
                   status="warning"
                   :loading="skillUpdatingAll"
                   @click="onUpdateAllSkills"
                 >
                   {{ t('instanceEdit.skillUpdateAll', { count: skillUpdates.length }) }}
-                </a-button>
+                </dsh-button>
               </div>
 
-              <div class="table-scroll">
-                <a-table
-                  :columns="skillColumns"
-                  :data="skills"
-                  :loading="skillsLoading"
-                  :pagination="false"
-                  :row-selection="rowSelection"
-                  row-key="name"
-                  size="small"
-                  @selection-change="onSkillSelectionChange"
-                >
+              <dsh-table
+                :columns="skillColumns"
+                :data="skills"
+                :loading="skillsLoading"
+                :pagination="false"
+                :scroll="contentSizedTable"
+                :row-selection="rowSelection"
+                row-key="name"
+                size="small"
+                @selection-change="onSkillSelectionChange"
+              >
                 <template #skillName="{ record }">
                   <span class="cell-nowrap">{{ record.name }}</span>
                 </template>
                 <template #skillDesc="{ record }">
-                  <a-tooltip :content="record.description" :disabled="!record.description">
+                  <dsh-tooltip :content="record.description" :disabled="!record.description">
                     <span class="cell-ellipsis">{{ record.description }}</span>
-                  </a-tooltip>
+                  </dsh-tooltip>
                 </template>
                 <template #origin="{ record }">
                   <div v-if="record.origin" class="cell-nowrap">
-                    <a-tag size="small" color="blue">{{ record.origin.tag ?? record.origin.commit.slice(0, 7) }}</a-tag>
-                    <a-tooltip :content="record.origin.repo">
+                    <dsh-tag size="small" color="blue">{{ record.origin.tag ?? record.origin.commit.slice(0, 7) }}</dsh-tag>
+                    <dsh-tooltip :content="record.origin.repo">
                       <span class="skill-repo-ref">{{ shortRepoName(record.origin.repo) }}</span>
-                    </a-tooltip>
-                    <a-tag v-if="skillUpdateOf(record.name)" size="small" color="orange">
+                    </dsh-tooltip>
+                    <dsh-tag v-if="skillUpdateOf(record.name)" size="small" color="orange">
                       {{ t('instanceEdit.skillHasUpdate', { version: skillUpdateOf(record.name)!.latest }) }}
-                    </a-tag>
+                    </dsh-tag>
                   </div>
                   <span v-else class="skill-repo-ref">—</span>
                 </template>
                 <template #skillActions="{ record }">
-                  <a-space>
-                    <a-button
+                  <dsh-space>
+                    <dsh-button variant="secondary"
                       v-if="record.origin"
-                      size="small"
+                      size="sm"
                       :status="skillUpdateOf(record.name) ? 'warning' : 'normal'"
                       :loading="skillActionBusy === record.name || skillUpdatingAll"
                       @click="onUpdateSkill(record.name)"
                     >
                       {{ t('instanceEdit.skillUpdate') }}
-                    </a-button>
-                    <a-popconfirm
+                    </dsh-button>
+                    <dsh-popconfirm
                       :content="t('instanceEdit.skillDeleteConfirm', { name: record.name })"
                       @ok="onDeleteSkill(record.name)"
                     >
-                      <a-button size="small" status="danger" :loading="skillActionBusy === record.name">
+                      <dsh-button variant="danger" size="sm" :loading="skillActionBusy === record.name">
                         {{ t('instances.table.delete') }}
-                      </a-button>
-                    </a-popconfirm>
-                  </a-space>
+                      </dsh-button>
+                    </dsh-popconfirm>
+                  </dsh-space>
                 </template>
                 <template #empty>
-                  <a-empty :description="t('instanceEdit.skillsEmpty')" />
+                  <dsh-empty :description="t('instanceEdit.skillsEmpty')" />
                 </template>
-                </a-table>
-              </div>
+              </dsh-table>
             </template>
 
-            <a-alert v-else type="info">
+            <dsh-alert v-else type="info">
               {{ t('instanceEdit.profilesNeedHome') }}
-            </a-alert>
+            </dsh-alert>
           </div>
 
           <!-- AGENTS.md (issue #57): preview-first; save right-aligned on the
@@ -2893,24 +2901,23 @@ const terminalRunning = ref(false)
 
             <template v-if="homeId && editingId">
               <div class="skill-toolbar">
-                <a-button size="small" @click="agentsPreview = !agentsPreview">
+                <dsh-button variant="secondary" size="sm" @click="agentsPreview = !agentsPreview">
                   {{ agentsPreview ? t('instanceEdit.agentsEdit') : t('instanceEdit.agentsPreview') }}
-                </a-button>
-                <a-button size="small" :loading="agentsLoading" @click="loadAgentsMd">
+                </dsh-button>
+                <dsh-button variant="secondary" size="sm" :loading="agentsLoading" @click="loadAgentsMd">
                   {{ t('common.refresh') }}
-                </a-button>
-                <a-button
-                  size="small"
-                  type="primary"
+                </dsh-button>
+                <dsh-button variant="primary"
+                  size="sm"
                   class="agents-save"
                   :loading="agentsSaving"
                   @click="saveAgentsMd(true)"
                 >
                   {{ t('instanceEdit.agentsSave') }}
-                </a-button>
+                </dsh-button>
               </div>
-              <a-scrollbar outer-style="height: 480px" style="height: 480px; overflow-y: auto">
-                <a-textarea
+              <dsh-scrollbar outer-style="height: 480px" style="height: 480px; overflow-y: auto">
+                <dsh-textarea
                   v-if="!agentsPreview"
                   v-model="agentsContent"
                   class="agents-editor"
@@ -2924,12 +2931,12 @@ const terminalRunning = ref(false)
                   class="agents-preview markdown-body"
                   v-html="agentsPreviewHtml || `<p class='agents-empty'>${t('instanceEdit.agentsEmpty')}</p>`"
                 />
-              </a-scrollbar>
+              </dsh-scrollbar>
             </template>
 
-            <a-alert v-else type="info">
+            <dsh-alert v-else type="info">
               {{ t('instanceEdit.profilesNeedHome') }}
-            </a-alert>
+            </dsh-alert>
           </div>
 
           <!-- MCP -->
@@ -2942,82 +2949,80 @@ const terminalRunning = ref(false)
 
             <template v-if="homeId && homeId !== DEDICATED">
               <div class="mcp-toolbar">
-                <a-select v-model="mcpScope" style="width: 300px">
-                  <a-option :value="MCP_GLOBAL">{{ t('instanceEdit.mcpScopeGlobal') }}</a-option>
-                  <a-option v-for="p in profiles" :key="p" :value="p">
+                <dsh-select v-model="mcpScope" style="width: 300px">
+                  <dsh-option :value="MCP_GLOBAL">{{ t('instanceEdit.mcpScopeGlobal') }}</dsh-option>
+                  <dsh-option v-for="p in profiles" :key="p" :value="p">
                     {{ t('instanceEdit.mcpScopeProfile') }} · {{ p }}
-                  </a-option>
-                </a-select>
-                <a-button type="primary" @click="openMcpCreate">
+                  </dsh-option>
+                </dsh-select>
+                <dsh-button variant="primary" @click="openMcpCreate">
                   {{ t('instanceEdit.mcpAdd') }}
-                </a-button>
-                <a-button type="text" :loading="mcpLoading" @click="loadMcpServers">
+                </dsh-button>
+                <dsh-button variant="ghost" :loading="mcpLoading" @click="loadMcpServers">
                   ⟳
-                </a-button>
+                </dsh-button>
               </div>
               <p class="mcp-path">{{ t('instanceEdit.mcpScopePath', { path: mcpScopePath }) }}</p>
               <p class="mcp-path">{{ t('instanceEdit.mcpPasteTip') }}</p>
 
-              <div class="table-scroll">
-                <a-table
-                  :columns="mcpColumns"
-                  :data="mcpServers"
-                  :loading="mcpLoading"
-                  :pagination="false"
-                  row-key="id"
-                  size="small"
-                >
+              <dsh-table
+                :columns="mcpColumns"
+                :data="mcpServers"
+                :loading="mcpLoading"
+                :pagination="false"
+                :scroll="contentSizedTable"
+                row-key="id"
+                size="small"
+              >
                 <template #mcpName="{ record }">
                   <span class="cell-nowrap">{{ record.serverName }}</span>
                 </template>
                 <template #mcpTransport="{ record }">
-                  <a-tag size="small" :color="record.transport === 'stdio' ? 'arcoblue' : 'green'">
+                  <dsh-tag size="small" :color="record.transport === 'stdio' ? 'arcoblue' : 'green'">
                     {{
                       record.transport === 'stdio'
                         ? t('instanceEdit.mcpTransportStdio')
                         : t('instanceEdit.mcpTransportHttp')
                     }}
-                  </a-tag>
+                  </dsh-tag>
                 </template>
                 <template #mcpTarget="{ record }">
-                  <a-tooltip :content="mcpTargetText(record)" :disabled="!mcpTargetText(record)">
+                  <dsh-tooltip :content="mcpTargetText(record)" :disabled="!mcpTargetText(record)">
                     <span class="mcp-target cell-ellipsis">{{ mcpTargetText(record) }}</span>
-                  </a-tooltip>
+                  </dsh-tooltip>
                 </template>
                 <template #mcpStatus="{ record }">
-                  <a-switch
+                  <dsh-switch
                     :model-value="record.enabled"
                     :disabled="mcpBusy === record.id"
-                    :checked-text="t('instanceEdit.mcpEnabledTag')"
-                    :unchecked-text="t('instanceEdit.mcpDisabledTag')"
+                    :aria-label="t('instanceEdit.mcpColStatus') + ': ' + record.serverName"
                     @change="onToggleMcpServer(record, $event === true)"
                   />
                 </template>
                 <template #mcpActions="{ record }">
-                  <a-space>
-                    <a-button size="small" :disabled="mcpBusy === record.id" @click="openMcpEdit(record)">
+                  <dsh-space>
+                    <dsh-button variant="secondary" size="sm" :disabled="mcpBusy === record.id" @click="openMcpEdit(record)">
                       {{ t('instanceEdit.mcpEdit') }}
-                    </a-button>
-                    <a-popconfirm
+                    </dsh-button>
+                    <dsh-popconfirm
                       :content="t('instanceEdit.mcpDeleteConfirm', { name: record.serverName })"
                       @ok="onDeleteMcpServer(record)"
                     >
-                      <a-button size="small" status="danger" :loading="mcpBusy === record.id">
+                      <dsh-button variant="danger" size="sm" :loading="mcpBusy === record.id">
                         {{ t('instances.table.delete') }}
-                      </a-button>
-                    </a-popconfirm>
-                  </a-space>
+                      </dsh-button>
+                    </dsh-popconfirm>
+                  </dsh-space>
                 </template>
                 <template #empty>
-                  <a-empty :description="t('instanceEdit.mcpEmpty')" />
+                  <dsh-empty :description="t('instanceEdit.mcpEmpty')" />
                 </template>
-                </a-table>
-              </div>
+              </dsh-table>
             </template>
 
-            <a-alert v-else type="info">
+            <dsh-alert v-else type="info">
               {{ t('instanceEdit.profilesNeedHome') }}
-            </a-alert>
+            </dsh-alert>
           </div>
 
           <!-- Models (issue #89): the same "Settings → Models" flow DSH ships -->
@@ -3029,42 +3034,42 @@ const terminalRunning = ref(false)
 
             <template v-if="homeId && homeId !== DEDICATED && editingId">
               <div class="models-toolbar">
-                <a-select v-model="modelsScope" style="width: 300px">
-                  <a-option :value="MODELS_GLOBAL">{{ t('instanceEdit.modelsScopeGlobal') }}</a-option>
-                  <a-option v-for="p in profiles" :key="p" :value="p">
+                <dsh-select v-model="modelsScope" style="width: 300px">
+                  <dsh-option :value="MODELS_GLOBAL">{{ t('instanceEdit.modelsScopeGlobal') }}</dsh-option>
+                  <dsh-option v-for="p in profiles" :key="p" :value="p">
                     {{ t('instanceEdit.modelsScopeProfile') }} · {{ p }}
-                  </a-option>
-                </a-select>
-                <a-button type="primary" @click="addModeVisible = true">
+                  </dsh-option>
+                </dsh-select>
+                <dsh-button variant="primary" @click="addModeVisible = true">
                   {{ t('instanceEdit.modelsAdd') }}
-                </a-button>
-                <a-button type="text" :loading="modelsLoading" @click="loadModels">⟳</a-button>
+                </dsh-button>
+                <dsh-button variant="ghost" :loading="modelsLoading" @click="loadModels">⟳</dsh-button>
               </div>
               <p class="models-path">{{ t('instanceEdit.modelsScopePath', { path: modelsScopePath }) }}</p>
 
-              <a-spin :loading="modelsLoading" class="models-body">
+              <dsh-spin :loading="modelsLoading" class="models-body">
                 <!-- DeepSeek official card: credential-only -->
                 <div v-if="officialCard" class="model-card model-card-official">
                   <div class="model-card-head">
                     <span class="model-card-id">DeepSeek</span>
-                    <a-tag v-if="officialCard.credential?.configured" color="green">
+                    <dsh-tag v-if="officialCard.credential?.configured" color="green">
                       {{ t('instanceEdit.modelsConfigured') }}
-                    </a-tag>
-                    <a-tag v-else color="gray">{{ t('instanceEdit.modelsNotConfigured') }}</a-tag>
+                    </dsh-tag>
+                    <dsh-tag v-else color="gray">{{ t('instanceEdit.modelsNotConfigured') }}</dsh-tag>
                   </div>
                   <p class="model-card-sub">{{ t('instanceEdit.modelsDeepSeekHint') }}</p>
                   <div class="model-card-actions">
-                    <a-button size="small" @click="openEditProvider(officialCard)">
+                    <dsh-button variant="secondary" size="sm" @click="openEditProvider(officialCard)">
                       {{ t('instanceEdit.modelsConfigure') }}
-                    </a-button>
-                    <a-popconfirm
+                    </dsh-button>
+                    <dsh-popconfirm
                       :content="t('instanceEdit.modelsDeepSeekClearConfirm')"
                       @ok="onDeleteProvider(officialCard)"
                     >
-                      <a-button size="small" status="danger" :loading="modelsBusy === officialCard.id">
+                      <dsh-button variant="danger" size="sm" :loading="modelsBusy === officialCard.id">
                         {{ t('instanceEdit.modelsClear') }}
-                      </a-button>
-                    </a-popconfirm>
+                      </dsh-button>
+                    </dsh-popconfirm>
                   </div>
                 </div>
 
@@ -3072,13 +3077,13 @@ const terminalRunning = ref(false)
                 <div v-for="route in configuredRoutes" :key="route.id" class="model-card">
                   <div class="model-card-head">
                     <span class="model-card-id">{{ route.displayName || route.id }}</span>
-                    <a-tag v-if="route.catalog" color="arcoblue" size="small">
+                    <dsh-tag v-if="route.catalog" color="arcoblue" size="small">
                       {{ t('instanceEdit.modelsCatalogTag') }}
-                    </a-tag>
-                    <a-tag v-if="route.credential?.configured" color="green" size="small">
+                    </dsh-tag>
+                    <dsh-tag v-if="route.credential?.configured" color="green" size="small">
                       {{ t('instanceEdit.modelsConfigured') }}
-                    </a-tag>
-                    <a-tag v-else color="gray" size="small">{{ t('instanceEdit.modelsNotConfigured') }}</a-tag>
+                    </dsh-tag>
+                    <dsh-tag v-else color="gray" size="small">{{ t('instanceEdit.modelsNotConfigured') }}</dsh-tag>
                   </div>
                   <p v-if="route.api" class="model-card-sub">{{ route.api }} · {{ route.baseUrl }}</p>
                   <p v-else class="model-card-sub">{{ route.id }}</p>
@@ -3086,27 +3091,27 @@ const terminalRunning = ref(false)
                     {{ t('instanceEdit.modelsCount', { count: route.models.length }) }}
                   </p>
                   <div class="model-card-actions">
-                    <a-button size="small" :disabled="modelsBusy === route.id" @click="openEditProvider(route)">
+                    <dsh-button variant="secondary" size="sm" :disabled="modelsBusy === route.id" @click="openEditProvider(route)">
                       {{ t('instanceEdit.modelsEdit') }}
-                    </a-button>
-                    <a-popconfirm
+                    </dsh-button>
+                    <dsh-popconfirm
                       :content="t('instanceEdit.modelsDeleteConfirm', { name: route.displayName || route.id })"
                       @ok="onDeleteProvider(route)"
                     >
-                      <a-button size="small" status="danger" :loading="modelsBusy === route.id">
+                      <dsh-button variant="danger" size="sm" :loading="modelsBusy === route.id">
                         {{ t('instances.table.delete') }}
-                      </a-button>
-                    </a-popconfirm>
+                      </dsh-button>
+                    </dsh-popconfirm>
                   </div>
                 </div>
 
-                <a-empty v-if="!modelsLoading && !officialCard && configuredRoutes.length === 0" :description="t('instanceEdit.modelsEmpty')" />
-              </a-spin>
+                <dsh-empty v-if="!modelsLoading && !officialCard && configuredRoutes.length === 0" :description="t('instanceEdit.modelsEmpty')" />
+              </dsh-spin>
             </template>
 
-            <a-alert v-else type="info">
+            <dsh-alert v-else type="info">
               {{ t('instanceEdit.profilesNeedHome') }}
-            </a-alert>
+            </dsh-alert>
           </div>
 
           <!-- Storage redirection (issue #51) -->
@@ -3120,28 +3125,28 @@ const terminalRunning = ref(false)
                  WSL HOMEs — the backend rejects it outright (links.rs). Surface
                  that as a scoped capability notice here instead of letting the
                  user click through to a raw backend error. -->
-            <a-alert v-if="isWsl" type="info" class="storage-caveat">
+            <dsh-alert v-if="isWsl" type="info" class="storage-caveat">
               {{ t('instanceEdit.storageWslUnsupported') }}
-            </a-alert>
+            </dsh-alert>
 
             <template v-if="homeId && homeId !== DEDICATED && !isWsl">
-              <a-alert type="warning" class="storage-caveat">
+              <dsh-alert type="warning" class="storage-caveat">
                 {{ t('instanceEdit.storageCaveat') }}
-              </a-alert>
+              </dsh-alert>
               <!-- Issue #91: check a set of entries and redirect them all into
                    one directory, keeping each entry's current name. -->
               <div class="storage-toolbar">
-                <a-button
-                  size="small"
+                <dsh-button variant="secondary"
+                  size="sm"
                   :disabled="storageSelected.length === 0 || linkBusy"
                   @click="openBatchDialog"
                 >
                   {{ t('instanceEdit.storageBatchSet') }}
                   <template v-if="storageSelected.length">({{ storageSelected.length }})</template>
-                </a-button>
+                </dsh-button>
               </div>
               <div class="table-scroll">
-                <a-table
+                <dsh-table
                   :columns="storageColumns"
                   :data="homeLinks"
                   :loading="homeLinksLoading"
@@ -3157,35 +3162,35 @@ const terminalRunning = ref(false)
                   <span v-else class="storage-default">{{ t('instanceEdit.storageDefault') }}</span>
                 </template>
                 <template #storageStatus="{ record }">
-                  <a-tag v-if="record.active" color="green" size="small">
+                  <dsh-tag v-if="record.active" color="green" size="small">
                     {{ t('instanceEdit.storageActive') }}
-                  </a-tag>
-                  <a-tag v-else-if="record.target" color="orange" size="small">
+                  </dsh-tag>
+                  <dsh-tag v-else-if="record.target" color="orange" size="small">
                     {{ t('instanceEdit.storageInactive') }}
-                  </a-tag>
+                  </dsh-tag>
                   <span v-else>-</span>
                 </template>
                 <template #storageActions="{ record }">
-                  <a-button size="mini" :disabled="linkBusy" @click="openLinkDialog(record)">
+                  <dsh-button variant="secondary" size="sm" :disabled="linkBusy" @click="openLinkDialog(record)">
                     {{ record.target ? t('instanceEdit.storageModify') : t('instanceEdit.storageSet') }}
-                  </a-button>
-                  <a-popconfirm
+                  </dsh-button>
+                  <dsh-popconfirm
                     v-if="record.target"
                     :content="t('instanceEdit.storageClearConfirm')"
                     @ok="clearLink(record)"
                   >
-                    <a-button size="mini" status="danger" :disabled="linkBusy">
+                    <dsh-button variant="danger" size="sm" :disabled="linkBusy">
                       {{ t('instanceEdit.storageClear') }}
-                    </a-button>
-                  </a-popconfirm>
+                    </dsh-button>
+                  </dsh-popconfirm>
                 </template>
-                </a-table>
+                </dsh-table>
               </div>
             </template>
 
-            <a-alert v-else-if="!isWsl" type="info">
+            <dsh-alert v-else-if="!isWsl" type="info">
               {{ t('instanceEdit.profilesNeedHome') }}
-            </a-alert>
+            </dsh-alert>
           </div>
 
           <!-- Terminal -->
@@ -3205,12 +3210,12 @@ const terminalRunning = ref(false)
               />
             </template>
 
-            <a-alert v-else type="info">
+            <dsh-alert v-else type="info">
               {{ t('instanceEdit.terminalNoHome') }}
-            </a-alert>
+            </dsh-alert>
           </div>
         </div>
-      </a-scrollbar>
+      </PageScrollbar>
     </section>
 
     <!-- SKILL repo install picker -->
@@ -3222,32 +3227,32 @@ const terminalRunning = ref(false)
     />
 
     <!-- SKILL create -->
-    <a-modal
+    <dsh-modal
       v-model:visible="skillCreateVisible"
       :title="t('instanceEdit.skillCreateTitle')"
       :ok-loading="skillCreateBusy"
       :ok-button-props="{ disabled: !skillCreateForm.name.trim() || !skillCreateForm.content.trim() }"
       @ok="onCreateSkill"
     >
-      <a-form :model="skillCreateForm" layout="vertical">
-        <a-form-item :label="t('instanceEdit.skillName')" required>
-          <a-input v-model="skillCreateForm.name" placeholder="my-skill" />
-        </a-form-item>
-        <a-form-item :label="t('instanceEdit.skillDescription')">
-          <a-input v-model="skillCreateForm.description" />
-        </a-form-item>
-        <a-form-item :label="t('instanceEdit.skillContent')" required>
-          <a-textarea
+      <dsh-form :model="skillCreateForm" layout="vertical">
+        <dsh-form-item :label="t('instanceEdit.skillName')" required>
+          <dsh-input v-model="skillCreateForm.name" placeholder="my-skill" />
+        </dsh-form-item>
+        <dsh-form-item :label="t('instanceEdit.skillDescription')">
+          <dsh-input v-model="skillCreateForm.description" />
+        </dsh-form-item>
+        <dsh-form-item :label="t('instanceEdit.skillContent')" required>
+          <dsh-textarea
             v-model="skillCreateForm.content"
             :auto-size="{ minRows: 6, maxRows: 14 }"
             :placeholder="t('instanceEdit.skillContentHint')"
           />
-        </a-form-item>
-      </a-form>
-    </a-modal>
+        </dsh-form-item>
+      </dsh-form>
+    </dsh-modal>
 
     <!-- MCP server create / edit -->
-    <a-modal
+    <dsh-modal
       v-model:visible="mcpEditVisible"
       :title="
         mcpOriginalId
@@ -3262,131 +3267,132 @@ const terminalRunning = ref(false)
       <!-- Issue #93: the dialog grew tall with rows; cap the body and scroll.
            A pasted mcpServers JSON anywhere in the form fills the first entry. -->
       <div class="mcp-dialog-body" @paste="onMcpDialogPaste">
-      <a-form :model="mcpForm" layout="vertical">
-        <a-form-item
+      <dsh-form :model="mcpForm" layout="vertical">
+        <dsh-form-item
           :label="t('instanceEdit.mcpServerName')"
           required
           :validate-status="mcpNameError ? 'error' : undefined"
           :help="mcpNameError || t('instanceEdit.mcpServerNameHint')"
         >
-          <a-input v-model="mcpForm.serverName" placeholder="codegraph" />
-        </a-form-item>
+          <dsh-input v-model="mcpForm.serverName" placeholder="codegraph" />
+        </dsh-form-item>
 
-        <a-form-item :label="t('instanceEdit.mcpTransport')">
-          <a-radio-group v-model="mcpForm.transport" type="button">
-            <a-radio value="stdio">{{ t('instanceEdit.mcpTransportStdio') }}</a-radio>
-            <a-radio value="streamable-http">{{ t('instanceEdit.mcpTransportHttp') }}</a-radio>
-          </a-radio-group>
-        </a-form-item>
+        <dsh-form-item :label="t('instanceEdit.mcpTransport')">
+          <dsh-radio-group v-model="mcpForm.transport" type="button">
+            <dsh-radio value="stdio">{{ t('instanceEdit.mcpTransportStdio') }}</dsh-radio>
+            <dsh-radio value="streamable-http">{{ t('instanceEdit.mcpTransportHttp') }}</dsh-radio>
+          </dsh-radio-group>
+        </dsh-form-item>
 
         <!-- Streamable HTTP: endpoint + request headers -->
         <template v-if="mcpForm.transport === 'streamable-http'">
-          <a-form-item
+          <dsh-form-item
             :label="t('instanceEdit.mcpUrl')"
             required
             :validate-status="mcpUrlError ? 'error' : undefined"
             :help="mcpUrlError || undefined"
           >
-            <a-input v-model="mcpForm.url" placeholder="http://127.0.0.1:64342/stream" />
-          </a-form-item>
-          <a-form-item :label="t('instanceEdit.mcpHeaders')">
+            <dsh-input v-model="mcpForm.url" placeholder="http://127.0.0.1:64342/stream" />
+          </dsh-form-item>
+          <dsh-form-item :label="t('instanceEdit.mcpHeaders')">
             <div class="mcp-rows">
               <div v-for="(row, idx) in mcpForm.headers" :key="idx" class="env-row">
-                <a-input
+                <dsh-input
                   v-model="row.key"
                   :placeholder="t('instanceEdit.mcpHeaderKey')"
                   :status="mcpHeaderKeyError(idx) ? 'error' : undefined"
                   class="env-key"
                 />
-                <a-input
+                <dsh-input
                   v-model="row.value"
                   :placeholder="t('instanceEdit.mcpHeaderValue')"
                   class="env-value"
                 />
-                <a-button status="danger" type="text" @click="mcpForm.headers.splice(idx, 1)">
+                <dsh-button variant="danger-soft" @click="mcpForm.headers.splice(idx, 1)">
                   {{ t('instances.table.delete') }}
-                </a-button>
+                </dsh-button>
                 <div v-if="mcpHeaderKeyError(idx)" class="env-error">{{ mcpHeaderKeyError(idx) }}</div>
               </div>
-              <a-button size="small" class="env-add-btn" @click="addMcpHeaderRow">
+              <dsh-button variant="secondary" size="sm" class="env-add-btn" @click="addMcpHeaderRow">
                 {{ t('instanceEdit.mcpHeaderAdd') }}
-              </a-button>
+              </dsh-button>
             </div>
-          </a-form-item>
+          </dsh-form-item>
         </template>
 
         <!-- stdio: command + args + env + cwd -->
         <template v-else>
-          <a-form-item
+          <dsh-form-item
             :label="t('instanceEdit.mcpCommand')"
             required
             :validate-status="mcpCommandError ? 'error' : undefined"
             :help="mcpCommandError || undefined"
           >
-            <a-input v-model="mcpForm.command" :placeholder="t('instanceEdit.mcpCommandPlaceholder')" />
-          </a-form-item>
-          <a-form-item :label="t('instanceEdit.mcpArgs')" :extra="t('instanceEdit.mcpArgPlaceholder')">
+            <dsh-input v-model="mcpForm.command" :placeholder="t('instanceEdit.mcpCommandPlaceholder')" />
+          </dsh-form-item>
+          <dsh-form-item :label="t('instanceEdit.mcpArgs')" :extra="t('instanceEdit.mcpArgPlaceholder')">
             <div class="mcp-rows">
               <div v-for="(_arg, idx) in mcpForm.args" :key="idx" class="env-row">
-                <a-input v-model="mcpForm.args[idx]" class="env-value" />
-                <a-button status="danger" type="text" @click="mcpForm.args.splice(idx, 1)">
+                <dsh-input v-model="mcpForm.args[idx]" class="env-value" />
+                <dsh-button variant="danger-soft" @click="mcpForm.args.splice(idx, 1)">
                   {{ t('instances.table.delete') }}
-                </a-button>
+                </dsh-button>
               </div>
-              <a-button size="small" class="env-add-btn" @click="addMcpArgRow">
+              <dsh-button variant="secondary" size="sm" class="env-add-btn" @click="addMcpArgRow">
                 {{ t('instanceEdit.mcpArgAdd') }}
-              </a-button>
+              </dsh-button>
             </div>
-          </a-form-item>
-          <a-form-item :label="t('instanceEdit.mcpEnv')">
+          </dsh-form-item>
+          <dsh-form-item :label="t('instanceEdit.mcpEnv')">
             <div class="mcp-rows">
               <div v-for="(row, idx) in mcpForm.env" :key="idx" class="env-row">
-                <a-input
+                <dsh-input
                   v-model="row.key"
                   :placeholder="t('instanceEdit.envKey')"
                   :status="mcpEnvKeyError(idx) ? 'error' : undefined"
                   class="env-key"
                 />
-                <a-input v-model="row.value" :placeholder="t('instanceEdit.envValue')" class="env-value" />
-                <a-button status="danger" type="text" @click="mcpForm.env.splice(idx, 1)">
+                <dsh-input v-model="row.value" :placeholder="t('instanceEdit.envValue')" class="env-value" />
+                <dsh-button variant="danger-soft" @click="mcpForm.env.splice(idx, 1)">
                   {{ t('instances.table.delete') }}
-                </a-button>
+                </dsh-button>
                 <div v-if="mcpEnvKeyError(idx)" class="env-error">{{ mcpEnvKeyError(idx) }}</div>
               </div>
-              <a-button size="small" class="env-add-btn" @click="addMcpEnvRow">
+              <dsh-button variant="secondary" size="sm" class="env-add-btn" @click="addMcpEnvRow">
                 {{ t('instanceEdit.mcpEnvAdd') }}
-              </a-button>
+              </dsh-button>
             </div>
-          </a-form-item>
-          <a-form-item :label="t('instanceEdit.mcpCwd')">
-            <a-input v-model="mcpForm.cwd" :placeholder="t('instanceEdit.mcpCwdPlaceholder')" />
-          </a-form-item>
+          </dsh-form-item>
+          <dsh-form-item :label="t('instanceEdit.mcpCwd')">
+            <dsh-input v-model="mcpForm.cwd" :placeholder="t('instanceEdit.mcpCwdPlaceholder')" />
+          </dsh-form-item>
         </template>
 
-        <a-form-item>
-          <a-switch v-model="mcpForm.enabled" />
+        <dsh-form-item>
+          <dsh-switch v-model="mcpForm.enabled" />
           <span class="switch-label">{{ t('instanceEdit.mcpEnabledLabel') }}</span>
-        </a-form-item>
+        </dsh-form-item>
 
-        <a-alert v-if="mcpExtraKeys.length" type="info">
+        <dsh-alert v-if="mcpExtraKeys.length" type="info">
           {{ t('instanceEdit.mcpExtraKept', { keys: mcpExtraKeys.join(', ') }) }}
-        </a-alert>
-      </a-form>
+        </dsh-alert>
+      </dsh-form>
       </div>
-    </a-modal>
+    </dsh-modal>
 
     <!-- Model provider editor (issue #89) -->
-    <a-modal
+    <dsh-modal
       v-model:visible="providerEditVisible"
+      modalClass="model-provider-modal"
       :title="providerTitle"
       :width="680"
       :ok-loading="providerSaving"
       :ok-button-props="{ disabled: !providerFormValid }"
       @ok="onSaveProvider"
     >
-      <a-form :model="providerForm" layout="vertical">
+      <dsh-form :model="providerForm" layout="vertical">
         <!-- API key: write-only, never read back -->
-        <a-form-item
+        <dsh-form-item
           :label="t('instanceEdit.modelsApiKey')"
           :required="!!providerApiKeyError"
           :validate-status="providerApiKeyError ? 'error' : providerEditTarget?.credential?.overriddenByInstance ? 'warning' : undefined"
@@ -3399,11 +3405,11 @@ const terminalRunning = ref(false)
                 : t('instanceEdit.modelsApiKeyHint'))
           "
         >
-          <a-input-password
+          <dsh-input-password
             v-model="providerForm.apiKey"
             :placeholder="providerEditTarget?.credential?.configured ? t('instanceEdit.modelsApiKeyKeep') : t('instanceEdit.modelsApiKeyPlaceholder')"
           />
-        </a-form-item>
+        </dsh-form-item>
 
         <!-- Official DeepSeek card: only the key above is shown -->
         <template v-if="providerForm.official">
@@ -3412,54 +3418,54 @@ const terminalRunning = ref(false)
 
         <!-- Built-in provider: id/endpoint/models come from the catalogue -->
         <template v-else-if="providerForm.catalogProviderId">
-          <a-form-item :label="t('instanceEdit.modelsProviderId')">
-            <a-input :model-value="providerForm.id" disabled />
-          </a-form-item>
-          <a-form-item :label="t('instanceEdit.modelsDisplayName')">
-            <a-input v-model="providerForm.displayName" :placeholder="catalogEntry?.name ?? ''" />
-          </a-form-item>
-          <a-alert type="info">
+          <dsh-form-item :label="t('instanceEdit.modelsProviderId')">
+            <dsh-input :model-value="providerForm.id" disabled />
+          </dsh-form-item>
+          <dsh-form-item :label="t('instanceEdit.modelsDisplayName')">
+            <dsh-input v-model="providerForm.displayName" :placeholder="catalogEntry?.name ?? ''" />
+          </dsh-form-item>
+          <dsh-alert type="info">
             {{ t('instanceEdit.modelsCatalogInherited', { api: providerForm.api, baseUrl: providerForm.baseUrl }) }}
-          </a-alert>
+          </dsh-alert>
         </template>
 
         <!-- Custom provider: every field is user-owned -->
         <template v-else>
-          <a-form-item
+          <dsh-form-item
             :label="t('instanceEdit.modelsProviderId')"
             required
             :validate-status="providerIdError ? 'error' : undefined"
             :help="providerIdError || t('instanceEdit.modelsProviderIdHint')"
           >
-            <a-input v-model="providerForm.id" :disabled="!!providerOriginalId" placeholder="my-gateway" />
-          </a-form-item>
-          <a-form-item :label="t('instanceEdit.modelsDisplayName')">
-            <a-input v-model="providerForm.displayName" :placeholder="providerForm.id" />
-          </a-form-item>
-          <a-form-item
+            <dsh-input v-model="providerForm.id" :disabled="!!providerOriginalId" placeholder="my-gateway" />
+          </dsh-form-item>
+          <dsh-form-item :label="t('instanceEdit.modelsDisplayName')">
+            <dsh-input v-model="providerForm.displayName" :placeholder="providerForm.id" />
+          </dsh-form-item>
+          <dsh-form-item
             :label="t('instanceEdit.modelsBaseUrl')"
             required
             :validate-status="providerBaseUrlError ? 'error' : undefined"
             :help="providerBaseUrlError || undefined"
           >
-            <a-input v-model="providerForm.baseUrl" placeholder="https://gateway.example/v1" />
-          </a-form-item>
-          <a-form-item
+            <dsh-input v-model="providerForm.baseUrl" placeholder="https://gateway.example/v1" />
+          </dsh-form-item>
+          <dsh-form-item
             :label="t('instanceEdit.modelsApi')"
             required
             :validate-status="providerApiError ? 'error' : undefined"
             :help="providerApiError || undefined"
           >
-            <a-select
+            <dsh-select
               v-model="providerForm.api"
               :placeholder="t('instanceEdit.modelsErrApiRequired')"
               style="width: 320px"
             >
-              <a-option v-for="opt in PROVIDER_API_OPTIONS" :key="opt" :value="opt">{{ opt }}</a-option>
-            </a-select>
-          </a-form-item>
+              <dsh-option v-for="opt in PROVIDER_API_OPTIONS" :key="opt" :value="opt">{{ opt }}</dsh-option>
+            </dsh-select>
+          </dsh-form-item>
 
-          <a-form-item
+          <dsh-form-item
             :label="t('instanceEdit.modelsModels')"
             :validate-status="providerModelsError ? 'error' : undefined"
             :help="providerModelsError || t('instanceEdit.modelsModelsHint')"
@@ -3467,73 +3473,73 @@ const terminalRunning = ref(false)
             <div class="model-rows">
               <div v-for="model in providerForm.models" :key="model.id" class="model-row">
                 <span class="model-id">{{ model.id }}</span>
-                <a-input v-model="model.name" :placeholder="model.id" class="model-name" />
-                <a-input-number
+                <dsh-input v-model="model.name" :placeholder="model.id" class="model-name" />
+                <dsh-input-number
                   :model-value="model.contextWindow ?? undefined"
                   :placeholder="t('instanceEdit.modelsContextWindow')"
                   hide-button
                   class="model-num"
                   @update:model-value="(v) => (model.contextWindow = typeof v === 'number' && v > 0 ? v : null)"
                 />
-                <a-input-number
+                <dsh-input-number
                   :model-value="model.maxTokens ?? undefined"
                   :placeholder="t('instanceEdit.modelsMaxTokens')"
                   hide-button
                   class="model-num"
                   @update:model-value="(v) => (model.maxTokens = typeof v === 'number' && v > 0 ? v : null)"
                 />
-                <a-button status="danger" type="text" @click="removeModel(model.id)">
+                <dsh-button variant="danger-soft" @click="removeModel(model.id)">
                   {{ t('instances.table.delete') }}
-                </a-button>
+                </dsh-button>
               </div>
               <!-- Manual entry row: works exactly like the picker (issue #89 #3) -->
               <div class="model-row model-row-new">
-                <a-input
+                <dsh-input
                   v-model="newModel.id"
                   :placeholder="t('instanceEdit.modelsModelId')"
                   class="model-id-input"
                 />
-                <a-input v-model="newModel.name" :placeholder="t('instanceEdit.modelsDisplayName')" class="model-name" />
-                <a-input-number
+                <dsh-input v-model="newModel.name" :placeholder="t('instanceEdit.modelsDisplayName')" class="model-name" />
+                <dsh-input-number
                   v-model="newModel.contextWindow"
                   :placeholder="t('instanceEdit.modelsContextWindow')"
                   hide-button
                   class="model-num"
                 />
-                <a-input-number
+                <dsh-input-number
                   v-model="newModel.maxTokens"
                   :placeholder="t('instanceEdit.modelsMaxTokens')"
                   hide-button
                   class="model-num"
                 />
-                <a-button
-                  size="small"
-                  type="text"
+                <dsh-button variant="ghost"
+                  size="sm"
                   :disabled="!newModel.id.trim() || !!newModelError"
                   @click="addManualModel"
                 >
                   {{ t('instanceEdit.modelsAddModel') }}
-                </a-button>
+                </dsh-button>
               </div>
               <p v-if="newModelError" class="model-row-error">{{ newModelError }}</p>
-              <a-button size="small" class="model-fetch-btn" :loading="modelsPickerLoading" @click="openModelPicker">
+              <dsh-button variant="secondary" size="sm" class="model-fetch-btn" :loading="modelsPickerLoading" @click="openModelPicker">
                 {{ t('instanceEdit.modelsFetch') }}
-              </a-button>
+              </dsh-button>
             </div>
-          </a-form-item>
+          </dsh-form-item>
         </template>
 
-      </a-form>
-    </a-modal>
+      </dsh-form>
+    </dsh-modal>
 
     <!-- Add provider: choose built-in catalogue or custom (issue #89) -->
-    <a-modal
+    <dsh-modal
       v-model:visible="addModeVisible"
+      modalClass="model-provider-modal"
       :title="t('instanceEdit.modelsAddTitle')"
       :footer="false"
       :width="560"
     >
-      <a-spin :loading="catalogLoading">
+      <dsh-spin :loading="catalogLoading" class="add-mode-content">
         <div class="add-mode-grid">
           <button class="add-mode-card" type="button" @click="openAddCustom">
             <span class="add-mode-title">{{ t('instanceEdit.modelsAddCustom') }}</span>
@@ -3548,19 +3554,20 @@ const terminalRunning = ref(false)
             @click="onPickCatalog(p)"
           >
             <span class="add-mode-title">{{ p.name }}</span>
-            <span class="add-mode-sub">{{ p.api }} · {{ p.baseUrl }}</span>
+            <span class="add-mode-sub" :title="p.api">{{ p.api }}</span>
+            <span class="add-mode-sub" :title="p.baseUrl">{{ p.baseUrl }}</span>
           </button>
         </div>
         <!-- A failed catalogue must say so, not masquerade as an empty one. -->
-        <a-alert v-if="catalogError" type="error">
+        <dsh-alert v-if="catalogError" type="error">
           {{ t('instanceEdit.modelsCatalogError', { error: catalogError }) }}
-        </a-alert>
-        <a-empty
+        </dsh-alert>
+        <dsh-empty
           v-else-if="!catalogLoading && catalogProviders.length === 0"
           :description="t('instanceEdit.modelsCatalogEmpty')"
         />
-      </a-spin>
-    </a-modal>
+      </dsh-spin>
+    </dsh-modal>
 
     <ModelPickerDialog
       :visible="modelsPickerVisible"
@@ -3573,7 +3580,7 @@ const terminalRunning = ref(false)
 
     <!-- Storage redirection target picker (issue #51; directory + alias form
          since issue #91) -->
-    <a-modal
+    <dsh-modal
       :visible="linkDialogVisible"
       :title="t('instanceEdit.storageSetTitle', { entry: linkEntry })"
       :ok-text="t('common.confirm')"
@@ -3583,9 +3590,9 @@ const terminalRunning = ref(false)
       @ok="confirmSetLink"
       @cancel="linkDialogVisible = false"
     >
-      <a-form layout="vertical" :model="{}">
-        <a-form-item :label="t('instanceEdit.storagePreset')">
-          <a-select
+      <dsh-form layout="vertical" :model="{}">
+        <dsh-form-item :label="t('instanceEdit.storagePreset')">
+          <dsh-select
             :model-value="linkPresetId"
             :placeholder="t('instanceEdit.storagePresetNone')"
             :loading="linkPresetsLoading"
@@ -3593,7 +3600,7 @@ const terminalRunning = ref(false)
             style="width: 100%"
             @change="applyLinkPresetSingle"
           >
-            <a-option v-for="preset in linkPresetOptions" :key="preset.id" :value="preset.id">
+            <dsh-option v-for="preset in linkPresetOptions" :key="preset.id" :value="preset.id">
               {{ preset.label }}
               <span class="storage-preset-path">
                 {{ preset.path }}
@@ -3603,40 +3610,40 @@ const terminalRunning = ref(false)
                   · {{ t('instanceEdit.storagePresetWillCreate') }}
                 </template>
               </span>
-            </a-option>
-          </a-select>
-        </a-form-item>
-        <a-alert v-if="!linkIsDir" type="info" class="storage-file-hint">
+            </dsh-option>
+          </dsh-select>
+        </dsh-form-item>
+        <dsh-alert v-if="!linkIsDir" type="info" class="storage-file-hint">
           {{ t('instanceEdit.storageFileEntryHint') }}
-        </a-alert>
-        <a-form-item :label="t('instanceEdit.storageTargetDir')">
-          <a-input-group>
-            <a-input
+        </dsh-alert>
+        <dsh-form-item :label="t('instanceEdit.storageTargetDir')">
+          <dsh-input-group>
+            <dsh-input
               v-model="linkDir"
               :placeholder="t('instanceEdit.storageTargetPlaceholder')"
               allow-clear
             />
-            <a-button :loading="linkPicking" @click="pickLinkDir('single')">
+            <dsh-button variant="secondary" :loading="linkPicking" @click="pickLinkDir('single')">
               {{ t('instanceEdit.storageBrowse') }}
-            </a-button>
-          </a-input-group>
-        </a-form-item>
-        <a-form-item
+            </dsh-button>
+          </dsh-input-group>
+        </dsh-form-item>
+        <dsh-form-item
           :label="t('instanceEdit.storageAlias')"
           :validate-status="linkAliasError ? 'error' : undefined"
           :help="linkAliasError || undefined"
         >
-          <a-input v-model="linkAlias" :placeholder="linkEntry" allow-clear />
-        </a-form-item>
-        <a-alert type="info">
+          <dsh-input v-model="linkAlias" :placeholder="linkEntry" allow-clear />
+        </dsh-form-item>
+        <dsh-alert type="info">
           {{ t('instanceEdit.storageSetHint') }}
-        </a-alert>
-      </a-form>
-    </a-modal>
+        </dsh-alert>
+      </dsh-form>
+    </dsh-modal>
 
     <!-- Batch storage redirection (issue #91): one directory for every
          selected entry; each entry keeps its current name. -->
-    <a-modal
+    <dsh-modal
       :visible="batchDialogVisible"
       :title="t('instanceEdit.storageBatchTitle', { count: storageSelected.length })"
       :ok-text="t('common.confirm')"
@@ -3646,9 +3653,9 @@ const terminalRunning = ref(false)
       @ok="confirmBatchLink"
       @cancel="batchDialogVisible = false"
     >
-      <a-form layout="vertical" :model="{}">
-        <a-form-item :label="t('instanceEdit.storagePreset')">
-          <a-select
+      <dsh-form layout="vertical" :model="{}">
+        <dsh-form-item :label="t('instanceEdit.storagePreset')">
+          <dsh-select
             :model-value="batchPresetId"
             :placeholder="t('instanceEdit.storagePresetNone')"
             :loading="linkPresetsLoading"
@@ -3656,7 +3663,7 @@ const terminalRunning = ref(false)
             style="width: 100%"
             @change="applyLinkPresetBatch"
           >
-            <a-option v-for="preset in linkPresetOptions" :key="preset.id" :value="preset.id">
+            <dsh-option v-for="preset in linkPresetOptions" :key="preset.id" :value="preset.id">
               {{ preset.label }}
               <span class="storage-preset-path">
                 {{ preset.path }}
@@ -3664,26 +3671,26 @@ const terminalRunning = ref(false)
                   · {{ t('instanceEdit.storagePresetWillCreate') }}
                 </template>
               </span>
-            </a-option>
-          </a-select>
-        </a-form-item>
-        <a-form-item :label="t('instanceEdit.storageTargetDir')">
-          <a-input-group>
-            <a-input
+            </dsh-option>
+          </dsh-select>
+        </dsh-form-item>
+        <dsh-form-item :label="t('instanceEdit.storageTargetDir')">
+          <dsh-input-group>
+            <dsh-input
               v-model="batchDir"
               :placeholder="t('instanceEdit.storageTargetPlaceholder')"
               allow-clear
             />
-            <a-button :loading="linkPicking" @click="pickLinkDir('batch')">
+            <dsh-button variant="secondary" :loading="linkPicking" @click="pickLinkDir('batch')">
               {{ t('instanceEdit.storageBrowse') }}
-            </a-button>
-          </a-input-group>
-        </a-form-item>
-        <a-alert type="info">
+            </dsh-button>
+          </dsh-input-group>
+        </dsh-form-item>
+        <dsh-alert type="info">
           {{ t('instanceEdit.storageBatchHint') }}
-        </a-alert>
-      </a-form>
-    </a-modal>
+        </dsh-alert>
+      </dsh-form>
+    </dsh-modal>
 
   </div>
 </template>
@@ -3764,18 +3771,12 @@ const terminalRunning = ref(false)
 
 .edit-page {
   display: flex;
-  height: calc(100vh - var(--dl-header-height));
+  height: var(--dl-content-height);
 }
 
 .edit-sidebar {
   width: 200px;
   flex-shrink: 0;
-  background: var(--color-bg-2);
-  border-right: 1px solid var(--color-border-2);
-
-  :deep(.arco-menu) {
-    height: 100%;
-  }
 }
 
 .edit-content {
@@ -3785,7 +3786,7 @@ const terminalRunning = ref(false)
 }
 
 .edit-inner {
-  padding: 20px 24px 80px;
+  padding: 20px 20px 60px 0;
 }
 
 .edit-card {
@@ -3804,7 +3805,7 @@ const terminalRunning = ref(false)
   align-items: center;
   padding: 10px 12px;
   border: 1px solid var(--color-border-2);
-  border-radius: 6px;
+  border-radius: 20px;
   margin-bottom: 8px;
   background: var(--color-fill-1);
 }
@@ -3854,7 +3855,7 @@ const terminalRunning = ref(false)
   overflow-x: auto;
 }
 
-.cell-nowrap {
+:deep(.cell-nowrap) {
   white-space: nowrap;
 }
 
@@ -3974,12 +3975,40 @@ const terminalRunning = ref(false)
 }
 
 .plugins-table {
+  display: block;
   margin-bottom: 12px;
+
+  &[aria-busy='true'] :deep(.arco-table-element > tbody) {
+    filter: blur(6px);
+    clip-path: inset(0 round calc(var(--radius) * 2));
+  }
+
+  :deep(> .arco-spin-mask) {
+    background: transparent;
+  }
+}
+
+.plugin-cell-name {
+  // Let the ID determine the column width, even when the localized name is longer.
+  display: block;
+  width: 0;
+  min-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .plugin-cell-id {
   font-family: monospace;
   font-size: 13px;
+  white-space: nowrap;
+}
+
+.plugin-cell-id-secondary {
+  display: block;
+  color: var(--color-text-3);
+  font-size: 12px;
+  line-height: 16px;
 }
 
 .plugin-no-version {
@@ -4034,8 +4063,6 @@ const terminalRunning = ref(false)
   .edit-sidebar {
     width: 100%;
     height: auto;
-    border-right: none;
-    border-bottom: 1px solid var(--color-border-2);
 
     :deep(.arco-menu) {
       height: auto;
@@ -4069,7 +4096,7 @@ const terminalRunning = ref(false)
 .agents-preview {
   padding: 12px 16px;
   border: 1px solid var(--color-border-2);
-  border-radius: 4px;
+  border-radius: 20px;
   font-size: 14px;
   line-height: 1.7;
   color: var(--color-text-1);
@@ -4155,7 +4182,7 @@ const terminalRunning = ref(false)
 .model-card {
   width: 280px;
   border: 1px solid var(--color-border-2);
-  border-radius: 8px;
+  border-radius: 20px;
   padding: 14px;
   background: var(--color-bg-2);
 }
@@ -4245,14 +4272,18 @@ const terminalRunning = ref(false)
   align-self: flex-start;
 }
 
+:global(.model-provider-modal .dsh-overlay-scroll > .arco-scrollbar-container) {
+  margin-inline-end: 22px;
+}
+
+.add-mode-content {
+  display: block;
+}
+
 .add-mode-grid {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 12px;
-  /* The provider catalogue is long: cap the grid and scroll inside the
-     modal instead of letting the dialog outgrow the window. */
-  max-height: 60vh;
-  overflow-y: auto;
 }
 
 .add-mode-card {
@@ -4284,8 +4315,11 @@ const terminalRunning = ref(false)
 }
 
 .add-mode-sub {
+  align-self: stretch;
+  overflow: hidden;
   font-size: 12px;
   color: var(--color-text-3);
-  word-break: break-all;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 </style>

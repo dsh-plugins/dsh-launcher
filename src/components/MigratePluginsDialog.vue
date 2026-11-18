@@ -1,11 +1,13 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { Message } from '@arco-design/web-vue'
+import { useFeedback } from '@dsh-plugin/dsh-ui-components-vue'
 import { api } from '@/api'
 import type { InstalledPlugin } from '@/api/types'
 import { useLauncherStore } from '@/stores/launcher'
 import HintIcon from '@/components/HintIcon.vue'
+
+const { message: Message } = useFeedback()
 
 const props = defineProps<{
   visible: boolean
@@ -183,7 +185,7 @@ async function confirm() {
 </script>
 
 <template>
-  <a-modal
+  <dsh-modal
     :visible="visible"
     :title="t('plugins.migrateTitle')"
     :ok-text="t('plugins.migrateConfirm', { count: installCount })"
@@ -193,83 +195,83 @@ async function confirm() {
     @ok="confirm"
     @cancel="close"
   >
-    <a-form layout="vertical" :model="{}" class="migrate-body">
+    <dsh-form layout="vertical" :model="{}" class="migrate-body">
       <!-- CSS grid (not flex): the three controls must never wrap into a
            vertical stack (issue #41). minmax(0,…) keeps the selects
            shrinkable so the row holds at any width. -->
       <div class="migrate-source-row">
-        <a-form-item :label="t('plugins.migrateSourceInstance')" class="migrate-source-col">
-          <a-select v-model="sourceInstanceId" :placeholder="t('plugins.migrateSourceInstanceHint')">
-            <a-option v-for="inst in sourceInstances" :key="inst.id" :value="inst.id">
+        <dsh-form-item :label="t('plugins.migrateSourceInstance')" class="migrate-source-col">
+          <dsh-select v-model="sourceInstanceId" :placeholder="t('plugins.migrateSourceInstanceHint')">
+            <dsh-option v-for="inst in sourceInstances" :key="inst.id" :value="inst.id">
               {{ inst.name }}（{{ store.versionById(inst.version_id)?.version ?? '?' }}）
-            </a-option>
-          </a-select>
-        </a-form-item>
-        <a-form-item :label="t('plugins.migrateSourceProfile')" class="migrate-source-col">
-          <a-select
+            </dsh-option>
+          </dsh-select>
+        </dsh-form-item>
+        <dsh-form-item :label="t('plugins.migrateSourceProfile')" class="migrate-source-col">
+          <dsh-select
             v-model="sourceProfile"
             :disabled="!sourceInstanceId"
             :placeholder="t('plugins.migrateSourceProfileHint')"
           >
-            <a-option v-for="p in sourceProfiles" :key="p" :value="p">{{ p }}</a-option>
-          </a-select>
-        </a-form-item>
-        <a-button
+            <dsh-option v-for="p in sourceProfiles" :key="p" :value="p">{{ p }}</dsh-option>
+          </dsh-select>
+        </dsh-form-item>
+        <dsh-button variant="secondary"
           class="migrate-load-btn"
           :loading="loading"
           :disabled="!sourceProfile"
           @click="loadPlugins"
         >
           {{ t('plugins.migrateLoad') }}
-        </a-button>
+        </dsh-button>
       </div>
 
       <div v-if="plugins.length > 0" class="migrate-list">
         <div v-for="p in plugins" :key="p.id" class="migrate-row">
-          <a-checkbox
+          <dsh-checkbox
             :model-value="selected.includes(p.id)"
             :disabled="isUnmigratable(p)"
             @change="(v: boolean | (string | number | boolean)[]) => toggleSelected(p.id, v)"
           />
           <span class="migrate-id">{{ p.id }}</span>
-          <a-tag v-if="p.version" size="small">{{ p.version }}</a-tag>
-          <a-tag v-if="!p.enabled" color="gray" size="small">{{ t('plugins.migrateDisabledTag') }}</a-tag>
-          <a-tag v-if="existsInTarget(p)" color="orange" size="small">
+          <dsh-tag v-if="p.version" size="small">{{ p.version }}</dsh-tag>
+          <dsh-tag v-if="!p.enabled" color="gray" size="small">{{ t('plugins.migrateDisabledTag') }}</dsh-tag>
+          <dsh-tag v-if="existsInTarget(p)" color="orange" size="small">
             {{ t('plugins.migrateExistsTag') }}
-          </a-tag>
+          </dsh-tag>
           <HintIcon v-if="isUnmigratable(p)" :content="t('plugins.migrateUnmigratableHint')" />
         </div>
       </div>
-      <a-empty v-else-if="!loading" class="migrate-empty" :description="t('plugins.migrateEmpty')" />
+      <dsh-empty v-else-if="!loading" class="migrate-empty" :description="t('plugins.migrateEmpty')" />
 
-      <a-form-item>
+      <dsh-form-item>
         <template #label>
           {{ t('plugins.migrateVersionStrategy') }}
           <HintIcon :content="t('plugins.migrateVersionStrategyHint')" />
         </template>
-        <a-radio-group v-model="versionStrategy" type="button" class="migrate-radios">
-          <a-radio value="source">{{ t('plugins.migrateKeepSource') }}</a-radio>
-          <a-radio value="latest">{{ t('plugins.migrateUseLatest') }}</a-radio>
-        </a-radio-group>
-      </a-form-item>
-      <a-form-item>
+        <dsh-radio-group v-model="versionStrategy" type="button" class="migrate-radios">
+          <dsh-radio value="source">{{ t('plugins.migrateKeepSource') }}</dsh-radio>
+          <dsh-radio value="latest">{{ t('plugins.migrateUseLatest') }}</dsh-radio>
+        </dsh-radio-group>
+      </dsh-form-item>
+      <dsh-form-item>
         <template #label>
           {{ t('plugins.migrateConflictStrategy') }}
           <HintIcon :content="t('plugins.migrateConflictStrategyHint')" />
         </template>
-        <a-radio-group v-model="conflictStrategy" type="button" class="migrate-radios">
-          <a-radio value="skip">{{ t('plugins.migrateConflictSkip') }}</a-radio>
-          <a-radio value="reinstall">{{ t('plugins.migrateConflictReinstall') }}</a-radio>
-        </a-radio-group>
-      </a-form-item>
-      <a-form-item class="migrate-sync-item">
-        <a-checkbox v-model="syncDisabled">
+        <dsh-radio-group v-model="conflictStrategy" type="button" class="migrate-radios">
+          <dsh-radio value="skip">{{ t('plugins.migrateConflictSkip') }}</dsh-radio>
+          <dsh-radio value="reinstall">{{ t('plugins.migrateConflictReinstall') }}</dsh-radio>
+        </dsh-radio-group>
+      </dsh-form-item>
+      <dsh-form-item class="migrate-sync-item">
+        <dsh-checkbox v-model="syncDisabled">
           {{ t('plugins.migrateSyncDisabled') }}
           <HintIcon :content="t('plugins.migrateSyncDisabledHint')" />
-        </a-checkbox>
-      </a-form-item>
-    </a-form>
-  </a-modal>
+        </dsh-checkbox>
+      </dsh-form-item>
+    </dsh-form>
+  </dsh-modal>
 </template>
 
 <style scoped>

@@ -134,6 +134,26 @@ pub fn run() {
         let dev_id = format!("{}.dev", context.config().identifier);
         context.config_mut().identifier = dev_id;
     }
+    // Reserve room for the CSS shadow without shrinking the usable window.
+    #[cfg(windows)]
+    if let Some(main) = context
+        .config_mut()
+        .app
+        .windows
+        .iter_mut()
+        .find(|w| w.label == "main")
+    {
+        // Keep this in sync with --dl-window-inset in src/styles/index.scss.
+        const SHADOW_INSET: f64 = 24.0;
+        main.width += 2.0 * SHADOW_INSET;
+        main.height += 2.0 * SHADOW_INSET;
+        main.min_width = main.min_width.map(|width| width + 2.0 * SHADOW_INSET);
+        main.min_height = main.min_height.map(|height| height + 2.0 * SHADOW_INSET);
+        main.transparent = true;
+        // The native shadow also adds a border with a different corner radius.
+        main.shadow = false;
+        main.background_color = Some(tauri::window::Color(0, 0, 0, 0));
+    }
     tauri::Builder::default()
         // Single instance first: a second launch (e.g. browser protocol
         // activation) forwards its argv to the running instance and exits.
@@ -391,6 +411,7 @@ pub fn run() {
             icons::set_launcher_icon,
             icons::clear_launcher_icon,
             icons::read_launcher_icon,
+            icons::load_version_icons,
             skills::list_instance_skills,
             commands::read_agents_md,
             commands::write_agents_md,

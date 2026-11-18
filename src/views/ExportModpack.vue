@@ -2,11 +2,13 @@
 import { computed, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
-import { Message } from '@arco-design/web-vue'
+import { useFeedback } from '@dsh-plugin/dsh-ui-components-vue'
 import { api } from '@/api'
 import type { SkillInfo } from '@/api/types'
 import { useLauncherStore } from '@/stores/launcher'
 import HintIcon from '@/components/HintIcon.vue'
+
+const { message: Message } = useFeedback()
 
 const router = useRouter()
 const { t } = useI18n()
@@ -109,7 +111,7 @@ async function startExport() {
 
 <template>
   <div class="export-page">
-    <a-page-header
+    <dsh-page-header
       class="export-header"
       :title="t('exportPack.title')"
       :sub-title="ctx ? `Profile「${ctx.profile}」` : ''"
@@ -120,101 +122,100 @@ async function startExport() {
       <!-- 基本信息 -->
       <div class="dl-card">
         <div class="dl-card-title"><h3>{{ t('exportPack.basic') }}</h3></div>
-        <a-form :model="form" layout="vertical">
+        <dsh-form :model="form" layout="vertical">
           <div class="form-row">
-            <a-form-item :label="t('exportPack.name')" class="form-col">
-              <a-input v-model="form.name" />
-            </a-form-item>
-            <a-form-item :label="t('exportPack.version')" class="form-col">
-              <a-input v-model="form.version" placeholder="1.0.0" />
-            </a-form-item>
+            <dsh-form-item :label="t('exportPack.name')" class="form-col">
+              <dsh-input v-model="form.name" />
+            </dsh-form-item>
+            <dsh-form-item :label="t('exportPack.version')" class="form-col">
+              <dsh-input v-model="form.version" placeholder="1.0.0" />
+            </dsh-form-item>
           </div>
-          <a-form-item :label="t('exportPack.displayName')">
-            <a-input v-model="form.displayName" />
-          </a-form-item>
-          <a-form-item :label="t('exportPack.description')">
-            <a-textarea v-model="form.description" :auto-size="{ minRows: 2, maxRows: 4 }" />
-          </a-form-item>
-          <a-form-item :label="t('exportPack.author')">
-            <a-input v-model="form.author" />
-          </a-form-item>
-        </a-form>
+          <dsh-form-item :label="t('exportPack.displayName')">
+            <dsh-input v-model="form.displayName" />
+          </dsh-form-item>
+          <dsh-form-item :label="t('exportPack.description')">
+            <dsh-textarea v-model="form.description" :auto-size="{ minRows: 2, maxRows: 4 }" />
+          </dsh-form-item>
+          <dsh-form-item :label="t('exportPack.author')">
+            <dsh-input v-model="form.author" />
+          </dsh-form-item>
+        </dsh-form>
       </div>
 
       <!-- 导出内容列表 -->
       <div class="dl-card">
         <div class="dl-card-title"><h3>{{ t('exportPack.contents') }}</h3></div>
         <div class="content-row">
-          <a-checkbox :model-value="true" disabled>
+          <dsh-checkbox :model-value="true" disabled>
             {{ t('exportPack.contentManifest') }}
             <HintIcon :content="t('exportPack.contentManifestHint')" />
-          </a-checkbox>
+          </dsh-checkbox>
         </div>
         <div class="content-row">
-          <a-checkbox v-model="contents.patch">
+          <dsh-checkbox v-model="contents.patch">
             {{ t('exportPack.contentPatch') }}
             <HintIcon :content="t('exportPack.contentPatchHint')" />
-          </a-checkbox>
+          </dsh-checkbox>
         </div>
         <div class="content-row">
-          <a-checkbox v-model="contents.lockfile">
+          <dsh-checkbox v-model="contents.lockfile">
             {{ t('exportPack.contentLockfile') }}
             <HintIcon :content="t('exportPack.contentLockfileHint')" />
-          </a-checkbox>
+          </dsh-checkbox>
         </div>
         <div class="content-row">
-          <a-checkbox v-model="contents.workspace">
+          <dsh-checkbox v-model="contents.workspace">
             {{ t('exportPack.contentWorkspace') }}
             <HintIcon :content="t('exportPack.contentWorkspaceHint')" />
-          </a-checkbox>
+          </dsh-checkbox>
         </div>
         <div class="content-row">
-          <a-checkbox v-model="contents.icon">
+          <dsh-checkbox v-model="contents.icon">
             {{ t('exportPack.contentIcon') }}
             <HintIcon :content="t('exportPack.contentIconHint')" />
-          </a-checkbox>
+          </dsh-checkbox>
         </div>
         <div class="content-row">
-          <a-checkbox v-model="contents.extra_files">
+          <dsh-checkbox v-model="contents.extra_files">
             {{ t('exportPack.contentExtra') }}
             <HintIcon :content="t('exportPack.contentExtraHint')" />
-          </a-checkbox>
+          </dsh-checkbox>
         </div>
         <div class="content-row">
-          <a-checkbox v-model="contents.agents_md">
+          <dsh-checkbox v-model="contents.agents_md">
             {{ t('exportPack.contentAgents') }}
             <HintIcon :content="t('exportPack.contentAgentsHint')" />
-          </a-checkbox>
+          </dsh-checkbox>
         </div>
         <div v-if="skillList.length > 0" class="content-row content-skills">
           <div class="content-skills-title">
-            <a-checkbox
+            <dsh-checkbox
               :model-value="skillAllChecked"
               :indeterminate="skillIndeterminate"
               @change="onToggleAllSkills"
             >
               {{ t('exportPack.contentSkills') }}
-            </a-checkbox>
+            </dsh-checkbox>
             <HintIcon :content="t('exportPack.contentSkillsHint')" />
           </div>
-          <a-checkbox-group v-model="skillSelected" class="content-skills-list">
-            <a-checkbox v-for="s in skillList" :key="s.entry" :value="s.entry">
+          <dsh-checkbox-group v-model="skillSelected" class="content-skills-list">
+            <dsh-checkbox v-for="s in skillList" :key="s.entry" :value="s.entry">
               {{ s.name }}
               <span v-if="s.name !== s.entry" class="content-skill-entry">({{ s.entry }})</span>
-            </a-checkbox>
-          </a-checkbox-group>
+            </dsh-checkbox>
+          </dsh-checkbox-group>
         </div>
       </div>
 
       <div class="export-actions">
-        <a-button
-          type="primary"
-          size="large"
+        <dsh-button variant="primary"
+          size="lg"
           :loading="busy"
           @click="startExport"
         >
           {{ t('exportPack.start') }}
-        </a-button>
+        </dsh-button>
       </div>
     </template>
   </div>

@@ -9,6 +9,8 @@ use crate::config::{
 use crate::market_index::LocalizedText;
 use crate::AppState;
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
+use std::io::Read;
 use tauri::{AppHandle, Manager, State};
 
 const NPM_REGISTRY: &str = "https://registry.npmjs.org";
@@ -688,6 +690,8 @@ pub struct PluginVersionPage {
 pub struct InstalledPlugin {
     /// Package name / id (e.g. "@dsh-plugin/dsh-auxiliary").
     pub id: String,
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub name: BTreeMap<String, String>,
     /// Installed version spec as recorded in the profile manifest.
     pub version: Option<String>,
     /// Whether the plugin is currently enabled (not disabled in cordis.patch.yml).
@@ -1705,6 +1709,25 @@ pub(crate) fn package_entry_ids(profile_dir: &std::path::Path, package: &str) ->
     vec![cordis_id_of(package)]
 }
 
+fn installed_plugin_names(package: &std::path::Path) -> BTreeMap<String, String> {
+    let locale = package.join("locale");
+    ["zh", "en"]
+        .into_iter()
+        .filter_map(|language| {
+            let mut raw = Vec::new();
+            std::fs::File::open(locale.join(format!("{language}.json")))
+                .ok()?
+                .take(1024 * 1024)
+                .read_to_end(&mut raw)
+                .ok()?;
+            let json = raw.strip_prefix(b"\xef\xbb\xbf").unwrap_or(&raw);
+            let metadata: serde_json::Value = serde_json::from_slice(json).ok()?;
+            let title = metadata.pointer("/meta/title")?.as_str()?.trim();
+            (!title.is_empty()).then(|| (language.to_string(), title.to_string()))
+        })
+        .collect()
+}
+
 // ---------------------------------------------------------------------------
 // Commands: installed plugin listing (per instance + profile)
 // ---------------------------------------------------------------------------
@@ -1718,7 +1741,7 @@ pub async fn list_installed_plugins(
     instance_id: String,
     profile: String,
 ) -> Result<Vec<InstalledPlugin>, String> {
-    let (home_path, _version) = resolve_instance(&state, &instance_id)?;
+    let (home_path, version_path) = resolve_instance(&state, &instance_id)?;
     let dir = profile_dir(&home_path, &profile);
     // Reads go through \\wsl$\ for WSL instances, where each call can block for
     // milliseconds; keep the runtime free while a profile is scanned
@@ -1759,42 +1782,36 @@ pub async fn list_installed_plugins(
     ids.sort();
     ids.dedup();
 
-    // Resolve each package's real entry id(s) from its bundle patch (issue
-    // #62) so the enabled flag reflects rows written under the declared id,
-    // not just the package name. UNC reads stay on the blocking pool.
-    let entry_ids: std::collections::HashMap<String, Vec<String>> = {
-        let dir = dir.clone();
-        let ids_ref = ids.clone();
-        crate::wsl::run_blocking(move || {
-            ids_ref
-                .iter()
-                .map(|p| (p.clone(), package_entry_ids(&dir, p)))
-                .collect::<std::collections::HashMap<_, _>>()
-        })
-        .await?
-    };
-
-    let out = ids
-        .into_iter()
-        .map(|id| {
-            let cordis_id = cordis_id_of(&id);
-            // Disabled when ANY of the package's declared entry ids is gated
-            // (a partial disable is still a disable), or the raw package id is.
-            let entry_disabled = entry_ids
-                .get(&id)
-                .map(|v| v.iter().any(|e| disabled.contains(e)))
-                .unwrap_or(false);
-            let enabled =
-                !entry_disabled && !disabled.contains(&cordis_id) && !disabled.contains(&id);
-            InstalledPlugin {
-                version: versions.get(&id).cloned(),
-                enabled,
-                cordis_id: Some(cordis_id),
-                id,
-            }
-        })
-        .collect();
-    Ok(out)
+    // Bundle patches and locale files can also be on a WSL UNC share.
+    crate::wsl::run_blocking(move || {
+        ids.into_iter()
+            .map(|id| {
+                let cordis_id = cordis_id_of(&id);
+                let entry_disabled = package_entry_ids(&dir, &id)
+                    .iter()
+                    .any(|entry| disabled.contains(entry));
+                let enabled =
+                    !entry_disabled && !disabled.contains(&cordis_id) && !disabled.contains(&id);
+                let version = versions.remove(&id);
+                let name = crate::compatibility::installed_package(
+                    &dir,
+                    &version_path,
+                    &id,
+                    version.is_none(),
+                )
+                .map(|package| installed_plugin_names(&package))
+                .unwrap_or_default();
+                InstalledPlugin {
+                    name,
+                    version,
+                    enabled,
+                    cordis_id: Some(cordis_id),
+                    id,
+                }
+            })
+            .collect()
+    })
+    .await
 }
 
 /// Parse disabled cordis ids from a profile's cordis.patch.yml.
@@ -4057,7 +4074,35 @@ fn ensure_cordis_insert(dir: &std::path::Path, plugin_id: &str) -> Result<(), St
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::BTreeMap;
+
+    #[test]
+    fn installed_plugin_names_read_meta_title_and_skip_invalid_locales() {
+        let root = std::env::temp_dir().join(new_id("dshl-plugin-locale"));
+        let locale = root.join("locale");
+        std::fs::create_dir_all(&locale).unwrap();
+        std::fs::write(
+            locale.join("zh.json"),
+            "\u{feff}{\"meta\":{\"title\":\" Git 面板 \"}}",
+        )
+        .unwrap();
+        std::fs::write(
+            locale.join("en.json"),
+            r#"{"meta":{"title":"Git sidebar"}}"#,
+        )
+        .unwrap();
+        let names = installed_plugin_names(&root);
+        std::fs::write(locale.join("en.json"), "invalid JSON").unwrap();
+        let partial = installed_plugin_names(&root);
+        let missing = installed_plugin_names(&root.join("missing"));
+        std::fs::remove_file(locale.join("zh.json")).unwrap();
+        std::fs::remove_file(locale.join("en.json")).unwrap();
+        std::fs::remove_dir(&locale).unwrap();
+        std::fs::remove_dir(&root).unwrap();
+        assert_eq!(names.get("zh").map(String::as_str), Some("Git 面板"));
+        assert_eq!(names.get("en").map(String::as_str), Some("Git sidebar"));
+        assert_eq!(partial.len(), 1);
+        assert!(missing.is_empty());
+    }
 
     async fn catalog_server(
         body: Vec<u8>,

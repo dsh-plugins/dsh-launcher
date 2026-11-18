@@ -1,18 +1,18 @@
 import { createApp } from 'vue'
 import { createPinia } from 'pinia'
-import ArcoVue from '@arco-design/web-vue'
-import '@arco-design/web-vue/dist/arco.css'
+import '@dsh-plugin/dsh-ui-components-vue/style.css'
 
-import App from './App.vue'
+import UiRoot from './UiRoot.vue'
+import { installUi } from './ui'
 import router from './router'
 import { i18n } from './i18n'
 import './styles/index.scss'
 
-const app = createApp(App)
+const app = createApp(UiRoot)
 
 app.use(createPinia())
 app.use(router)
 app.use(i18n)
-app.use(ArcoVue)
+installUi(app)
 
 app.mount('#app')

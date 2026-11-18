@@ -65,7 +65,7 @@ function confirm() {
 </script>
 
 <template>
-  <a-modal
+  <dsh-modal
     :visible="props.visible"
     :title="t('instanceEdit.modelsFetchTitle')"
     :width="640"
@@ -73,43 +73,43 @@ function confirm() {
     @cancel="close"
   >
     <p class="picker-desc">{{ t('instanceEdit.modelsFetchDescription') }}</p>
-    <a-input-search
+    <dsh-input-search
       v-model="query"
       :placeholder="t('instanceEdit.modelsFetchSearch')"
       allow-clear
       class="picker-search"
     />
     <div class="picker-toolbar">
-      <a-button type="text" size="mini" @click="selectAll">
+      <dsh-button variant="ghost" size="sm" @click="selectAll">
         {{ t('instanceEdit.modelsFetchSelectAll') }}
-      </a-button>
-      <a-button type="text" size="mini" @click="deselectAll">
+      </dsh-button>
+      <dsh-button variant="ghost" size="sm" @click="deselectAll">
         {{ t('instanceEdit.modelsFetchDeselectAll') }}
-      </a-button>
+      </dsh-button>
     </div>
-    <a-scrollbar style="max-height: 320px; overflow-y: auto">
-      <a-spin v-if="props.loading" class="picker-loading" />
-      <a-checkbox-group v-else v-model="checked" direction="vertical" class="picker-list">
-        <a-checkbox v-for="model in filtered" :key="model.id" :value="model.id">
+    <dsh-scrollbar style="max-height: 320px; overflow-y: auto">
+      <dsh-spin v-if="props.loading" class="picker-loading" />
+      <dsh-checkbox-group v-else v-model="checked" direction="vertical" class="picker-list">
+        <dsh-checkbox v-for="model in filtered" :key="model.id" :value="model.id">
           <span class="picker-id">{{ model.id }}</span>
           <span v-if="model.name && model.name !== model.id" class="picker-name">
             {{ model.name }}
           </span>
-        </a-checkbox>
-      </a-checkbox-group>
-      <a-empty
+        </dsh-checkbox>
+      </dsh-checkbox-group>
+      <dsh-empty
         v-if="!props.loading && filtered.length === 0"
         :description="query ? t('instanceEdit.modelsFetchNoMatches') : (props.emptyText ?? t('instanceEdit.modelsFetchEmpty'))"
       />
-    </a-scrollbar>
+    </dsh-scrollbar>
     <template #footer>
       <span class="picker-count">{{ t('instanceEdit.modelsFetchSelected', { count: checked.length }) }}</span>
-      <a-button @click="close">{{ t('instanceEdit.modelsCancel') }}</a-button>
-      <a-button type="primary" :disabled="checked.length === 0" @click="confirm">
+      <dsh-button variant="secondary" @click="close">{{ t('instanceEdit.modelsCancel') }}</dsh-button>
+      <dsh-button variant="primary" :disabled="checked.length === 0" @click="confirm">
         {{ t('instanceEdit.modelsFetchAdopt') }}
-      </a-button>
+      </dsh-button>
     </template>
-  </a-modal>
+  </dsh-modal>
 </template>
 
 <style scoped lang="scss">

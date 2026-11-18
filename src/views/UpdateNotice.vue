@@ -11,10 +11,12 @@
 import { computed, onMounted, ref } from 'vue'
 import { useRoute } from 'vue-router'
 import { useI18n } from 'vue-i18n'
-import { Message } from '@arco-design/web-vue'
+import { useFeedback } from '@dsh-plugin/dsh-ui-components-vue'
 import { api } from '@/api'
 import type { LauncherUpdateInfo } from '@/api/types'
 import FramelessTitleBar from '@/components/FramelessTitleBar.vue'
+
+const { message: Message } = useFeedback()
 
 const { t } = useI18n()
 const route = useRoute()
@@ -135,11 +137,11 @@ async function onNever() {
 
     <div class="notice-body">
       <div v-if="checking" class="notice-center">
-        <a-spin :size="22" />
+        <dsh-spin :size="22" />
       </div>
       <div v-else-if="checkError" class="notice-center notice-error">
         <span>{{ checkError }}</span>
-        <a-button size="small" @click="refresh">{{ t('updateNotice.retry') }}</a-button>
+        <dsh-button variant="secondary" size="sm" @click="refresh">{{ t('updateNotice.retry') }}</dsh-button>
       </div>
       <template v-else-if="info && !upToDate">
         <div class="notice-version">
@@ -150,12 +152,12 @@ async function onNever() {
         <div class="notice-version">
           <span class="version-label">{{ t('updateNotice.latest') }}</span>
           <span class="version-value version-new">v{{ info.latest }}</span>
-          <a-tag v-if="info.latest?.includes('-')" color="orange" size="small">
+          <dsh-tag v-if="info.latest?.includes('-')" color="orange" size="small">
             {{ t('settings.update.channel.dev') }}
-          </a-tag>
-          <a-tag v-else color="green" size="small">
+          </dsh-tag>
+          <dsh-tag v-else color="green" size="small">
             {{ t('settings.update.channel.release') }}
-          </a-tag>
+          </dsh-tag>
         </div>
         <div v-if="publishedAt" class="notice-date">
           {{ t('updateNotice.publishedAt', { date: publishedAt }) }}
@@ -164,26 +166,23 @@ async function onNever() {
     </div>
 
     <div class="notice-actions">
-      <a-button
-        type="primary"
+      <dsh-button variant="primary"
         :disabled="!info?.url || checking || !!checkError"
         :loading="busy === 'download'"
         @click="onDownload"
       >
         {{ t('updateNotice.download') }}
-      </a-button>
-      <a-button :disabled="checking" @click="onSkip">
+      </dsh-button>
+      <dsh-button variant="secondary" :disabled="checking" @click="onSkip">
         {{ t('updateNotice.skip') }}
-      </a-button>
-      <a-button
-        status="danger"
-        type="text"
+      </dsh-button>
+      <dsh-button variant="danger-soft"
         :disabled="!info?.latest || checking || !!checkError"
         :loading="busy === 'never'"
         @click="onNever"
       >
         {{ t('updateNotice.never') }}
-      </a-button>
+      </dsh-button>
     </div>
   </div>
 </template>
@@ -193,7 +192,7 @@ async function onNever() {
   display: flex;
   flex-direction: column;
   height: 100vh;
-  background: var(--color-bg-1);
+  background: var(--dl-page-background);
 }
 
 .notice-body {

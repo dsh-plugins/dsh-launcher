@@ -231,6 +231,17 @@ fn shell_program() -> String {
     }
 }
 
+#[cfg(windows)]
+const POWERSHELL_PROMPT: &str = "function global:prompt { \
+    $location = $ExecutionContext.SessionState.Path.CurrentLocation; \
+    $label = $location.Path; \
+    if ($location.Provider.Name -eq 'FileSystem') { \
+        $leaf = Split-Path -Leaf -Path $location.Path; \
+        if ($leaf) { $label = $leaf } \
+    }; \
+    'PS {0}{1} ' -f $label, ('>' * ($nestedPromptLevel + 1)) \
+}";
+
 /// Spawns the shell for an instance inside a fresh PTY, returning the
 /// session (master + child) and the cwd it started in.
 async fn spawn_session(
@@ -321,6 +332,8 @@ async fn spawn_session(
         cmd.cwd(std::env::temp_dir().as_os_str());
     } else {
         cmd.cwd(home_fs.as_os_str());
+        #[cfg(windows)]
+        cmd.args(["-NoExit", "-Command", POWERSHELL_PROMPT]);
         for (k, v) in &env {
             cmd.env(k, v);
         }

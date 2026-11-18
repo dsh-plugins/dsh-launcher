@@ -6,10 +6,12 @@
 // instances. Idempotent: already-known entries are skipped and reported.
 import { computed, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { Message } from '@arco-design/web-vue'
+import { useFeedback } from '@dsh-plugin/dsh-ui-components-vue'
 import { api } from '@/api'
 import type { ImportItem, ImportReport, ScanReport, ScannedVersion } from '@/api/types'
 import { useLauncherStore } from '@/stores/launcher'
+
+const { message: Message } = useFeedback()
 
 const props = defineProps<{
   visible: boolean
@@ -155,7 +157,7 @@ function close() {
 </script>
 
 <template>
-  <a-modal
+  <dsh-modal
     :visible="props.visible"
     :title="t('importScan.title')"
     :width="640"
@@ -163,7 +165,7 @@ function close() {
     unmount-on-close
     @cancel="close"
   >
-    <a-spin :loading="scanning" style="width: 100%">
+    <dsh-spin :loading="scanning" style="width: 100%">
       <div v-if="report" class="scan-body">
         <p class="scan-hint">{{ t('importScan.hint') }}</p>
 
@@ -174,27 +176,27 @@ function close() {
         <div v-for="home in report.homes" :key="home.path" class="home-card">
           <div class="home-head">
             <span class="home-path">{{ home.path }}</span>
-            <a-tag v-if="home.wsl" size="small" color="orange">WSL: {{ home.wsl }}</a-tag>
-            <a-tag v-if="home.already_known" size="small" color="gray">
+            <dsh-tag v-if="home.wsl" size="small" color="orange">WSL: {{ home.wsl }}</dsh-tag>
+            <dsh-tag v-if="home.already_known" size="small" color="gray">
               {{ t('importScan.known') }}
-            </a-tag>
+            </dsh-tag>
           </div>
-          <a-checkbox-group v-model="checkedProfiles" direction="vertical">
-            <a-checkbox
+          <dsh-checkbox-group v-model="checkedProfiles" direction="vertical">
+            <dsh-checkbox
               v-for="p in home.profiles"
               :key="p.name"
               :value="profileKey(home.path, p.name)"
             >
               {{ p.name }}
-              <a-tag v-if="p.kind === 'tui'" size="small" color="purple">TUI</a-tag>
-              <a-tag v-else-if="p.kind === 'web'" size="small" color="green">Web</a-tag>
-            </a-checkbox>
-          </a-checkbox-group>
+              <dsh-tag v-if="p.kind === 'tui'" size="small" color="purple">TUI</dsh-tag>
+              <dsh-tag v-else-if="p.kind === 'web'" size="small" color="green">Web</dsh-tag>
+            </dsh-checkbox>
+          </dsh-checkbox-group>
         </div>
 
         <div class="versions-block">
           <div class="block-title">{{ t('importScan.versions') }}</div>
-          <a-input-search
+          <dsh-input-search
             v-model="newVersionDir"
             :placeholder="t('importScan.versionDirPlaceholder')"
             search-button
@@ -203,18 +205,16 @@ function close() {
           />
           <div v-for="v in versions" :key="v.dir" class="version-row">
             <span class="version-dir">{{ v.dir }}</span>
-            <a-tag size="small" color="blue">v{{ v.version }}</a-tag>
-            <a-tag size="small" color="gray">{{ v.layout }}</a-tag>
-            <a-tag v-if="!v.ready" size="small" color="red">{{ t('importScan.needsBuild') }}</a-tag>
-            <a-button
-              size="mini"
-              type="text"
-              status="danger"
+            <dsh-tag size="small" color="blue">v{{ v.version }}</dsh-tag>
+            <dsh-tag size="small" color="gray">{{ v.layout }}</dsh-tag>
+            <dsh-tag v-if="!v.ready" size="small" color="red">{{ t('importScan.needsBuild') }}</dsh-tag>
+            <dsh-button variant="danger-soft"
+              size="sm"
               class="version-remove"
               @click="removeVersion(v.dir)"
             >
               {{ t('importScan.removeVersion') }}
-            </a-button>
+            </dsh-button>
           </div>
         </div>
 
@@ -228,9 +228,9 @@ function close() {
               :key="`${item.kind}-${item.name}-${idx}`"
               class="import-item"
             >
-              <a-tag size="small" :color="itemColor(item.status)">
+              <dsh-tag size="small" :color="itemColor(item.status)">
                 {{ itemLabel(item.status) }}
-              </a-tag>
+              </dsh-tag>
               <span class="import-item-name">{{ item.name }}</span>
               <span v-if="item.reason" class="import-item-reason">{{ item.reason }}</span>
               <span v-else-if="isVersionOnlyRow(item)" class="import-item-reason">
@@ -241,19 +241,18 @@ function close() {
         </div>
 
         <div class="dialog-actions">
-          <a-button @click="runScan" :loading="scanning">{{ t('importScan.rescan') }}</a-button>
-          <a-button
-            type="primary"
+          <dsh-button variant="secondary" @click="runScan" :loading="scanning">{{ t('importScan.rescan') }}</dsh-button>
+          <dsh-button variant="primary"
             :disabled="!hasSelection"
             :loading="importing"
             @click="doImport"
           >
             {{ t('importScan.import') }}
-          </a-button>
+          </dsh-button>
         </div>
       </div>
-    </a-spin>
-  </a-modal>
+    </dsh-spin>
+  </dsh-modal>
 </template>
 
 <style lang="scss" scoped>

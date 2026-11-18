@@ -2,10 +2,12 @@
 import { computed, nextTick, onMounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
-import { Message } from '@arco-design/web-vue'
+import { useFeedback } from '@dsh-plugin/dsh-ui-components-vue'
 import { api } from '@/api'
 import { useLauncherStore } from '@/stores/launcher'
 import type { TaskInfo, TaskState } from '@/api/types'
+
+const { message: Message } = useFeedback()
 
 const router = useRouter()
 const { t } = useI18n()
@@ -102,13 +104,13 @@ const sortedTasks = computed(() => store.taskList)
       <div class="dl-card-title">
         <h3>{{ t('tasks.title') }}</h3>
         <div class="dl-toolbar">
-          <a-button size="small" @click="store.refreshTasks()">{{ t('common.refresh') }}</a-button>
-          <a-button size="small" type="text" @click="router.back()">{{ t('download.back') }}</a-button>
+          <dsh-button variant="secondary" size="sm" @click="store.refreshTasks()">{{ t('common.refresh') }}</dsh-button>
+          <dsh-button variant="ghost" size="sm" @click="router.back()">{{ t('download.back') }}</dsh-button>
         </div>
       </div>
 
       <div v-if="sortedTasks.length === 0" class="empty-tasks">
-        <a-empty :description="t('tasks.empty')" />
+        <dsh-empty :description="t('tasks.empty')" />
       </div>
 
       <div v-for="task in sortedTasks" :key="task.id" class="task-card">
@@ -116,7 +118,7 @@ const sortedTasks = computed(() => store.taskList)
           <div class="task-info">
             <div class="task-label">
               {{ task.label }}
-              <a-tag :color="stateColor(task.state)" size="small">{{ t(`tasks.state.${task.state}`) }}</a-tag>
+              <dsh-tag :color="stateColor(task.state)" size="small">{{ t(`tasks.state.${task.state}`) }}</dsh-tag>
             </div>
             <div class="task-meta">
               {{ formatTime(task.created_at) }}
@@ -128,19 +130,19 @@ const sortedTasks = computed(() => store.taskList)
             </div>
           </div>
           <div class="task-progress">
-            <a-progress
+            <dsh-progress
               v-if="task.state === 'running'"
               :percent="task.percent / 100"
               size="small"
               :show-text="true"
             />
-            <a-progress
+            <dsh-progress
               v-else-if="task.state === 'done'"
               :percent="1"
               size="small"
               status="success"
             />
-            <a-progress
+            <dsh-progress
               v-else
               :percent="task.percent / 100"
               size="small"
@@ -151,29 +153,29 @@ const sortedTasks = computed(() => store.taskList)
             {{ t('tasks.installingHint') }}
           </div>
           <div class="task-actions" @click.stop>
-            <a-button
+            <dsh-button variant="secondary"
               v-if="task.state === 'running' || task.state === 'queued'"
-              size="mini"
+              size="sm"
               status="warning"
               @click="onCancel(task.id)"
             >
               {{ t('tasks.cancel') }}
-            </a-button>
-            <a-button v-else size="mini" status="danger" @click="onRemove(task.id)">
+            </dsh-button>
+            <dsh-button variant="danger" v-else size="sm" @click="onRemove(task.id)">
               {{ t('tasks.remove') }}
-            </a-button>
+            </dsh-button>
           </div>
           <span class="expand-icon">{{ expanded[task.id] ? '▾' : '▸' }}</span>
         </div>
 
-        <a-scrollbar
+        <dsh-scrollbar
           v-if="expanded[task.id]"
           :ref="(el: unknown) => setLogRef(task.id, el)"
           class="task-log"
           style="max-height: 280px; overflow-y: auto"
         >
           <pre><code>{{ task.logs.join('\n') || t('tasks.noLogs') }}</code></pre>
-        </a-scrollbar>
+        </dsh-scrollbar>
       </div>
     </div>
   </div>

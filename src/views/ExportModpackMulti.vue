@@ -2,11 +2,13 @@
 import { computed, onMounted, reactive, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
-import { Message } from '@arco-design/web-vue'
+import { useFeedback } from '@dsh-plugin/dsh-ui-components-vue'
 import { api } from '@/api'
 import type { ExportContents, ExportProfileSpec } from '@/api/types'
 import { useLauncherStore } from '@/stores/launcher'
 import HintIcon from '@/components/HintIcon.vue'
+
+const { message: Message } = useFeedback()
 
 const router = useRouter()
 const { t } = useI18n()
@@ -144,7 +146,7 @@ async function startExport() {
 
 <template>
   <div class="export-page">
-    <a-page-header
+    <dsh-page-header
       class="export-header"
       :title="t('exportMulti.title')"
       :sub-title="ctx ? ctx.displayName : ''"
@@ -152,10 +154,10 @@ async function startExport() {
     />
 
     <template v-if="ctx">
-      <a-steps :current="step" class="export-steps">
-        <a-step>{{ t('exportMulti.stepSelect') }}</a-step>
-        <a-step>{{ t('exportMulti.stepInfo') }}</a-step>
-      </a-steps>
+      <dsh-steps :current="step" class="export-steps">
+        <dsh-step>{{ t('exportMulti.stepSelect') }}</dsh-step>
+        <dsh-step>{{ t('exportMulti.stepInfo') }}</dsh-step>
+      </dsh-steps>
 
       <!-- Step 1: pick profiles + per-profile contents -->
       <div v-if="step === 1" class="dl-card">
@@ -165,10 +167,10 @@ async function startExport() {
             <HintIcon :content="t('exportMulti.pickProfilesHint')" />
           </h3>
         </div>
-        <a-empty v-if="profiles.length === 0" :description="t('exportMulti.noProfiles')" />
+        <dsh-empty v-if="profiles.length === 0" :description="t('exportMulti.noProfiles')" />
         <div v-for="p in profiles" :key="p" class="profile-block">
           <div class="profile-row" :class="{ baseline: isBaseline(p) }" @click="toggleExpand(p)">
-            <a-checkbox
+            <dsh-checkbox
               :model-value="selected.includes(p)"
               :disabled="isBaseline(p)"
               @change="(v: boolean | (string | number | boolean)[]) => setSelected(p, v)"
@@ -176,53 +178,53 @@ async function startExport() {
             />
             <span class="profile-name">
               {{ p }}
-              <a-tag v-if="isBaseline(p)" color="gray" size="small">
+              <dsh-tag v-if="isBaseline(p)" color="gray" size="small">
                 {{ t('exportMulti.baselineTag') }}
-              </a-tag>
-              <a-tag v-else-if="ctx.defaultProfile === p" color="arcoblue" size="small">
+              </dsh-tag>
+              <dsh-tag v-else-if="ctx.defaultProfile === p" color="arcoblue" size="small">
                 {{ t('instanceEdit.profileDefaultTag') }}
-              </a-tag>
+              </dsh-tag>
               <HintIcon v-if="isBaseline(p)" :content="t('exportMulti.baselineHint')" />
             </span>
             <span v-if="!isBaseline(p)" class="profile-expand">{{ expanded === p ? '▲' : '▼' }}</span>
           </div>
           <div v-if="expanded === p && !isBaseline(p)" class="profile-contents">
             <div class="content-row">
-              <a-checkbox :model-value="true" disabled>
+              <dsh-checkbox :model-value="true" disabled>
                 {{ t('exportPack.contentManifest') }}
                 <HintIcon :content="t('exportPack.contentManifestHint')" />
-              </a-checkbox>
+              </dsh-checkbox>
             </div>
             <div class="content-row">
-              <a-checkbox v-model="contentsFor(p).patch">
+              <dsh-checkbox v-model="contentsFor(p).patch">
                 {{ t('exportPack.contentPatch') }}
                 <HintIcon :content="t('exportPack.contentPatchHint')" />
-              </a-checkbox>
+              </dsh-checkbox>
             </div>
             <div class="content-row">
-              <a-checkbox v-model="contentsFor(p).lockfile">
+              <dsh-checkbox v-model="contentsFor(p).lockfile">
                 {{ t('exportPack.contentLockfile') }}
                 <HintIcon :content="t('exportPack.contentLockfileHint')" />
-              </a-checkbox>
+              </dsh-checkbox>
             </div>
             <div class="content-row">
-              <a-checkbox v-model="contentsFor(p).workspace">
+              <dsh-checkbox v-model="contentsFor(p).workspace">
                 {{ t('exportPack.contentWorkspace') }}
                 <HintIcon :content="t('exportPack.contentWorkspaceHint')" />
-              </a-checkbox>
+              </dsh-checkbox>
             </div>
             <div class="content-row">
-              <a-checkbox v-model="contentsFor(p).extra_files">
+              <dsh-checkbox v-model="contentsFor(p).extra_files">
                 {{ t('exportPack.contentExtra') }}
                 <HintIcon :content="t('exportPack.contentExtraHint')" />
-              </a-checkbox>
+              </dsh-checkbox>
             </div>
           </div>
         </div>
         <div class="export-actions">
-          <a-button type="primary" size="large" :disabled="!canNext" @click="goNext">
+          <dsh-button variant="primary" size="lg" :disabled="!canNext" @click="goNext">
             {{ t('exportMulti.next') }}
-          </a-button>
+          </dsh-button>
         </div>
       </div>
 
@@ -230,42 +232,42 @@ async function startExport() {
       <template v-else>
         <div class="dl-card">
           <div class="dl-card-title"><h3>{{ t('exportPack.basic') }}</h3></div>
-          <a-form :model="form" layout="vertical">
+          <dsh-form :model="form" layout="vertical">
             <div class="form-row">
-              <a-form-item :label="t('exportPack.name')" class="form-col">
-                <a-input v-model="form.name" :placeholder="ctx.displayName" />
-              </a-form-item>
-              <a-form-item :label="t('exportPack.version')" class="form-col">
-                <a-input v-model="form.version" placeholder="1.0.0" />
-              </a-form-item>
+              <dsh-form-item :label="t('exportPack.name')" class="form-col">
+                <dsh-input v-model="form.name" :placeholder="ctx.displayName" />
+              </dsh-form-item>
+              <dsh-form-item :label="t('exportPack.version')" class="form-col">
+                <dsh-input v-model="form.version" placeholder="1.0.0" />
+              </dsh-form-item>
             </div>
-            <a-form-item :label="t('exportPack.displayName')">
-              <a-input v-model="form.displayName" />
-            </a-form-item>
-            <a-form-item :label="t('exportPack.description')">
-              <a-textarea v-model="form.description" :auto-size="{ minRows: 2, maxRows: 4 }" />
-            </a-form-item>
-            <a-form-item :label="t('exportPack.author')">
-              <a-input v-model="form.author" />
-            </a-form-item>
-            <a-form-item :label="t('exportMulti.defaultProfile')">
-              <a-select v-model="defaultProfile">
-                <a-option v-for="p in selected" :key="p" :value="p">{{ p }}</a-option>
-              </a-select>
-            </a-form-item>
-            <a-form-item>
-              <a-checkbox v-model="includeIcon">{{ t('exportPack.contentIcon') }}</a-checkbox>
-            </a-form-item>
-          </a-form>
+            <dsh-form-item :label="t('exportPack.displayName')">
+              <dsh-input v-model="form.displayName" />
+            </dsh-form-item>
+            <dsh-form-item :label="t('exportPack.description')">
+              <dsh-textarea v-model="form.description" :auto-size="{ minRows: 2, maxRows: 4 }" />
+            </dsh-form-item>
+            <dsh-form-item :label="t('exportPack.author')">
+              <dsh-input v-model="form.author" />
+            </dsh-form-item>
+            <dsh-form-item :label="t('exportMulti.defaultProfile')">
+              <dsh-select v-model="defaultProfile">
+                <dsh-option v-for="p in selected" :key="p" :value="p">{{ p }}</dsh-option>
+              </dsh-select>
+            </dsh-form-item>
+            <dsh-form-item>
+              <dsh-checkbox v-model="includeIcon">{{ t('exportPack.contentIcon') }}</dsh-checkbox>
+            </dsh-form-item>
+          </dsh-form>
         </div>
 
         <div class="export-actions">
-          <a-space size="large">
-            <a-button size="large" @click="step = 1">{{ t('exportMulti.prev') }}</a-button>
-            <a-button type="primary" size="large" :loading="busy" @click="startExport">
+          <dsh-space size="large">
+            <dsh-button variant="secondary" size="lg" @click="step = 1">{{ t('exportMulti.prev') }}</dsh-button>
+            <dsh-button variant="primary" size="lg" :loading="busy" @click="startExport">
               {{ t('exportPack.start') }}
-            </a-button>
-          </a-space>
+            </dsh-button>
+          </dsh-space>
         </div>
       </template>
     </template>

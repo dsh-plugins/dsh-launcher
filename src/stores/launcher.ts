@@ -1,5 +1,4 @@
 import { defineStore } from 'pinia'
-import { Message } from '@arco-design/web-vue'
 import { api } from '@/api'
 import type {
   DshHome,
@@ -18,6 +17,7 @@ import type {
   RemoteVersion,
   RuntimeStatus,
   TaskInfo,
+  VersionIcons,
 } from '@/api/types'
 
 /** Wizard state carried across the plugin install flow. */
@@ -55,6 +55,7 @@ interface LauncherState {
   statusById: Record<string, InstanceStatus>
   tasks: Record<string, TaskInfo>
   remoteVersions: RemoteVersion[]
+  versionIcons: VersionIcons
   remoteLoading: boolean
   runtime: RuntimeStatus | null
   marketPlugins: MarketPlugin[]
@@ -131,6 +132,7 @@ export const useLauncherStore = defineStore('launcher', {
     statusById: {},
     tasks: {},
     remoteVersions: [],
+    versionIcons: { chat: null, platform: null },
     remoteLoading: false,
     runtime: null,
     marketPlugins: [],
@@ -178,6 +180,14 @@ export const useLauncherStore = defineStore('launcher', {
   },
 
   actions: {
+    async loadVersionIcons() {
+      try {
+        this.versionIcons = await api.loadVersionIcons()
+      } catch {
+        // 仅用于装饰，无法加载时继续显示版本页的默认图标。
+      }
+    },
+
     async init() {
       // Attach the status listener BEFORE the initial snapshot fetch, and
       // buffer events until the snapshot is applied. Otherwise an exit event
@@ -328,8 +338,6 @@ export const useLauncherStore = defineStore('launcher', {
       this.remoteLoading = true
       try {
         this.remoteVersions = await api.fetchAvailableVersions()
-      } catch (e) {
-        Message.error(String(e))
       } finally {
         this.remoteLoading = false
       }
@@ -355,13 +363,9 @@ export const useLauncherStore = defineStore('launcher', {
 
     /** Load the configurable plugin source registry (cached until force=true). */
     async refreshPluginSources(force = false) {
-      if (!force && this.pluginSources.length > 0 && this.pluginSourcesLoadedAt) return
-      try {
-        this.pluginSources = await api.listPluginSources()
-        this.pluginSourcesLoadedAt = Date.now()
-      } catch (e) {
-        Message.error(String(e))
-      }
+      if (!force && this.pluginSources.length > 0 && this.pluginSourcesLoadedAt) { return }
+      this.pluginSources = await api.listPluginSources()
+      this.pluginSourcesLoadedAt = Date.now()
     },
 
     /** Load the PackForge modpack market index (issue #17; cached until

@@ -2,9 +2,11 @@
 import { computed, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
-import { Message } from '@arco-design/web-vue'
+import { useFeedback } from '@dsh-plugin/dsh-ui-components-vue'
 import { api } from '@/api'
 import { useLauncherStore } from '@/stores/launcher'
+
+const { message: Message } = useFeedback()
 
 const props = defineProps<{
   visible: boolean
@@ -65,7 +67,7 @@ function close() {
 </script>
 
 <template>
-  <a-modal
+  <dsh-modal
     :visible="visible"
     :title="t('pluginFile.importTitle')"
     :ok-loading="busy"
@@ -73,20 +75,20 @@ function close() {
     @ok="confirm"
     @cancel="close"
   >
-    <a-form :model="{ instanceId, profile }" layout="vertical">
-      <a-form-item :label="t('pluginFile.file')">
-        <a-alert type="info">{{ fileName }}</a-alert>
-      </a-form-item>
-      <a-form-item :label="t('pluginFile.instance')" required>
-        <a-select v-model="instanceId" :placeholder="t('pluginFile.instanceHint')">
-          <a-option v-for="inst in store.instances" :key="inst.id" :value="inst.id">
+    <dsh-form :model="{ instanceId, profile }" layout="vertical">
+      <dsh-form-item :label="t('pluginFile.file')">
+        <dsh-alert type="info">{{ fileName }}</dsh-alert>
+      </dsh-form-item>
+      <dsh-form-item :label="t('pluginFile.instance')" required>
+        <dsh-select v-model="instanceId" :placeholder="t('pluginFile.instanceHint')">
+          <dsh-option v-for="inst in store.instances" :key="inst.id" :value="inst.id">
             {{ inst.name }}（{{ store.versionById(inst.version_id)?.version }}）
-          </a-option>
-        </a-select>
-      </a-form-item>
-      <a-form-item :label="t('pluginFile.profile')" required>
-        <a-input v-model="profile" placeholder="web" />
-      </a-form-item>
-    </a-form>
-  </a-modal>
+          </dsh-option>
+        </dsh-select>
+      </dsh-form-item>
+      <dsh-form-item :label="t('pluginFile.profile')" required>
+        <dsh-input v-model="profile" placeholder="web" />
+      </dsh-form-item>
+    </dsh-form>
+  </dsh-modal>
 </template>

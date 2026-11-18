@@ -292,6 +292,11 @@ export interface RemoteVersion {
   source?: 'npm' | 'github' | null
 }
 
+export interface VersionIcons {
+  chat: string | null
+  platform: string | null
+}
+
 /** Exportable content flags for modpack export (default: all but extra_files on). */
 export interface ExportContents {
   /** cordis.patch.yml patch layer, carried via overrides/. */
@@ -717,6 +722,7 @@ export interface PluginVersionPage {
 
 export interface InstalledPlugin {
   id: string
+  name?: Record<string, string>
   version?: string
   enabled: boolean
   cordis_id?: string

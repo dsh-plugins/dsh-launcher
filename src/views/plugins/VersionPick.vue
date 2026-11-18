@@ -190,7 +190,7 @@ function displayVersion(v: PluginVersionInfo): string {
 
 <template>
   <div class="version-pick">
-    <a-page-header
+    <dsh-page-header
       class="pick-header"
       :title="pluginTitle || t('plugins.chooseVersion')"
       :sub-title="plugin?.id"
@@ -198,29 +198,28 @@ function displayVersion(v: PluginVersionInfo): string {
     />
 
     <div v-if="error" class="pick-error">
-      <a-alert :title="error" type="error" />
+      <dsh-alert :title="error" type="error" />
     </div>
 
     <div v-if="!plugin" class="pick-empty">
-      <a-empty :description="t('plugins.noMatch')" />
+      <dsh-empty :description="t('plugins.noMatch')" />
     </div>
 
     <div v-else class="dl-card channel-card">
       <div class="dl-card-title">
         <h3>
           {{ t('plugins.chooseVersion') }}
-          <a-tag v-if="hasMore.alpha" size="small" color="arcoblue" class="lazy-tag">
+          <dsh-tag v-if="hasMore.alpha" size="small" color="arcoblue" class="lazy-tag">
             {{ t('plugins.lazyLoad') }}
-          </a-tag>
+          </dsh-tag>
         </h3>
-        <a-button
-          size="small"
-          type="text"
+        <dsh-button variant="ghost"
+          size="sm"
           :loading="loadingChannel !== null"
           @click="reloadAll()"
         >
           ⟳
-        </a-button>
+        </dsh-button>
       </div>
 
       <template v-if="mergedVersions.length">
@@ -237,12 +236,12 @@ function displayVersion(v: PluginVersionInfo): string {
           <div class="version-meta">
             <div class="version-name">
               {{ displayVersion(v) }}
-              <a-tag size="small" :color="channelMeta[v.channel].color">
+              <dsh-tag size="small" :color="channelMeta[v.channel].color">
                 {{ t(`plugins.channel.${v.channel}`) }}
-              </a-tag>
-              <a-tag v-if="v.is_default" size="small" color="green">
+              </dsh-tag>
+              <dsh-tag v-if="v.is_default" size="small" color="green">
                 {{ t('plugins.defaultTag') }}
-              </a-tag>
+              </dsh-tag>
             </div>
             <div class="version-sub">{{ formatLabel(v) }}</div>
           </div>
@@ -255,7 +254,7 @@ function displayVersion(v: PluginVersionInfo): string {
           data-channel="alpha"
           class="load-more-sentinel"
         >
-          <a-spin v-if="loadingMore.alpha" :size="14" />
+          <dsh-spin v-if="loadingMore.alpha" :size="14" />
           <span v-else class="load-more-hint">{{ t('plugins.scrollMore') }}</span>
         </div>
       </template>

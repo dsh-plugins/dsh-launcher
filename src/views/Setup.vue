@@ -2,10 +2,12 @@
 import { computed, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
-import { Message } from '@arco-design/web-vue'
+import { useFeedback } from '@dsh-plugin/dsh-ui-components-vue'
 import { api } from '@/api'
 import { useLauncherStore } from '@/stores/launcher'
 import HintIcon from '@/components/HintIcon.vue'
+
+const { message: Message } = useFeedback()
 
 const router = useRouter()
 const { t } = useI18n()
@@ -98,15 +100,15 @@ async function recheck() {
       <!-- Node status -->
       <div class="tool-row">
         <span class="tool-name">Node.js</span>
-        <a-tag v-if="nodeOk" color="green">{{ t('setup.installed', { v: nodeVersion }) }}</a-tag>
-        <a-tag v-else color="red">{{ t('setup.missing') }}</a-tag>
+        <dsh-tag v-if="nodeOk" color="green">{{ t('setup.installed', { v: nodeVersion }) }}</dsh-tag>
+        <dsh-tag v-else color="red">{{ t('setup.missing') }}</dsh-tag>
       </div>
 
       <!-- pnpm status -->
       <div class="tool-row">
         <span class="tool-name">pnpm</span>
-        <a-tag v-if="pnpmOk" color="green">{{ t('setup.installed', { v: pnpmVersion }) }}</a-tag>
-        <a-tag v-else color="red">{{ t('setup.missing') }}</a-tag>
+        <dsh-tag v-if="pnpmOk" color="green">{{ t('setup.installed', { v: pnpmVersion }) }}</dsh-tag>
+        <dsh-tag v-else color="red">{{ t('setup.missing') }}</dsh-tag>
       </div>
 
       <!-- Issue #101: a managed runtime that exists but cannot work. Reinstall
@@ -116,17 +118,16 @@ async function recheck() {
           {{ t('setup.repairNodeTitle') }}
           <HintIcon :content="t('setup.repairNodeDesc')" />
         </h4>
-        <a-button
-          type="primary"
-          size="large"
+        <dsh-button variant="primary"
+          size="lg"
           long
           :loading="installing"
           :disabled="installing"
           @click="repairManagedNode"
         >
           {{ t('setup.repairNode') }}
-        </a-button>
-        <a-progress
+        </dsh-button>
+        <dsh-progress
           v-if="installing && nodeTask"
           class="one-click-progress"
           :percent="nodeTask.percent / 100"
@@ -142,17 +143,16 @@ async function recheck() {
           {{ t('setup.installNode') }}
           <HintIcon :content="t('setup.oneClickNodeDesc')" />
         </h4>
-        <a-button
-          type="primary"
-          size="large"
+        <dsh-button variant="primary"
+          size="lg"
           long
           :loading="installing"
           :disabled="installing"
           @click="oneClickInstall"
         >
           {{ t('setup.oneClickNode') }}
-        </a-button>
-        <a-progress
+        </dsh-button>
+        <dsh-progress
           v-if="installing && nodeTask"
           class="one-click-progress"
           :percent="nodeTask.percent / 100"
@@ -162,9 +162,9 @@ async function recheck() {
         </p>
         <p class="manual-hint">
           {{ t('setup.nodeManualHint') }}
-          <a-link @click="api.openExternal('https://nodejs.org/zh-cn/download')">
+          <dsh-link href="#" @click.prevent="api.openExternal('https://nodejs.org/zh-cn/download')">
             {{ t('setup.openNodeSite') }}
-          </a-link>
+          </dsh-link>
         </p>
       </div>
 
@@ -174,16 +174,16 @@ async function recheck() {
       </div>
 
       <div v-if="allOk" class="guide-block">
-        <a-result status="success" :title="t('setup.allReady')" />
-        <a-button type="primary" @click="router.push({ name: 'home' })">
+        <dsh-result status="success" :title="t('setup.allReady')" />
+        <dsh-button variant="primary" @click="router.push({ name: 'home' })">
           {{ t('setup.enterApp') }}
-        </a-button>
+        </dsh-button>
       </div>
 
       <div class="setup-actions">
-        <a-button :loading="checking" type="outline" @click="recheck">
+        <dsh-button variant="outline" :loading="checking" @click="recheck">
           {{ t('setup.recheck') }}
-        </a-button>
+        </dsh-button>
       </div>
     </div>
   </div>

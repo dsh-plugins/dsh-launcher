@@ -15,8 +15,10 @@ import { Terminal } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import '@xterm/xterm/css/xterm.css'
 import { useI18n } from 'vue-i18n'
-import { Message } from '@arco-design/web-vue'
+import { useFeedback } from '@dsh-plugin/dsh-ui-components-vue'
 import { api } from '@/api'
+
+const { message: Message } = useFeedback()
 
 const props = defineProps<{
   instanceId: string
@@ -154,7 +156,7 @@ onBeforeUnmount(() => {
   position: fixed;
   inset: 0;
   display: flex;
-  background: #1e1e1e;
+  background: var(--dl-page-background);
 }
 
 .tui-terminal-box {

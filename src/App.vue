@@ -3,51 +3,29 @@ import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { useLauncherStore } from '@/stores/launcher'
-import type { ThemeMode } from '@/api/types'
 import { api } from '@/api'
-import { Message } from '@arco-design/web-vue'
+import { useFeedback } from '@dsh-plugin/dsh-ui-components-vue'
+import { IconPlayArrow, IconDownload, IconSettings } from '@dsh-plugin/dsh-ui-components-vue/icons'
 import ModpackImportDialog from '@/components/ModpackImportDialog.vue'
 import PluginFileImportDialog from '@/components/PluginFileImportDialog.vue'
 import InstanceLaunchErrorDialog from '@/components/InstanceLaunchErrorDialog.vue'
+import PageScrollbar from '@/components/PageScrollbar.vue'
+
+const { message: Message } = useFeedback()
 
 const route = useRoute()
 const router = useRouter()
 const { t, locale } = useI18n()
 const store = useLauncherStore()
 const isTauri = api.isTauri
-
-// --- Theme: light / dark / follow system -------------------------------------
-
-const themeMedia = window.matchMedia('(prefers-color-scheme: dark)')
-
-/** Applies the effective Arco theme to <body> (body[arco-theme='dark']). */
-function applyTheme(mode: ThemeMode) {
-  const dark = mode === 'dark' || (mode === 'system' && themeMedia.matches)
-  if (dark) {
-    document.body.setAttribute('arco-theme', 'dark')
-  } else {
-    document.body.removeAttribute('arco-theme')
-  }
-  // Native scrollbars and UA widgets follow the browser color-scheme, not
-  // Arco's CSS variables: declare it on the root so dark mode stops
-  // rendering light scrollbar tracks inside dialogs and scroll wrappers.
-  document.documentElement.style.colorScheme = dark ? 'dark' : 'light'
-}
-
-function onSystemThemeChange() {
-  if (store.settings.theme === 'system') applyTheme('system')
-}
+const standaloneWindow = computed(() => ['tui-terminal', 'update-notice', 'early-loading'].includes(route.name as string))
 
 onMounted(async () => {
-  // Bare frameless windows (early-loading / update-notice) only need the
-  // theme — applying it before the heavy store.init() keeps them from
-  // flashing light while the full catalog loads. The watch below re-applies
-  // once settings resolve.
-  applyTheme(store.settings.theme || 'system')
+  void router.isReady().then(() => {
+    if (!standaloneWindow.value) void store.loadVersionIcons()
+  })
   await store.init()
   locale.value = store.settings.locale || 'zh-CN'
-  applyTheme(store.settings.theme || 'system')
-  themeMedia.addEventListener('change', onSystemThemeChange)
   // If Node.js is missing, guide the user to install it before anything else.
   // A managed runtime that exists but cannot work (issue #101: pre-0.2.7
   // extraction dropped exec bits and npm symlinks) routes there too — the
@@ -188,7 +166,6 @@ watch(
 )
 
 onUnmounted(() => {
-  themeMedia.removeEventListener('change', onSystemThemeChange)
   unlistenDrag?.()
   unlistenDeepLink?.()
 })
@@ -200,12 +177,6 @@ watch(
   },
 )
 
-watch(
-  () => store.settings.theme,
-  (v) => {
-    if (v) applyTheme(v)
-  },
-)
 
 const selectedKeys = computed(() => {
   const name = route.name as string
@@ -286,6 +257,17 @@ const appWindow = (() => {
   return (window as any)?.__TAURI_INTERNALS__ ? loadWindowApi() : null
 })()
 
+const windowMaximized = ref(false)
+let unlistenWindowResize: (() => void) | undefined
+onMounted(async () => {
+  const w = await appWindow
+  if (!w) return
+  const syncMaximized = async () => { windowMaximized.value = await w.isMaximized() }
+  unlistenWindowResize = await w.onResized(syncMaximized)
+  await syncMaximized()
+})
+onUnmounted(() => unlistenWindowResize?.())
+
 async function loadWindowApi() {
   const { getCurrentWindow } = await import('@tauri-apps/api/window')
   return getCurrentWindow()
@@ -316,14 +298,14 @@ async function onHeaderMouseDown(e: MouseEvent) {
 
 <template>
   <!-- Standalone frameless windows render bare, without the app shell. -->
-  <router-view v-if="['tui-terminal', 'update-notice', 'early-loading'].includes(route.name as string)" />
-  <a-layout v-else class="app-shell">
-    <a-layout-header class="app-header" @mousedown="onHeaderMouseDown">
+  <router-view v-if="standaloneWindow" />
+  <dsh-layout v-else class="app-shell" :class="{ 'is-maximized': windowMaximized }">
+    <dsh-layout-header class="app-header" @mousedown="onHeaderMouseDown">
       <!-- Brand; dragging is handled manually via onHeaderMouseDown. -->
       <div v-if="!onInstancePage" class="app-brand">
-        <img src="@/assets/launcher-icon.png" class="app-logo" alt="" />
+        <img src="@/assets/launcher-icon-v3.png" class="app-logo" alt="" />
         <span class="app-title">{{ t('app.title') }}</span>
-        <a-tag v-if="!isTauri" size="small" color="orange">{{ t('app.mockBadge') }}</a-tag>
+        <dsh-tag v-if="!isTauri" size="small" color="orange" class="app-preview-badge" nowrap :title="t('app.mockBadge')">{{ t('app.mockBadge') }}</dsh-tag>
       </div>
       <template v-if="onInstancePage">
         <div class="header-back">
@@ -331,17 +313,26 @@ async function onHeaderMouseDown(e: MouseEvent) {
           <span class="header-back-title">{{ instancePageTitle }}</span>
         </div>
       </template>
-      <a-menu
+      <dsh-menu
         v-else
         mode="horizontal"
         :selected-keys="selectedKeys"
         class="app-menu"
         @menu-item-click="onMenuSelect"
       >
-        <a-menu-item key="home">{{ t('nav.home') }}</a-menu-item>
-        <a-menu-item key="download">{{ t('nav.download') }}</a-menu-item>
-        <a-menu-item key="settings">{{ t('nav.settings') }}</a-menu-item>
-      </a-menu>
+        <dsh-menu-item key="home">
+          <template #icon><IconPlayArrow aria-hidden="true" /></template>
+          {{ t('nav.home') }}
+        </dsh-menu-item>
+        <dsh-menu-item key="download">
+          <template #icon><IconDownload aria-hidden="true" /></template>
+          {{ t('nav.download') }}
+        </dsh-menu-item>
+        <dsh-menu-item key="settings">
+          <template #icon><IconSettings aria-hidden="true" /></template>
+          {{ t('nav.settings') }}
+        </dsh-menu-item>
+      </dsh-menu>
       <div class="window-controls">
         <button class="wc-btn" title="最小化" @click="minimize">
           <svg viewBox="0 0 12 12" width="12" height="12"><line x1="1" y1="6" x2="11" y2="6" stroke="currentColor" stroke-width="1.4"/></svg>
@@ -350,22 +341,18 @@ async function onHeaderMouseDown(e: MouseEvent) {
           <svg viewBox="0 0 12 12" width="12" height="12"><path d="M1 1 L11 11 M11 1 L1 11" stroke="currentColor" stroke-width="1.4"/></svg>
         </button>
       </div>
-    </a-layout-header>
-    <a-layout-content class="app-content">
-      <a-scrollbar
-        type="track"
-        outer-style="height: 100%"
-        style="height: 100%; overflow-y: auto"
-      >
+    </dsh-layout-header>
+    <dsh-layout-content class="app-content">
+      <PageScrollbar>
         <router-view />
-      </a-scrollbar>
-    </a-layout-content>
+      </PageScrollbar>
+    </dsh-layout-content>
 
     <!-- Floating task manager entry (bottom-right); becomes a back button on the tasks page. -->
     <div ref="taskFabRef" class="task-fab" @click="onFabClick">
-      <a-badge v-if="!onTasksPage" :count="store.runningTaskCount" :max-count="99">
+      <dsh-badge v-if="!onTasksPage" :count="store.runningTaskCount" :max-count="99">
         <span class="task-fab-icon">⏱</span>
-      </a-badge>
+      </dsh-badge>
       <span v-else class="task-fab-icon">←</span>
       <span class="task-fab-text">{{ onTasksPage ? t('download.back') : t('tasks.fab') }}</span>
     </div>
@@ -377,7 +364,7 @@ async function onHeaderMouseDown(e: MouseEvent) {
       :initial-instance-id="dropInstanceId"
     />
     <InstanceLaunchErrorDialog />
-  </a-layout>
+  </dsh-layout>
 </template>
 <style lang="scss" scoped>
 .app-shell {
@@ -437,13 +424,15 @@ async function onHeaderMouseDown(e: MouseEvent) {
   // right. Deterministic regardless of Arco's menu-internal styles (issue
   // #13 — flex/absolute variants all lost specificity fights or collapsed).
   display: grid;
-  grid-template-columns: 1fr auto 1fr;
+  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
   align-items: center;
   flex-shrink: 0;
   height: var(--dl-header-height);
   padding: 0 20px;
-  background: var(--color-bg-2);
-  border-bottom: 1px solid var(--color-border-2);
+  background: var(--dl-glass-background);
+  border-bottom: 1px solid var(--dl-glass-border);
+  -webkit-backdrop-filter: var(--dl-glass-blur);
+  backdrop-filter: var(--dl-glass-blur);
   position: relative;
 }
 
@@ -453,11 +442,14 @@ async function onHeaderMouseDown(e: MouseEvent) {
   gap: 8px;
   grid-column: 1;
   justify-self: start;
+  min-width: 0;
+  max-width: 100%;
   white-space: nowrap;
   height: 100%;
   cursor: default;
 
   .app-logo {
+    flex-shrink: 0;
     width: 24px;
     height: 24px;
     border-radius: 5px;
@@ -465,27 +457,34 @@ async function onHeaderMouseDown(e: MouseEvent) {
   }
 
   .app-title {
+    flex-shrink: 0;
     font-size: 16px;
     font-weight: 600;
   }
 }
 
+.app-preview-badge {
+  min-width: 0;
+}
+
 .window-controls {
   display: flex;
   align-items: center;
-  gap: 2px;
+  gap: 6px;
   grid-column: 3;
   justify-self: end;
-  margin-right: -12px;
+  margin-right: -8px;
 }
 
 .wc-btn {
-  width: 42px;
-  height: var(--dl-header-height);
+  width: 32px;
+  height: 32px;
+  padding: 0;
   display: inline-flex;
   align-items: center;
   justify-content: center;
   border: none;
+  border-radius: 50%;
   background: transparent;
   color: var(--color-text-2);
   cursor: pointer;
@@ -508,7 +507,7 @@ async function onHeaderMouseDown(e: MouseEvent) {
   // state, so give it a definite width with slack for all items (issue #13).
   grid-column: 2;
   justify-self: center;
-  width: 320px;
+  width: 480px;
   max-width: 100%;
   // Exactly header height: Arco's 14px vertical inner padding makes the menu
   // 58px tall, pushing the selected-item indicator 6px past the header's
@@ -528,17 +527,44 @@ async function onHeaderMouseDown(e: MouseEvent) {
     justify-content: center;
   }
 
-  :deep(.arco-menu-selected-label) {
-    // Arco anchors the indicator 14px below the item (the padding we removed);
-    // 11px keeps the 3px bar flush with the header's inner bottom edge.
-    bottom: -11px;
+  :deep(.arco-menu-overflow-wrap) {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 12px;
+  }
+
+  :deep(.arco-menu-item),
+  :deep(.arco-menu-pop) {
+    width: 112px;
+    margin-left: 0;
+    text-align: center;
+  }
+
+  :deep(.arco-menu-item) {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    padding-inline: 10px;
+  }
+
+  :deep(.arco-menu-icon) {
+    display: inline-flex;
+    align-items: center;
+    margin-right: 0;
+    font-size: 16px;
+  }
+
+  :deep(.arco-menu-icon .arco-icon) {
+    margin-right: 0;
   }
 }
 
 .task-fab {
   position: fixed;
-  right: 24px;
-  bottom: 24px;
+  right: calc(24px + var(--dl-window-inset));
+  bottom: calc(24px + var(--dl-window-inset));
   z-index: 100;
   display: flex;
   align-items: center;

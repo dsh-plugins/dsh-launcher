@@ -2,10 +2,12 @@
 import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
-import { Message } from '@arco-design/web-vue'
+import { useFeedback } from '@dsh-plugin/dsh-ui-components-vue'
 import { api } from '@/api'
 import { useLauncherStore } from '@/stores/launcher'
 import HintIcon from '@/components/HintIcon.vue'
+
+const { message: Message } = useFeedback()
 
 const route = useRoute()
 const router = useRouter()
@@ -129,11 +131,11 @@ async function onConfirm() {
   <div class="name-page">
     <!-- Header: back + version icon + name input -->
     <div class="dl-card name-header">
-      <a-button type="text" class="back-button" @click="router.push({ name: 'download-create' })">
+      <dsh-button variant="ghost" class="back-button" @click="router.push({ name: 'download-create' })">
         ←
-      </a-button>
+      </dsh-button>
       <span class="version-icon">◆</span>
-      <a-input
+      <dsh-input
         v-model="instanceName"
         :placeholder="t('download.instanceName')"
         class="name-input"
@@ -149,13 +151,13 @@ async function onConfirm() {
           <HintIcon v-if="wslSelected" :content="t('download.wslHomeHint', { distro: runtime })" />
         </h3>
       </div>
-      <a-radio-group v-model="runtime" type="button">
-        <a-radio :value="WINDOWS">{{ t('download.runtimeWindows') }}</a-radio>
-        <a-radio v-for="d in distros" :key="d" :value="d">WSL（{{ d }}）</a-radio>
-      </a-radio-group>
-      <a-alert v-if="wslSelected && isSourceBuild" type="warning" class="dedicated-hint">
+      <dsh-radio-group v-model="runtime" type="button">
+        <dsh-radio :value="WINDOWS">{{ t('download.runtimeWindows') }}</dsh-radio>
+        <dsh-radio v-for="d in distros" :key="d" :value="d">WSL（{{ d }}）</dsh-radio>
+      </dsh-radio-group>
+      <dsh-alert v-if="wslSelected && isSourceBuild" type="warning" class="dedicated-hint">
         {{ t('download.wslAlphaUnsupported') }}
-      </a-alert>
+      </dsh-alert>
     </div>
 
     <!-- DSH_HOME selection -->
@@ -166,15 +168,15 @@ async function onConfirm() {
           <HintIcon v-if="dedicated" :content="t('download.dedicatedHomeHint', { path: dedicatedPath })" />
         </h3>
       </div>
-      <a-select v-model="homeId" style="width: 100%; max-width: 480px">
-        <a-option :value="DEDICATED">{{ t('download.dedicatedHome') }}</a-option>
-        <a-option v-for="h in store.homes" :key="h.id" :value="h.id">
+      <dsh-select v-model="homeId" style="width: 100%; max-width: 480px">
+        <dsh-option :value="DEDICATED">{{ t('download.dedicatedHome') }}</dsh-option>
+        <dsh-option v-for="h in store.homes" :key="h.id" :value="h.id">
           {{ h.name }}（{{ h.path }}）
-        </a-option>
-      </a-select>
+        </dsh-option>
+      </dsh-select>
       <div v-if="dedicated" class="dedicated-name-row">
         <span class="dedicated-name-label">{{ t('download.dedicatedHomeName') }}</span>
-        <a-input
+        <dsh-input
           :model-value="dedicatedName"
           :placeholder="t('download.dedicatedHomeNamePlaceholder')"
           style="max-width: 320px"
@@ -185,18 +187,17 @@ async function onConfirm() {
 
     <!-- Action -->
     <div class="confirm-area">
-      <a-alert v-if="!wslSelected && isSourceBuild" type="warning" class="confirm-hint">
+      <dsh-alert v-if="!wslSelected && isSourceBuild" type="warning" class="confirm-hint">
         {{ t('download.sourceBuildHint') }}
-      </a-alert>
-      <a-alert v-if="!wslSelected && installedVersion" type="info" class="confirm-hint">
+      </dsh-alert>
+      <dsh-alert v-if="!wslSelected && installedVersion" type="info" class="confirm-hint">
         {{ t('download.alreadyInstalled') }}
-      </a-alert>
-      <a-alert v-else-if="!wslSelected" type="info" class="confirm-hint">
+      </dsh-alert>
+      <dsh-alert v-else-if="!wslSelected" type="info" class="confirm-hint">
         {{ t('download.willInstall', { version }) }}
-      </a-alert>
-      <a-button
-        type="primary"
-        size="large"
+      </dsh-alert>
+      <dsh-button variant="primary"
+        size="lg"
         class="confirm-button"
         :disabled="!canConfirm"
         :loading="busy"
@@ -209,7 +210,7 @@ async function onConfirm() {
               ? t('download.createOnly')
               : t('download.startDownload')
         }}
-      </a-button>
+      </dsh-button>
     </div>
   </div>
 </template>
@@ -221,7 +222,7 @@ async function onConfirm() {
   display: flex;
   flex-direction: column;
   gap: 16px;
-  min-height: calc(100vh - var(--dl-header-height) - 120px);
+  min-height: calc(var(--dl-content-height) - 120px);
 }
 
 .name-header {

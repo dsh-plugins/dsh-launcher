@@ -56,6 +56,26 @@ export function indexedVersions(plugin: MarketPlugin): PluginVersionInfo[] | nul
   }))
 }
 
+/** jsDelivr 只镜像公共 npm。官方索引提供版本时固定到最近发布的 npm 版本。 */
+export function npmPluginIconUrl(plugin: MarketPlugin): string | undefined {
+  const spec = plugin.id.trim().replace(/^npm:/, '')
+  const match = /^((?:@[a-z0-9][a-z0-9._-]*\/)?[a-z0-9][a-z0-9._-]*)(?:@([a-z0-9][a-z0-9._+-]*))?$/i.exec(spec)
+  if (!match) return
+
+  const [, name, tag] = match
+  let version = tag ?? 'latest'
+  if (plugin.catalog) {
+    const npmVersion = plugin.catalog.versions
+      .filter(({ source, version }) => source.type === 'npm'
+        && (!source.registry || /^https?:\/\/registry\.npmjs\.org\/?$/i.test(source.registry))
+        && semver.valid(version))
+      .sort((a, b) => b.publishTimestamp - a.publishTimestamp)[0]
+    if (!npmVersion) return
+    version = npmVersion.version
+  }
+  return `https://cdn.jsdelivr.net/npm/${name}@${encodeURIComponent(version)}/icon.svg`
+}
+
 /** 官方本地化字段使用小写语言键，同时支持语言地区和基础语言。 */
 export function localizedText(value: string | Record<string, string> | undefined, locale: string): string {
   if (typeof value === 'string') {

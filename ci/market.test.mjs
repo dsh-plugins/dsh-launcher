@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { ref } from 'vue'
-import { compatibility, indexedVersions, nameValues, pluginName, useCompatibilityAck } from '../src/utils/market.ts'
+import { compatibility, indexedVersions, nameValues, npmPluginIconUrl, pluginName, useCompatibilityAck } from '../src/utils/market.ts'
 
 test('确认随插件、版本和实例组合变化失效', () => {
   const selection = ref('foo/1.0.0/instance-1')
@@ -46,4 +46,22 @@ test('多语言名称按界面语言取值，搜索覆盖全部语言', () => {
   assert.deepEqual(nameValues(name), ['辅助模型', 'Auxiliary models', 'Auxiliary (US)'])
   assert.deepEqual(nameValues('dsh-loader'), ['dsh-loader'])
   assert.deepEqual(nameValues(undefined), [])
+})
+
+test('市场图标只尝试公共 npm 包，并优先使用索引里的精确版本', () => {
+  const id = '@dsh-plugin/example'
+  const git = { type: 'git', url: 'https://github.com/example/example', commit: 'a'.repeat(40) }
+  const versions = [
+    { version: '2.0.0', publishTimestamp: 300, source: git },
+    { version: '1.2.0', publishTimestamp: 200, source: { type: 'npm', registry: 'https://example.org' } },
+    { version: '1.1.0', publishTimestamp: 100, source: { type: 'npm', registry: 'https://registry.npmjs.org/' } },
+    { version: '1.0.0', publishTimestamp: 50, source: { type: 'npm' } },
+  ]
+  assert.equal(npmPluginIconUrl({ id, catalog: { versions } }), 'https://cdn.jsdelivr.net/npm/@dsh-plugin/example@1.1.0/icon.svg')
+  assert.equal(npmPluginIconUrl({ id: 'npm:example@1.0.0' }), 'https://cdn.jsdelivr.net/npm/example@1.0.0/icon.svg')
+  assert.equal(npmPluginIconUrl({ id }), 'https://cdn.jsdelivr.net/npm/@dsh-plugin/example@latest/icon.svg')
+  assert.equal(npmPluginIconUrl({ id, catalog: { versions: versions.slice(0, 2) } }), undefined)
+  for (const other of ['github:owner/repo', 'tgz:https://example.org/pkg.tgz', '@scope/../example', 'example?x=y']) {
+    assert.equal(npmPluginIconUrl({ id: other }), undefined)
+  }
 })

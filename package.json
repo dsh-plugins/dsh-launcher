@@ -17,7 +17,8 @@
     "test:compatibility-ui": "node --experimental-strip-types --test ci/latest-request.test.mjs"
   },
   "dependencies": {
-    "@arco-design/web-vue": "^2.57.0",
+    "@arco-design/web-vue": "^2.59.0",
+    "@dsh-plugin/dsh-ui-components-vue": "0.1.0-dev.44172196807",
     "@tauri-apps/api": "^2.9.0",
     "@tauri-apps/plugin-autostart": "^2.5.1",
     "@tauri-apps/plugin-dialog": "^2.4.2",

@@ -3,6 +3,8 @@
 // browser so the UI can be previewed without the Rust side.
 
 import { validNetworkRanges } from '@/utils/network-ranges'
+import newsPreview from '@/assets/news-preview.md?raw'
+import launcherIcon from '@/assets/launcher-icon-v3.png'
 import type {
   CopyInstanceInput,
   WebAccess,
@@ -37,6 +39,7 @@ import type {
   PluginVersionPage,
   ProfileInfo,
   RemoteVersion,
+  VersionIcons,
   RuntimeStatus,
   ScanReport,
   ScannedVersion,
@@ -511,6 +514,11 @@ async function mockCall<T>(cmd: string, args?: Record<string, unknown>): Promise
     }
     case 'list_versions':
       return db.versions as T
+    case 'load_version_icons':
+      return {
+        chat: 'https://fe-static.deepseek.com/chat/favicon.svg',
+        platform: 'https://fe-static.deepseek.com/platform/favicon.svg',
+      } as T
     case 'fetch_available_versions':
       return [
         { version: '0.1.2-alpha.1', released_at: '2026-10-01T08:00:00Z', source: 'github' },
@@ -1252,17 +1260,7 @@ async function mockCall<T>(cmd: string, args?: Record<string, unknown>): Promise
     case 'get_settings':
       return db.settings as T
     case 'fetch_news': {
-      // Browser preview: return sample markdown instead of fetching.
-      return [
-        '# DSH Launcher 新闻',
-        '',
-        '- 支持 **GFM** 表格、任务列表与`行内代码`',
-        '- 支持 <b>内联 HTML</b>（已过滤 XSS）',
-        '',
-        '| 版本 | 状态 |',
-        '| ---- | ---- |',
-        '| rc.6 | ✅   |',
-      ].join('\n') as T
+      return newsPreview.replaceAll('{{launcher-icon}}', launcherIcon) as T
     }
     case 'update_settings': {
       db.settings = { ...db.settings, ...(args?.settings as Partial<LauncherSettings>) }
@@ -1514,7 +1512,7 @@ async function mockCall<T>(cmd: string, args?: Record<string, unknown>): Promise
     }
     case 'list_installed_plugins': {
       return [
-        { id: '@dsh-plugin/dsh-auxiliary', version: '^0.4.1', enabled: true, cordis_id: 'dsh-auxiliary' },
+        { id: '@dsh-plugin/dsh-auxiliary', name: { zh: '辅助模型', en: 'Auxiliary models' }, version: '^0.4.1', enabled: true, cordis_id: 'dsh-auxiliary' },
         { id: '@dsh-plugin/dsh-thought-buddy', version: '^0.3.1', enabled: false, cordis_id: 'dsh-thought-buddy' },
         { id: 'my-git-plugin', version: 'github:owner/my-git-plugin#v1.0.0', enabled: true, cordis_id: 'my-git-plugin' },
       ] as T
@@ -1650,6 +1648,7 @@ export const api = {
 
   listVersions: () => call<DshVersion[]>('list_versions'),
   fetchAvailableVersions: () => call<RemoteVersion[]>('fetch_available_versions'),
+  loadVersionIcons: () => call<VersionIcons>('load_version_icons'),
   removeVersion: (id: string) => call<void>('remove_version', { id }),
 
   startCreateInstanceTask: (

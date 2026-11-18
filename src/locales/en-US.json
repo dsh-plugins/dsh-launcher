@@ -784,6 +784,7 @@
     "pluginImportLocal": "Import local plugin",
     "pluginsPickProfile": "Select a profile above to view its plugins",
     "pluginsEmpty": "No plugins in this profile",
+    "pluginNameId": "Plugin name / ID",
     "pluginVersion": "Version",
     "pluginStatus": "Status",
     "pluginOn": "On",

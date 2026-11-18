@@ -1,8 +1,10 @@
 <script setup lang="ts">
-import { Message } from '@arco-design/web-vue'
+import { useFeedback } from '@dsh-plugin/dsh-ui-components-vue'
 import { useI18n } from 'vue-i18n'
 import { api } from '@/api'
 import type { InstanceStatus } from '@/api/types'
+
+const { message: Message } = useFeedback()
 
 const props = defineProps<{ status: InstanceStatus }>()
 const emit = defineEmits<{ opened: [id: string] }>()
@@ -38,15 +40,15 @@ async function openShare() {
 
 <template>
   <span v-if="status.url" class="access-links">
-    <a-link :title="status.url" @click="openDesktop">{{ status.url }}</a-link>
-    <a-button size="mini" type="text" @click="copyLink">{{ t('network.copy') }}</a-button>
-    <a-button v-if="status.web_mode && status.web_mode !== 'local'" size="mini" type="text" @click="openShare">
+    <dsh-link href="#" :title="status.url" @click.prevent="openDesktop">{{ status.url }}</dsh-link>
+    <dsh-button variant="ghost" size="sm" @click="copyLink">{{ t('network.copy') }}</dsh-button>
+    <dsh-button variant="ghost" v-if="status.web_mode && status.web_mode !== 'local'" size="sm" @click="openShare">
       {{ t('network.openShare') }}
-    </a-button>
+    </dsh-button>
   </span>
 </template>
 
 <style scoped>
 .access-links { display: flex; align-items: center; flex-wrap: wrap; gap: 4px; min-width: 0; }
-.access-links .arco-link { overflow-wrap: anywhere; min-width: 0; }
+.access-links .dsh-link { overflow-wrap: anywhere; min-width: 0; }
 </style>
