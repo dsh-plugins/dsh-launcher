@@ -2660,9 +2660,10 @@ const terminalRunning = ref(false)
               <CompatibilityReport v-if="compatibility" :report="compatibility" />
 
               <template v-if="pluginProfile">
-                <dsh-spin :loading="pluginsLoading" :aria-busy="pluginsLoading" class="plugins-table">
+                <div :aria-busy="pluginsLoading" class="plugins-table">
                   <dsh-table
                     :data="visiblePlugins"
+                    :inert="pluginsLoading"
                     :row-selection="rowSelection"
                     row-key="id"
                     :pagination="false"
@@ -2730,7 +2731,8 @@ const terminalRunning = ref(false)
                       </dsh-table-column>
                     </template>
                   </dsh-table>
-                </dsh-spin>
+                  <dsh-spin v-if="pluginsLoading" class="plugins-table-spinner" />
+                </div>
 
                 <div class="plugins-batch">
                   <dsh-button variant="primary"
@@ -3975,17 +3977,21 @@ const terminalRunning = ref(false)
 }
 
 .plugins-table {
-  display: block;
+  position: relative;
   margin-bottom: 12px;
 
   &[aria-busy='true'] :deep(.arco-table-element > tbody) {
     filter: blur(6px);
     clip-path: inset(0 round calc(var(--radius) * 2));
   }
+}
 
-  :deep(> .arco-spin-mask) {
-    background: transparent;
-  }
+.plugins-table-spinner {
+  position: absolute;
+  inset: 0;
+  z-index: 3;
+  display: grid;
+  place-items: center;
 }
 
 .plugin-cell-name {

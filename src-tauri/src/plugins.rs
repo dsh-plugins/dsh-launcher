@@ -2918,6 +2918,15 @@ pub async fn start_install_plugin_task(
     // Validate instance + profile early. The exists() check can hit a cold
     // \\wsl$\ share, so it runs on the blocking pool (issue #71).
     let (home_path, _version) = resolve_instance(&state, &input.instance_id)?;
+    let instance_name = state
+        .config
+        .lock()
+        .unwrap()
+        .instances
+        .iter()
+        .find(|instance| instance.id == input.instance_id)
+        .map(|instance| instance.name.clone())
+        .ok_or_else(|| "实例不存在".to_string())?;
     let dir = profile_dir(&home_path, &input.profile);
     {
         let dir = dir.clone();
@@ -2926,23 +2935,15 @@ pub async fn start_install_plugin_task(
         }
     }
 
-    let (label, display_name) = match input.plugin_id.strip_prefix("tgz:") {
+    let profile = &input.profile;
+    let label = match input.plugin_id.strip_prefix("tgz:") {
         Some(target) => {
             let base = target.rsplit(['/', '\\']).next().unwrap_or(target);
-            (
-                format!(
-                    "安装插件包 {base} 到「{}」的 profile「{}」",
-                    input.instance_id, input.profile
-                ),
-                base.to_string(),
-            )
+            format!("安装插件包 {base} 到「{instance_name}」的 Profile「{profile}」")
         }
-        None => (
-            format!(
-                "安装插件 {}@{} 到「{}」的 profile「{}」",
-                input.plugin_id, input.version, input.instance_id, input.profile
-            ),
-            input.plugin_id.clone(),
+        None => format!(
+            "安装插件 {}@{} 到「{instance_name}」的 Profile「{profile}」",
+            input.plugin_id, input.version
         ),
     };
     let task = crate::tasks::TaskInfo {
@@ -2955,7 +2956,7 @@ pub async fn start_install_plugin_task(
         created_at: crate::tasks::now_millis_pub(),
         message: None,
         instance_id: Some(input.instance_id.clone()),
-        instance_name: Some(display_name),
+        instance_name: None,
         reserved_home_path: None,
         dedicated_home_name: None,
         logs: Vec::new(),
@@ -3565,7 +3566,8 @@ async fn run_dsh_plugin(
                 ),
             )
             .await;
-            relink_profile_store(app, state, task_id, target, &node_exe, &pnpm_prog).await?;
+            relink_profile_store(app, state, task_id, target, &node_exe, &pnpm_prog, loglevel)
+                .await?;
         }
     }
 
@@ -3609,7 +3611,8 @@ async fn run_dsh_plugin(
                     "pnpm 报告 store 位置不一致，正在重新链接 node_modules 后重试…",
                 )
                 .await;
-                relink_profile_store(app, state, task_id, target, &node_exe, &pnpm_prog).await?;
+                relink_profile_store(app, state, task_id, target, &node_exe, &pnpm_prog, loglevel)
+                    .await?;
             }
             Err(e) => return Err(e),
         }
@@ -3679,6 +3682,7 @@ async fn relink_profile_store(
     target: &PluginCliTarget<'_>,
     node_exe: &std::path::Path,
     pnpm_prog: &std::path::Path,
+    loglevel: &str,
 ) -> Result<(), String> {
     let linux_store = match target.wsl {
         Some(distro) => crate::wsl::WslRoot::resolve(distro).await?.pnpm_store(),
@@ -3689,7 +3693,7 @@ async fn relink_profile_store(
             .to_string(),
     };
     let mut args: Vec<String> = vec!["install".to_string()];
-    args.extend(forwarded_pnpm_flags("warn", "install", &linux_store));
+    args.extend(forwarded_pnpm_flags(loglevel, "install", &linux_store));
     let cmd = dsh_plugin_command(
         target.wsl,
         target.version_dir,
@@ -3750,6 +3754,8 @@ async fn dsh_plugin_command(
     node_exe: &std::path::Path,
     pnpm_prog: &std::path::Path,
 ) -> Result<tokio::process::Command, String> {
+    // pnpm 的进度报告器不显示逐条 HTTP 请求，Undici 会将请求及状态码写入 stderr。
+    let log_http = pnpm_args.iter().any(|arg| arg == "--loglevel=http");
     let bin = crate::process::version_bin(version_dir);
     let bin_ready = match distro {
         // WSL: the file lives inside the distro; probe through wsl.exe.
@@ -3786,6 +3792,9 @@ async fn dsh_plugin_command(
             crate::wsl::sh_quote(&bin.to_string_lossy()),
             crate::wsl::sh_quote(profile),
         );
+        if log_http {
+            script.insert_str(0, "export NODE_DEBUG=undici; ");
+        }
         for a in pnpm_args {
             script.push(' ');
             script.push_str(&crate::wsl::sh_quote(a));
@@ -3809,6 +3818,9 @@ async fn dsh_plugin_command(
         // purge a modules dir (store/virtual-store relink) without a TTY.
         // CI=true makes pnpm treat the run as non-interactive instead.
         .env("CI", "true");
+    if log_http {
+        cmd.env("NODE_DEBUG", "undici");
+    }
 
     // Prepend the pinned pnpm's directory so the CLI's `spawnSync("pnpm")`
     // picks it up instead of whatever major is on the user's PATH.

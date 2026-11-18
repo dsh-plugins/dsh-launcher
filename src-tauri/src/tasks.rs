@@ -1424,13 +1424,12 @@ async fn stream_pipe(app: AppHandle, task_id: String, pipe: StreamPipe) {
             match tasks.get_mut(&task_id) {
                 Some(task) if task.state == TaskState::Running => {
                     push_log_locked(task, &line);
-                    let pct = (task.percent + 1).min(90);
-                    task.percent = pct;
-                    // Throttle: emit progress roughly every 20 log lines.
-                    if task.logs.len() % 20 == 0 {
-                        Some(pct)
-                    } else {
+                    // HTTP 诊断只记录请求活动，进度由其他输出和心跳更新。
+                    if line.starts_with("UNDICI ") || task.percent >= 90 {
                         None
+                    } else {
+                        task.percent += 1;
+                        (task.percent % 20 == 0 || task.percent == 90).then_some(task.percent)
                     }
                 }
                 _ => None,

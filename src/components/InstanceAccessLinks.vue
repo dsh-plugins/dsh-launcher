@@ -6,7 +6,7 @@ import type { InstanceStatus } from '@/api/types'
 
 const { message: Message } = useFeedback()
 
-const props = defineProps<{ status: InstanceStatus }>()
+const props = defineProps<{ status: InstanceStatus; centered?: boolean }>()
 const emit = defineEmits<{ opened: [id: string] }>()
 const { t } = useI18n()
 
@@ -39,16 +39,45 @@ async function openShare() {
 </script>
 
 <template>
-  <span v-if="status.url" class="access-links">
-    <dsh-link href="#" :title="status.url" @click.prevent="openDesktop">{{ status.url }}</dsh-link>
-    <dsh-button variant="ghost" size="sm" @click="copyLink">{{ t('network.copy') }}</dsh-button>
-    <dsh-button variant="ghost" v-if="status.web_mode && status.web_mode !== 'local'" size="sm" @click="openShare">
-      {{ t('network.openShare') }}
-    </dsh-button>
+  <span v-if="status.url" class="access-links" :class="{ 'access-links-centered': centered }">
+    <dsh-link class="access-url" href="#" :title="status.url" @click.prevent="openDesktop">{{ status.url }}</dsh-link>
+    <span class="access-actions">
+      <dsh-button variant="ghost" size="sm" @click="copyLink">{{ t('network.copy') }}</dsh-button>
+      <dsh-button v-if="status.web_mode && status.web_mode !== 'local'" variant="ghost" size="sm" @click="openShare">
+        {{ t('network.openShare') }}
+      </dsh-button>
+    </span>
   </span>
 </template>
 
 <style scoped>
-.access-links { display: flex; align-items: center; flex-wrap: wrap; gap: 4px; min-width: 0; }
-.access-links .dsh-link { overflow-wrap: anywhere; min-width: 0; }
+.access-links {
+  display: grid;
+  gap: 4px;
+}
+
+.access-url {
+  justify-self: start;
+}
+
+.access-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.access-links-centered {
+  width: 100%;
+  text-align: center;
+}
+
+.access-links-centered .access-url {
+  max-width: 100%;
+  justify-self: center;
+  overflow-wrap: anywhere;
+}
+
+.access-links-centered .access-actions {
+  justify-content: center;
+}
 </style>

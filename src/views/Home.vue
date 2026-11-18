@@ -576,7 +576,12 @@ function goEditSelected() {
         >
           {{ t(`home.status.${selectedStatus.state}`) }}
         </dsh-tag>
-        <InstanceAccessLinks v-if="running && selectedStatus?.url" :status="selectedStatus" @opened="onDshWindowOpened" />
+        <InstanceAccessLinks
+          v-if="running && selectedStatus?.url"
+          :status="selectedStatus"
+          centered
+          @opened="onDshWindowOpened"
+        />
         <dsh-tooltip v-if="sharedHome" :content="t('home.sharedHomeWarning')">
           <dsh-tag color="orangered" size="small">{{ t('home.sharedHome') }}</dsh-tag>
         </dsh-tooltip>

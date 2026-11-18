@@ -118,17 +118,17 @@ const sortedTasks = computed(() => store.taskList)
           <div class="task-info">
             <div class="task-label">
               {{ task.label }}
-              <dsh-tag :color="stateColor(task.state)" size="small">{{ t(`tasks.state.${task.state}`) }}</dsh-tag>
             </div>
             <div class="task-meta">
               {{ formatTime(task.created_at) }}
               <template v-if="task.state === 'queued'"> · {{ t('tasks.queuedHint') }}</template>
-              <template v-if="task.state === 'done' && instanceName(task)">
+              <template v-if="task.state === 'done' && task.kind !== 'install-plugin' && instanceName(task)">
                 · {{ t('tasks.createdInstance', { name: instanceName(task) }) }}
               </template>
               <template v-if="task.state === 'error' && task.message"> · {{ task.message }}</template>
             </div>
           </div>
+          <dsh-tag class="task-state" :color="stateColor(task.state)" size="small">{{ t(`tasks.state.${task.state}`) }}</dsh-tag>
           <div class="task-progress">
             <dsh-progress
               v-if="task.state === 'running'"
@@ -168,14 +168,14 @@ const sortedTasks = computed(() => store.taskList)
           <span class="expand-icon">{{ expanded[task.id] ? '▾' : '▸' }}</span>
         </div>
 
-        <dsh-scrollbar
-          v-if="expanded[task.id]"
-          :ref="(el: unknown) => setLogRef(task.id, el)"
-          class="task-log"
-          style="max-height: 280px; overflow-y: auto"
-        >
-          <pre><code>{{ task.logs.join('\n') || t('tasks.noLogs') }}</code></pre>
-        </dsh-scrollbar>
+        <div v-if="expanded[task.id]" class="task-log">
+          <dsh-scrollbar
+            :ref="(el: unknown) => setLogRef(task.id, el)"
+            style="max-height: 280px; overflow-y: auto"
+          >
+            <pre><code>{{ task.logs.join('\n') || t('tasks.noLogs') }}</code></pre>
+          </dsh-scrollbar>
+        </div>
       </div>
     </div>
   </div>
@@ -213,9 +213,7 @@ const sortedTasks = computed(() => store.taskList)
 
 .task-label {
   font-weight: 600;
-  display: flex;
-  align-items: center;
-  gap: 8px;
+  overflow-wrap: anywhere;
 }
 
 .task-meta {
@@ -227,20 +225,19 @@ const sortedTasks = computed(() => store.taskList)
   white-space: nowrap;
 }
 
-.task-progress {
-  width: 180px;
+.task-state,
+.task-actions,
+.expand-icon {
   flex-shrink: 0;
+}
+
+.task-progress {
+  flex: 0 0 clamp(80px, 20%, 180px);
 }
 
 .installing-hint {
-  flex-shrink: 0;
   font-size: 12px;
   color: rgb(var(--orange-6));
-  white-space: nowrap;
-}
-
-.task-actions {
-  flex-shrink: 0;
 }
 
 .expand-icon {
@@ -249,7 +246,7 @@ const sortedTasks = computed(() => store.taskList)
 }
 
 .task-log {
-  background: #1d2129;
+  background: var(--surface-secondary);
   border-top: 1px solid var(--color-border-2);
 
   pre {
@@ -257,7 +254,7 @@ const sortedTasks = computed(() => store.taskList)
     padding: 12px 16px;
     font-size: 12px;
     line-height: 1.6;
-    color: #a9b7c6;
+    color: var(--color-text-2);
     font-family: Consolas, 'Courier New', monospace;
     white-space: pre-wrap;
     word-break: break-all;

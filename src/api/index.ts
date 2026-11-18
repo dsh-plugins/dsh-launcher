@@ -1604,11 +1604,15 @@ async function mockCall<T>(cmd: string, args?: Record<string, unknown>): Promise
       return 'task-mock-plugin-file' as T
     case 'start_install_plugin_task': {
       const input = args?.input as InstallPluginInput
+      const instance = db.instances.find((item) => item.id === input.instanceId)
+      if (!instance) {
+        return fail('实例不存在')
+      }
       const id = mockNewId('t')
       const task: TaskInfo = {
         id,
         kind: 'install-plugin',
-        label: `安装插件 ${input.pluginId}@${input.version}`,
+        label: `安装插件 ${input.pluginId}@${input.version} 到「${instance.name}」的 Profile「${input.profile}」`,
         version: input.version,
         state: 'done',
         percent: 100,

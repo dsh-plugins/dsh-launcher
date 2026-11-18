@@ -30,16 +30,11 @@ const homesWithoutInstances = computed(() => {
 })
 
 const columns = computed(() => [
-  { title: t('instances.table.name'), slotName: 'name', width: 220 },
-  { title: t('instances.table.version'), slotName: 'version', width: 140 },
-  { title: t('instances.table.home'), slotName: 'home', width: 180 },
-  { title: t('instances.table.profile'), slotName: 'profile', width: 120 },
-  // No width: the status cell (state tag + external port + URL) sizes to its
-  // content and stays on one line (issue #96).
+  { title: t('instances.table.name'), slotName: 'name' },
+  { title: t('instances.table.version'), slotName: 'version' },
+  { title: t('instances.table.home'), slotName: 'home' },
+  { title: t('instances.table.profile'), slotName: 'profile' },
   { title: t('instances.table.status'), slotName: 'status' },
-  // The action column is pinned right via sticky CSS (see the style block):
-  // it never scrolls away (issue #13) and sizes to its buttons (issue #96),
-  // without forcing Arco's fixed table layout onto the columns above.
   { title: t('instances.table.actions'), slotName: 'actions', align: 'center' as const },
 ])
 
@@ -170,8 +165,7 @@ async function confirmCopy() {
         </div>
       </div>
 
-      <div class="table-scroll">
-        <dsh-table :columns="columns" :data="store.instances" :pagination="false" row-key="id">
+      <dsh-table class="instances-table" :columns="columns" :data="store.instances" :pagination="false" row-key="id">
         <template #name="{ record }">
           <span class="inst-name">
             <img v-if="iconMap[record.id]" :src="iconMap[record.id]!" class="inst-icon" alt="" />
@@ -194,7 +188,6 @@ async function confirmCopy() {
           {{ record.last_profile ?? record.default_profile ?? '—' }}
         </template>
         <template #status="{ record }">
-          <span class="cell-nowrap">
           <dsh-tag :color="stateColor(store.statusOf(record.id).state)">
             {{ t(`home.status.${store.statusOf(record.id).state}`) }}
           </dsh-tag>
@@ -207,7 +200,6 @@ async function confirmCopy() {
             </dsh-tag>
           </dsh-tooltip>
           <InstanceAccessLinks :status="store.statusOf(record.id)" />
-          </span>
         </template>
         <template #actions="{ record }">
           <dsh-space>
@@ -238,8 +230,7 @@ async function confirmCopy() {
             </dsh-button>
           </dsh-empty>
         </template>
-        </dsh-table>
-      </div>
+      </dsh-table>
 
       <div v-if="homesWithoutInstances.length > 0" class="homes-without-instances">
         <span class="homes-without-instances-title">{{ t('instances.homesWithoutInstancesTitle') }}</span>
@@ -287,14 +278,13 @@ async function confirmCopy() {
 </template>
 
 <style lang="scss" scoped>
-// Horizontal-scroll wrapper: the table keeps auto layout so every column
-// sizes to its content; when the total width overflows, this wrapper
-// scrolls instead of squeezing columns.
-.table-scroll {
-  overflow-x: auto;
+.instances-table :deep(.arco-table-element) {
+  width: max-content;
 }
 
-.cell-nowrap {
+.instances-table :deep(.arco-table-th:not(:last-child)),
+.instances-table :deep(.arco-table-td:not(:last-child)) {
+  width: 1%;
   white-space: nowrap;
 }
 
@@ -303,18 +293,18 @@ async function confirmCopy() {
 // columns would force table-layout: fixed and undo the content sizing.
 // Colors mirror Arco's own: header cells use --color-neutral-2, body cells
 // sit on --color-bg-2.
-.table-scroll :deep(.arco-table-th:last-child),
-.table-scroll :deep(.arco-table-td:last-child) {
+.instances-table :deep(.arco-table-th:last-child),
+.instances-table :deep(.arco-table-td:last-child) {
   position: sticky;
   right: 0;
   z-index: 1;
 }
 
-.table-scroll :deep(.arco-table-th:last-child) {
+.instances-table :deep(.arco-table-th:last-child) {
   background-color: var(--color-neutral-2);
 }
 
-.table-scroll :deep(.arco-table-td:last-child) {
+.instances-table :deep(.arco-table-td:last-child) {
   background-color: var(--color-bg-2);
 }
 
@@ -323,12 +313,12 @@ async function confirmCopy() {
 // through. Mirror Arco's native fixed-column treatment instead: keep the
 // opaque base and paint the hover tint as a ::before overlay (its negative
 // z-index sits above the cell background, below the buttons).
-.table-scroll
+.instances-table
   :deep(.arco-table-hover:not(.arco-table-dragging) .arco-table-tr:not(.arco-table-tr-empty):not(.arco-table-tr-summary):hover .arco-table-td:last-child) {
   background-color: var(--color-bg-2);
 }
 
-.table-scroll
+.instances-table
   :deep(.arco-table-hover:not(.arco-table-dragging) .arco-table-tr:not(.arco-table-tr-empty):not(.arco-table-tr-summary):hover .arco-table-td:last-child)::before {
   position: absolute;
   top: 0;
