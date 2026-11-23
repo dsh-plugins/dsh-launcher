@@ -177,6 +177,11 @@ export const useLauncherStore = defineStore('launcher', {
       Object.values(s.tasks).some(
         (t) => (t.state === 'running' || t.state === 'queued') && t.instance_name === name,
       ),
+    downloadVersionBusy: (s) => (version: string) =>
+      Object.values(s.tasks).some(
+        (t) => t.kind === 'download-version' && t.version === version &&
+          (t.state === 'running' || t.state === 'queued'),
+      ),
   },
 
   actions: {
@@ -243,7 +248,7 @@ export const useLauncherStore = defineStore('launcher', {
       live = true
       pending.forEach(applyStatus)
 
-      await api.onTaskProgress((p) => {
+      await api.onTaskProgress(async (p) => {
         const existing = this.tasks[p.id]
         if (existing) {
           existing.state = p.state
@@ -251,11 +256,10 @@ export const useLauncherStore = defineStore('launcher', {
           existing.message = p.message
           existing.instance_id = p.instance_id
         } else {
-          // Event arrived before the task list did: seed a minimal entry so
-          // the task manager never misses a just-created task.
+          // 任务列表可能晚于进度事件返回，事件本身不包含任务类型。
           this.tasks[p.id] = {
             id: p.id,
-            kind: 'create-instance',
+            kind: '',
             label: '',
             version: '',
             state: p.state,
@@ -267,11 +271,23 @@ export const useLauncherStore = defineStore('launcher', {
             logs: [],
           }
         }
-        // A create-instance task finished: refresh instance/version lists.
-        if (p.state === 'done' && p.instance_id) {
-          this.refreshInstances()
-          this.refreshVersions()
-          this.refreshHomes()
+        if (p.state !== 'done') {
+          return
+        }
+        try {
+          if (p.instance_id) {
+            await Promise.all([this.refreshInstances(), this.refreshVersions(), this.refreshHomes()])
+          } else if (!existing?.kind || existing.kind === 'download-version') {
+            const task = existing?.kind ? existing : (await api.listTasks()).find((task) => task.id === p.id)
+            if (task && this.tasks[p.id]?.kind === '') {
+              this.tasks[p.id] = task
+            }
+            if (task?.kind === 'download-version') {
+              await this.refreshVersions()
+            }
+          }
+        } catch (e) {
+          console.error(`刷新已完成任务 ${p.id} 对应的列表失败`, e)
         }
       })
 

@@ -117,7 +117,7 @@ const sortedTasks = computed(() => store.taskList)
         <div class="task-head" @click="toggleExpand(task.id)">
           <div class="task-info">
             <div class="task-label">
-              {{ task.label }}
+              {{ task.kind === 'download-version' ? t('tasks.downloadVersion', { version: task.version }) : task.label }}
             </div>
             <div class="task-meta">
               {{ formatTime(task.created_at) }}

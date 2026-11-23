@@ -2,7 +2,7 @@
 import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
-import { useFeedback } from '@dsh-plugin/dsh-ui-components-vue'
+import { ToggleButtonGroup, useFeedback } from '@dsh-plugin/dsh-ui-components-vue'
 import { api } from '@/api'
 import { useLauncherStore } from '@/stores/launcher'
 import HintIcon from '@/components/HintIcon.vue'
@@ -16,17 +16,31 @@ const store = useLauncherStore()
 
 const version = computed(() => String(route.params.version ?? ''))
 const installedVersion = computed(() => store.versions.find((v) => v.version === version.value && !v.wsl))
-const isSourceBuild = computed(
-  () =>
-    !installedVersion.value &&
-    store.remoteVersions.some((v) => v.version === version.value && v.source === 'github'),
+const isSourceBuild = computed(() =>
+  store.remoteVersions.some((v) => v.version === version.value && v.source === 'github'),
 )
 
-// Runtime environment (issue #19): Windows local or a WSL distro.
-const WINDOWS = '__windows__'
-const runtime = ref<string>(WINDOWS)
+const WINDOWS = 'windows'
+const DOWNLOAD_ONLY = 'download-only'
+const WSL_PREFIX = 'wsl:'
+const mode = ref<string>(WINDOWS)
 const distros = ref<string[]>([])
-const wslSelected = computed(() => runtime.value !== WINDOWS)
+const modes = computed(() => [
+  { value: WINDOWS, label: t('download.runtimeWindows') },
+  ...distros.value.map((distro) => ({
+    value: `${WSL_PREFIX}${distro}`,
+    label: t('download.runtimeWsl', { distro }),
+  })),
+  { value: DOWNLOAD_ONLY, label: t('download.downloadOnly') },
+])
+const windowsSelected = computed(() => mode.value === WINDOWS)
+const downloadOnly = computed(() => mode.value === DOWNLOAD_ONLY)
+const wslDistro = computed(() => mode.value.startsWith(WSL_PREFIX) ? mode.value.slice(WSL_PREFIX.length) : '')
+const wslSourceUnsupported = computed(() =>
+  !!wslDistro.value && isSourceBuild.value &&
+  !store.versions.some((v) => v.version === version.value && v.wsl === wslDistro.value),
+)
+const versionDownloading = computed(() => store.downloadVersionBusy(version.value))
 
 onMounted(async () => {
   try {
@@ -59,15 +73,21 @@ const busy = ref(false)
 
 const dedicated = computed(() => homeId.value === DEDICATED)
 
-async function refreshDedicatedPath() {
-  dedicatedPath.value = await api.defaultDedicatedHomePath(
-    dedicatedName.value.trim() || instanceName.value.trim() || version.value,
-  )
-}
-
-watch(homeId, async (v) => {
-  if (v === DEDICATED && !dedicatedPath.value) {
-    await refreshDedicatedPath()
+watch([windowsSelected, dedicated, dedicatedName], async ([isWindows, isDedicated, name], _, onCleanup) => {
+  if (!isWindows || !isDedicated) {
+    return
+  }
+  let stale = false
+  onCleanup(() => { stale = true })
+  try {
+    const path = await api.defaultDedicatedHomePath(name.trim() || instanceName.value.trim() || version.value)
+    if (!stale) {
+      dedicatedPath.value = path
+    }
+  } catch (e) {
+    if (!stale) {
+      Message.error(String(e))
+    }
   }
 }, { immediate: true })
 
@@ -77,38 +97,43 @@ watch(instanceName, (v) => {
   }
 })
 
-watch(dedicatedName, async () => {
-  if (dedicated.value) {
-    await refreshDedicatedPath()
-  }
-})
-
 function onDedicatedNameInput(v: string) {
   dedicatedName.value = v
   dedicatedNameTouched.value = true
 }
 
-const canConfirm = computed(
-  () =>
-    !busy.value &&
-    instanceName.value.trim().length > 0 &&
-    (wslSelected.value ? !isSourceBuild.value : !!homeId.value) &&
-    (!dedicated.value || dedicatedName.value.trim().length > 0) &&
-    !store.instances.some((i) => i.name === instanceName.value.trim()) &&
-    !store.instanceNameBusy(instanceName.value.trim()),
-)
+const canConfirm = computed(() => {
+  if (busy.value || !version.value) {
+    return false
+  }
+  if (downloadOnly.value) {
+    return !installedVersion.value && !versionDownloading.value
+  }
+  const name = instanceName.value.trim()
+  if (!name || store.instances.some((i) => i.name === name) || store.instanceNameBusy(name)) {
+    return false
+  }
+  if (wslDistro.value) {
+    return !wslSourceUnsupported.value
+  }
+  return windowsSelected.value && Boolean(homeId.value) && (!dedicated.value || dedicatedName.value.trim().length > 0)
+})
 
 async function onConfirm() {
-  if (!canConfirm.value) return
+  if (!canConfirm.value) {
+    return
+  }
   busy.value = true
   try {
-    if (wslSelected.value) {
-      await api.startCreateWslInstanceTask(instanceName.value.trim(), version.value, runtime.value)
+    if (downloadOnly.value) {
+      await api.startDownloadVersionTask(version.value)
+    } else if (wslDistro.value) {
+      await api.startCreateWslInstanceTask(instanceName.value.trim(), version.value, wslDistro.value)
     } else {
       await api.startCreateInstanceTask(
         instanceName.value.trim(),
         version.value,
-        dedicated.value ? null : homeId.value!,
+        dedicated.value ? null : (homeId.value ?? null),
         dedicated.value,
         dedicated.value ? dedicatedName.value.trim() : null,
       )
@@ -135,7 +160,9 @@ async function onConfirm() {
         ←
       </dsh-button>
       <span class="version-icon">◆</span>
+      <strong v-if="downloadOnly">{{ version }}</strong>
       <dsh-input
+        v-else
         v-model="instanceName"
         :placeholder="t('download.instanceName')"
         class="name-input"
@@ -143,25 +170,28 @@ async function onConfirm() {
       />
     </div>
 
-    <!-- Runtime environment: Windows local or a WSL distro (issue #19) -->
-    <div v-if="distros.length" class="dl-card">
+    <div class="dl-card">
       <div class="dl-card-title">
         <h3>
           {{ t('download.runtimeEnv') }}
-          <HintIcon v-if="wslSelected" :content="t('download.wslHomeHint', { distro: runtime })" />
+          <HintIcon v-if="wslDistro" :content="t('download.wslHomeHint', { distro: wslDistro })" />
         </h3>
       </div>
-      <dsh-radio-group v-model="runtime" type="button">
-        <dsh-radio :value="WINDOWS">{{ t('download.runtimeWindows') }}</dsh-radio>
-        <dsh-radio v-for="d in distros" :key="d" :value="d">WSL（{{ d }}）</dsh-radio>
-      </dsh-radio-group>
-      <dsh-alert v-if="wslSelected && isSourceBuild" type="warning" class="dedicated-hint">
+      <ToggleButtonGroup
+        v-model="mode"
+        :options="modes"
+        :label="t('download.runtimeEnv')"
+        :allow-empty="false"
+        :disabled="busy"
+        class="runtime-modes"
+      />
+      <dsh-alert v-if="wslSourceUnsupported" type="warning" class="dedicated-hint">
         {{ t('download.wslAlphaUnsupported') }}
       </dsh-alert>
     </div>
 
     <!-- DSH_HOME selection -->
-    <div v-if="!wslSelected" class="dl-card">
+    <div v-if="windowsSelected" class="dl-card">
       <div class="dl-card-title">
         <h3>
           {{ t('download.chooseHome') }}
@@ -187,13 +217,22 @@ async function onConfirm() {
 
     <!-- Action -->
     <div class="confirm-area">
-      <dsh-alert v-if="!wslSelected && isSourceBuild" type="warning" class="confirm-hint">
+      <dsh-alert v-if="!wslDistro && !installedVersion && isSourceBuild" type="warning" class="confirm-hint">
         {{ t('download.sourceBuildHint') }}
       </dsh-alert>
-      <dsh-alert v-if="!wslSelected && installedVersion" type="info" class="confirm-hint">
+      <dsh-alert v-if="downloadOnly && installedVersion" type="info" class="confirm-hint">
+        {{ t('download.downloadOnlyInstalled') }}
+      </dsh-alert>
+      <dsh-alert v-else-if="downloadOnly && versionDownloading" type="info" class="confirm-hint">
+        {{ t('download.downloadInProgress', { version }) }}
+      </dsh-alert>
+      <dsh-alert v-else-if="downloadOnly" type="info" class="confirm-hint">
+        {{ t('download.willDownloadOnly', { version }) }}
+      </dsh-alert>
+      <dsh-alert v-else-if="windowsSelected && installedVersion" type="info" class="confirm-hint">
         {{ t('download.alreadyInstalled') }}
       </dsh-alert>
-      <dsh-alert v-else-if="!wslSelected" type="info" class="confirm-hint">
+      <dsh-alert v-else-if="windowsSelected" type="info" class="confirm-hint">
         {{ t('download.willInstall', { version }) }}
       </dsh-alert>
       <dsh-button variant="primary"
@@ -204,9 +243,9 @@ async function onConfirm() {
         @click="onConfirm"
       >
         {{
-          wslSelected
+          wslDistro
             ? t('download.createWslInstance')
-            : installedVersion
+            : windowsSelected && installedVersion
               ? t('download.createOnly')
               : t('download.startDownload')
         }}
@@ -251,6 +290,15 @@ async function onConfirm() {
 
 .name-input {
   flex: 1;
+}
+
+.runtime-modes {
+  flex-wrap: wrap;
+  border-radius: 999px;
+
+  :deep(.dsh-toggle-button) {
+    border-radius: 999px;
+  }
 }
 
 .confirm-area {

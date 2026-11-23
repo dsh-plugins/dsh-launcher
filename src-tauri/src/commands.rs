@@ -235,6 +235,18 @@ async fn run_npm_view(pkg: &str, field: &str) -> Result<String, String> {
 
 #[tauri::command]
 pub async fn remove_version(state: State<'_, AppState>, id: String) -> Result<(), String> {
+    let local_version = {
+        let cfg = state.config.lock().unwrap();
+        cfg.versions
+            .iter()
+            .find(|v| v.id == id && v.wsl.is_none())
+            .map(|v| v.version.clone())
+    };
+    // 删除本地记录和目录期间，新的下载任务不能重新使用这个目录。
+    let _install = match local_version {
+        Some(version) => Some(crate::tasks::lock_local_version(&state, &version).await),
+        None => None,
+    };
     let removed = {
         let mut cfg = state.config.lock().unwrap();
         if cfg.instances.iter().any(|i| i.version_id == id) {

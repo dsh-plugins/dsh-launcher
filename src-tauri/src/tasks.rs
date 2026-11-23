@@ -11,6 +11,7 @@ pub const TASK_PROGRESS_EVENT: &str = "task://progress";
 pub const TASK_LOG_EVENT: &str = "task://log";
 
 const MAX_LOG_LINES: usize = 1000;
+const DOWNLOAD_VERSION: &str = "download-version";
 
 #[derive(Clone, Debug, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
@@ -197,6 +198,79 @@ pub async fn start_create_instance_task(
     Ok(task_id)
 }
 
+/// 下载并注册可供后续实例复用的本地版本，不预留实例或 HOME。
+#[tauri::command]
+pub async fn start_download_version_task(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    version: String,
+) -> Result<String, String> {
+    let version = version.trim().to_string();
+    semver::Version::parse(&version).map_err(|e| format!("版本号无效：{e}"))?;
+
+    let task_id = new_id("t");
+    {
+        let mut tasks = state.tasks.lock().await;
+        if find_local_version(&state, &version).is_some() {
+            return Err(format!("本地已安装 DSH {version}"));
+        }
+        if tasks.values().any(|task| {
+            task.kind == DOWNLOAD_VERSION
+                && task.version == version
+                && matches!(task.state, TaskState::Running | TaskState::Queued)
+        }) {
+            return Err(format!("DSH {version} 的下载任务已在进行中"));
+        }
+        tasks.insert(
+            task_id.clone(),
+            TaskInfo {
+                id: task_id.clone(),
+                kind: DOWNLOAD_VERSION.to_string(),
+                label: format!("下载 DSH {version}"),
+                version: version.clone(),
+                state: TaskState::Running,
+                percent: 0,
+                created_at: now_millis(),
+                message: None,
+                instance_id: None,
+                instance_name: None,
+                reserved_home_path: None,
+                dedicated_home_name: None,
+                logs: Vec::new(),
+                child: None,
+            },
+        );
+        emit_progress(&app, &task_id, TaskState::Running, 0, None, None);
+    }
+
+    let worker_task_id = task_id.clone();
+    tauri::async_runtime::spawn(async move {
+        let state = app.state::<AppState>();
+        if let Err(msg) = install_version_streamed(&app, &state, &worker_task_id, &version).await {
+            let mut tasks = state.tasks.lock().await;
+            if let Some(task) = tasks
+                .get_mut(&worker_task_id)
+                .filter(|task| task.state == TaskState::Running)
+            {
+                task.state = TaskState::Error;
+                push_log_locked(task, &format!("error: {msg}"));
+                crate::log_error!("任务 {worker_task_id} 失败：{msg}");
+                task.message = Some(msg);
+                emit_progress(
+                    &app,
+                    &worker_task_id,
+                    TaskState::Error,
+                    task.percent,
+                    task.message.clone(),
+                    None,
+                );
+            }
+        }
+    });
+
+    Ok(task_id)
+}
+
 #[tauri::command]
 pub async fn list_tasks(state: State<'_, AppState>) -> Result<Vec<TaskInfo>, String> {
     let tasks = state.tasks.lock().await;
@@ -225,30 +299,33 @@ pub async fn cancel_task(
     id: String,
 ) -> Result<(), String> {
     let child = {
-        let tasks = state.tasks.lock().await;
-        tasks.get(&id).and_then(|t| t.child.clone())
-    };
-    {
         let mut tasks = state.tasks.lock().await;
-        if let Some(task) = tasks.get_mut(&id) {
-            task.state = TaskState::Cancelled;
-            task.message = Some("已取消".to_string());
+        let Some(task) = tasks.get_mut(&id) else {
+            return Err("任务不存在".to_string());
+        };
+        if !matches!(task.state, TaskState::Running | TaskState::Queued) {
+            return Ok(());
         }
-    }
+        task.state = TaskState::Cancelled;
+        task.message = Some("已取消".to_string());
+        emit_progress(
+            &app,
+            &id,
+            TaskState::Cancelled,
+            0,
+            task.message.clone(),
+            None,
+        );
+        task.child.take()
+    };
     if let Some(child) = child {
-        let taken = child.lock().await.take();
-        if let Some(mut c) = taken {
-            let _ = c.kill().await;
+        let mut child = child.lock().await;
+        if let Some(mut process) = child.take() {
+            if let Err(e) = process.kill().await {
+                crate::log_warn!("停止任务 {id} 的进程失败：{e}");
+            }
         }
     }
-    emit_progress(
-        &app,
-        &id,
-        TaskState::Cancelled,
-        0,
-        Some("已取消".to_string()),
-        None,
-    );
     Ok(())
 }
 
@@ -331,15 +408,7 @@ async fn do_create_instance(
     reserved_home_path: Option<&std::path::Path>,
     dedicated_home_name: Option<&str>,
 ) -> Result<String, String> {
-    // 1. Install the version if missing.
-    let version_record = {
-        let cfg = state.config.lock().unwrap();
-        cfg.versions.iter().find(|v| v.version == version).cloned()
-    };
-    let version_record = match version_record {
-        Some(v) => v,
-        None => install_version_streamed(app, state, task_id, version).await?,
-    };
+    let version_record = install_version_streamed(app, state, task_id, version).await?;
 
     // 2. Resolve the actual DSH_HOME: for a dedicated task, create the HOME
     //    record now (path-based reuse keeps it idempotent); otherwise the
@@ -379,6 +448,9 @@ async fn do_create_instance(
         }
         if !cfg.homes.iter().any(|h| h.id == resolved_home_id) {
             return Err("DSH_HOME 不存在".to_string());
+        }
+        if !cfg.versions.iter().any(|v| v.id == version_record.id) {
+            return Err("该版本已被移除，请重新下载".to_string());
         }
         let inst = DshInstance {
             id: new_id("i"),
@@ -944,19 +1016,96 @@ fn copy_dir(src: &std::path::Path, dst: &std::path::Path) -> std::io::Result<()>
     Ok(())
 }
 
-/// Runs `pnpm install --loglevel=http` for the given version, streaming every
-/// output line into the task log (and as events). The pnpm content store is
-/// placed under the app data dir (`.pnpm-store`) so versions are installed
-/// into the launcher's own storage. Returns the new version record on success.
+fn find_local_version(state: &AppState, version: &str) -> Option<DshVersion> {
+    state
+        .config
+        .lock()
+        .unwrap()
+        .versions
+        .iter()
+        .find(|v| v.version == version && v.wsl.is_none())
+        .cloned()
+}
+
+async fn require_running_task(state: &AppState, task_id: &str) -> Result<(), String> {
+    match state.tasks.lock().await.get(task_id) {
+        Some(task) if task.state == TaskState::Running => Ok(()),
+        _ => Err("任务已取消".to_string()),
+    }
+}
+
+/// 复用已安装的本地版本，避免不同任务重复写入同一个版本目录。
 async fn install_version_streamed(
     app: &AppHandle,
     state: &State<'_, AppState>,
     task_id: &str,
     version: &str,
 ) -> Result<DshVersion, String> {
-    // Alpha builds ship only as GitHub `dsh-v*` tags, never to npm; route
-    // those to the from-source pipeline before touching the version dir.
-    if !npm_has_version(version).await {
+    let _install = lock_local_version(state, version).await;
+    let existing = {
+        let mut tasks = state.tasks.lock().await;
+        let task = running_task(&mut tasks, task_id)?;
+        let existing = find_local_version(state, version);
+        if existing.is_some() {
+            complete_version_download(app, task);
+        }
+        existing
+    };
+    if let Some(existing) = existing {
+        return Ok(existing);
+    }
+
+    let dir = download_local_version(app, state, task_id, version).await?;
+    let mut tasks = state.tasks.lock().await;
+    let task = running_task(&mut tasks, task_id)?;
+    let record = register_version(state, version, dir, None)?;
+    complete_version_download(app, task);
+    Ok(record)
+}
+
+pub(crate) async fn lock_local_version(
+    state: &AppState,
+    version: &str,
+) -> tokio::sync::OwnedMutexGuard<()> {
+    let lock = state
+        .local_version_locks
+        .lock()
+        .await
+        .entry(version.to_string())
+        .or_default()
+        .clone();
+    lock.lock_owned().await
+}
+
+fn running_task<'a>(
+    tasks: &'a mut std::collections::HashMap<String, TaskInfo>,
+    task_id: &str,
+) -> Result<&'a mut TaskInfo, String> {
+    tasks
+        .get_mut(task_id)
+        .filter(|task| task.state == TaskState::Running)
+        .ok_or_else(|| "任务已取消".to_string())
+}
+
+fn complete_version_download(app: &AppHandle, task: &mut TaskInfo) {
+    if task.kind == DOWNLOAD_VERSION {
+        task.state = TaskState::Done;
+        task.percent = 100;
+        crate::log_info!("任务 {} 完成，本地 DSH {} 已安装", task.id, task.version);
+        emit_progress(app, &task.id, TaskState::Done, 100, None, None);
+    }
+}
+
+/// 下载 npm 版本，或构建只发布了 GitHub 标签的版本。
+async fn download_local_version(
+    app: &AppHandle,
+    state: &State<'_, AppState>,
+    task_id: &str,
+    version: &str,
+) -> Result<std::path::PathBuf, String> {
+    let on_npm = npm_has_version(version).await;
+    require_running_task(state, task_id).await?;
+    if !on_npm {
         push_task_log(
             app,
             state,
@@ -986,7 +1135,7 @@ async fn install_version_streamed(
     // Make sure a pnpm executable is available before installing: use the
     // system one if present, otherwise bootstrap the latest pnpm into the
     // launcher's data dir via npm.
-    let pnpm_prog = ensure_pnpm(app, state, task_id).await?;
+    let pnpm_prog = ensure_pnpm(app, state, task_id, TaskBinding::Required).await?;
 
     // pnpm 11 blocks dependency build scripts unless every package with an
     // install script is listed under `allowBuilds`. On the first attempt it
@@ -1029,7 +1178,7 @@ async fn install_version_streamed(
         // ERR_PNPM_ABORTED_REMOVE_MODULES_DIR_NO_TTY.
         cmd.env("CI", "true");
 
-        match run_streamed_command(app, state, task_id, cmd, "pnpm install").await {
+        match run_version_command(app, state, task_id, cmd, "pnpm install").await {
             Ok(()) => break,
             Err(_e) if attempt == 1 && task_log_mentions_ignored_builds(state, task_id) => {
                 push_task_log(
@@ -1045,7 +1194,7 @@ async fn install_version_streamed(
         }
     }
 
-    register_version(state, version, dir, None)
+    Ok(dir)
 }
 
 /// Records an installed version in the config (idempotent by version
@@ -1072,7 +1221,10 @@ fn register_version(
         return Ok(existing.clone());
     }
     cfg.versions.push(record.clone());
-    crate::commands::save_state(state, &cfg)?;
+    if let Err(e) = crate::commands::save_state(state, &cfg) {
+        cfg.versions.pop();
+        return Err(e);
+    }
     Ok(record)
 }
 
@@ -1120,7 +1272,8 @@ async fn install_version_from_repo(
     state: &State<'_, AppState>,
     task_id: &str,
     version: &str,
-) -> Result<DshVersion, String> {
+) -> Result<std::path::PathBuf, String> {
+    require_running_task(state, task_id).await?;
     let dir = state.data_dir.join("versions").join(version);
     let tag = format!("dsh-v{version}");
     let repo_url = format!("https://github.com/{}.git", crate::commands::DSH_REPO);
@@ -1146,7 +1299,7 @@ async fn install_version_from_repo(
             // Never prompt for credentials on a public repo.
             .env("GIT_TERMINAL_PROMPT", "0")
             .env("CI", "true");
-        run_streamed_command(app, state, task_id, cmd, "git clone")
+        run_version_command(app, state, task_id, cmd, "git clone")
             .await
             .map_err(|e| {
                 if e.contains("程序") || e.contains("program") || e.contains("not found") {
@@ -1159,7 +1312,7 @@ async fn install_version_from_repo(
         push_task_log(app, state, task_id, "复用已克隆的源码目录").await;
     }
 
-    let pnpm_prog = ensure_pnpm(app, state, task_id).await?;
+    let pnpm_prog = ensure_pnpm(app, state, task_id, TaskBinding::Required).await?;
 
     // 2. Dependencies. The checkout manages its own workspace manifest
     //    (including build-script policy), so the launcher's allowBuilds
@@ -1195,7 +1348,7 @@ async fn install_version_from_repo(
         }
     }
     cmd.env("CI", "true");
-    run_streamed_command(app, state, task_id, cmd, "pnpm install（源码）").await?;
+    run_version_command(app, state, task_id, cmd, "pnpm install（源码）").await?;
 
     // 3. Build. Per the upstream README, `pnpm run build` prepares every
     //    repository artifact; `pnpm dsh web` then runs without rebuilding.
@@ -1205,7 +1358,7 @@ async fn install_version_from_repo(
     cmd.current_dir(&dir)
         .args(["run", "build"])
         .env("CI", "true");
-    run_streamed_command(app, state, task_id, cmd, "pnpm run build").await?;
+    run_version_command(app, state, task_id, cmd, "pnpm run build").await?;
 
     // 4. Verify and register.
     if !crate::process::version_bin_ready(&dir) {
@@ -1214,7 +1367,7 @@ async fn install_version_from_repo(
             crate::process::version_bin(&dir).display()
         ));
     }
-    register_version(state, version, dir, None)
+    Ok(dir)
 }
 
 /// Whether the task's streamed log mentions pnpm's ignored-build-scripts
@@ -1283,6 +1436,7 @@ async fn ensure_pnpm(
     app: &AppHandle,
     state: &State<'_, AppState>,
     task_id: &str,
+    binding: TaskBinding,
 ) -> Result<std::path::PathBuf, String> {
     // 1. System pnpm available AND on the required major?
     let mut sys_cmd = tokio::process::Command::new(crate::process::pnpm());
@@ -1329,36 +1483,29 @@ async fn ensure_pnpm(
     std::fs::create_dir_all(&tools_dir).map_err(|e| format!("创建工具目录失败: {e}"))?;
     let spec = format!("pnpm@{REQUIRED_PNPM_MAJOR}");
     let msg = format!("正在安装 DSH profile 所需的 {spec}…");
-    {
-        let mut tasks = state.tasks.lock().await;
-        if let Some(task) = tasks.get_mut(task_id) {
-            task.percent = 5;
-            push_log_locked(task, &msg);
-        }
-    }
-    emit_progress(app, task_id, TaskState::Running, 5, None, None);
-    emit_log(app, task_id, &msg);
+    push_task_log(app, state, task_id, &msg).await;
     crate::log_info!("引导安装 {spec} 到 {}", tools_dir.display());
 
-    let child = crate::process::hide_console(
-        tokio::process::Command::new(crate::process::npm())
-            .args(["install", "--global", "--prefix"])
-            .arg(&tools_dir)
-            .arg(&spec)
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped()),
-    )
-    .spawn()
-    .map_err(|e| format!("pnpm 安装启动失败: {e}"))?;
-    let output = child
-        .wait_with_output()
-        .await
-        .map_err(|e| format!("pnpm 安装等待失败: {e}"))?;
-
-    if !output.status.success() {
-        let err = String::from_utf8_lossy(&output.stderr);
-        let last = err.lines().last().unwrap_or(&err).to_string();
-        return Err(format!("pnpm 安装失败: {last}"));
+    let mut cmd = tokio::process::Command::new(crate::process::npm());
+    crate::process::hide_console(&mut cmd);
+    cmd.args(["install", "--global", "--prefix"])
+        .arg(&tools_dir)
+        .arg(&spec)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+    match binding {
+        TaskBinding::Required => run_version_command(app, state, task_id, cmd, "pnpm 安装").await?,
+        TaskBinding::Optional => {
+            let output = cmd
+                .output()
+                .await
+                .map_err(|e| format!("pnpm 安装失败: {e}"))?;
+            if !output.status.success() {
+                let err = String::from_utf8_lossy(&output.stderr);
+                let last = err.lines().last().unwrap_or(&err);
+                return Err(format!("pnpm 安装失败: {last}"));
+            }
+        }
     }
 
     let local = local_pnpm_path(&tools_dir);
@@ -1419,26 +1566,18 @@ async fn stream_pipe(app: AppHandle, task_id: String, pipe: StreamPipe) {
         if line.is_empty() {
             continue;
         }
-        let percent = {
-            let mut tasks = state.tasks.lock().await;
-            match tasks.get_mut(&task_id) {
-                Some(task) if task.state == TaskState::Running => {
-                    push_log_locked(task, &line);
-                    // HTTP 诊断只记录请求活动，进度由其他输出和心跳更新。
-                    if line.starts_with("UNDICI ") || task.percent >= 90 {
-                        None
-                    } else {
-                        task.percent += 1;
-                        (task.percent % 20 == 0 || task.percent == 90).then_some(task.percent)
-                    }
+        let mut tasks = state.tasks.lock().await;
+        if let Ok(task) = running_task(&mut tasks, &task_id) {
+            push_log_locked(task, &line);
+            // HTTP 诊断只记录请求活动，进度由其他输出和心跳更新。
+            if !line.starts_with("UNDICI ") && task.percent < 90 {
+                task.percent += 1;
+                if task.percent % 20 == 0 || task.percent == 90 {
+                    emit_progress(&app, &task_id, TaskState::Running, task.percent, None, None);
                 }
-                _ => None,
             }
-        };
-        emit_log(&app, &task_id, &line);
-        if let Some(pct) = percent {
-            emit_progress(&app, &task_id, TaskState::Running, pct, None, None);
         }
+        emit_log(&app, &task_id, &line);
     }
 }
 
@@ -1523,18 +1662,44 @@ pub(crate) async fn ensure_pnpm_pub(
     state: &State<'_, AppState>,
     task_id: &str,
 ) -> Result<std::path::PathBuf, String> {
-    ensure_pnpm(app, state, task_id).await
+    ensure_pnpm(app, state, task_id, TaskBinding::Optional).await
 }
 
-/// Runs a piped child command as a task: streams stdout/stderr into the task
-/// log, exposes the child for cancellation, and nudges the percent upward
-/// while it runs. Returns Err when the command fails or is cancelled.
+enum TaskBinding {
+    Required,
+    Optional,
+}
+
+/// 共用子进程日志机制。插件卸载等同步命令可以没有后台任务。
 pub(crate) async fn run_streamed_command(
+    app: &AppHandle,
+    state: &State<'_, AppState>,
+    task_id: &str,
+    cmd: tokio::process::Command,
+    what: &str,
+) -> Result<(), String> {
+    run_command(app, state, task_id, cmd, what, TaskBinding::Optional).await
+}
+
+async fn run_version_command(
     app: &AppHandle,
     state: &State<'_, AppState>,
     task_id: &str,
     mut cmd: tokio::process::Command,
     what: &str,
+) -> Result<(), String> {
+    cmd.stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+    run_command(app, state, task_id, cmd, what, TaskBinding::Required).await
+}
+
+async fn run_command(
+    app: &AppHandle,
+    state: &State<'_, AppState>,
+    task_id: &str,
+    mut cmd: tokio::process::Command,
+    what: &str,
+    binding: TaskBinding,
 ) -> Result<(), String> {
     // Echo the exact command line into the task log: when a child fails
     // silently (pnpm at --loglevel=warn prints nothing for some errors), the
@@ -1551,20 +1716,23 @@ pub(crate) async fn run_streamed_command(
     push_task_log_pub(app, state, task_id, &format!("$ {cmdline}")).await;
     crate::log_debug!("run_streamed_command[{what}]: {cmdline}");
 
-    let mut child = cmd
-        .spawn()
-        .map_err(|e| format!("{what} 启动失败: {e}（请确认已安装 Node.js 与 pnpm）"))?;
-
-    let stdout = child.stdout.take();
-    let stderr = child.stderr.take();
-    let shared_child: Arc<Mutex<Option<tokio::process::Child>>> = Arc::new(Mutex::new(Some(child)));
-
-    {
+    let (stdout, stderr, shared_child) = {
         let mut tasks = state.tasks.lock().await;
-        if let Some(task) = tasks.get_mut(task_id) {
+        let task = match binding {
+            TaskBinding::Required => Some(running_task(&mut tasks, task_id)?),
+            TaskBinding::Optional => tasks.get_mut(task_id),
+        };
+        let mut child = cmd
+            .spawn()
+            .map_err(|e| format!("{what} 启动失败: {e}（请确认已安装 Node.js 与 pnpm）"))?;
+        let stdout = child.stdout.take();
+        let stderr = child.stderr.take();
+        let shared_child = Arc::new(Mutex::new(Some(child)));
+        if let Some(task) = task {
             task.child = Some(shared_child.clone());
         }
-    }
+        (stdout, stderr, shared_child)
+    };
 
     let mut pipe_readers = Vec::new();
     for pipe in [stdout.map(StreamPipe::Out), stderr.map(StreamPipe::Err)]
@@ -1611,9 +1779,7 @@ pub(crate) async fn run_streamed_command(
                 } else {
                     break;
                 }
-                let pct = task.percent;
-                drop(tasks);
-                emit_progress(&app2, &tid, TaskState::Running, pct, None, None);
+                emit_progress(&app2, &tid, TaskState::Running, task.percent, None, None);
             }
         });
     }
@@ -1622,10 +1788,13 @@ pub(crate) async fn run_streamed_command(
         tokio::time::sleep(std::time::Duration::from_millis(200)).await;
         let mut guard = shared_child.lock().await;
         let Some(child) = guard.as_mut() else {
-            return Err("任务已取消".to_string());
+            match binding {
+                TaskBinding::Required => break Err("任务已取消".to_string()),
+                TaskBinding::Optional => return Err("任务已取消".to_string()),
+            }
         };
         match child.try_wait() {
-            Ok(Some(status)) => break status,
+            Ok(Some(status)) => break Ok(status),
             Ok(None) => continue,
             Err(e) => return Err(format!("{what} 等待失败: {e}")),
         }
@@ -1639,14 +1808,12 @@ pub(crate) async fn run_streamed_command(
         }
     }
 
-    // Drain the pipe readers before judging the outcome: the child has
-    // exited but the reader tasks may still be flushing buffered lines into
-    // the task log. Reading the log here without waiting races them and
-    // loses the very error lines the failure summary is built from.
+    // 保留最后的错误输出；取消本地安装后，也要等脚本的子进程关闭输出管道再释放版本锁。
     for reader in pipe_readers {
         let _ = reader.await;
     }
 
+    let status = status?;
     if !status.success() {
         let logs = {
             let tasks = state.tasks.lock().await;

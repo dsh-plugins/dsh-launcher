@@ -2,6 +2,7 @@
 // desktop shell, and falls back to a localStorage-backed mock in a plain
 // browser so the UI can be previewed without the Rust side.
 
+import semver from 'semver'
 import { validNetworkRanges } from '@/utils/network-ranges'
 import newsPreview from '@/assets/news-preview.md?raw'
 import launcherIcon from '@/assets/launcher-icon-v3.png'
@@ -527,6 +528,67 @@ async function mockCall<T>(cmd: string, args?: Record<string, unknown>): Promise
         { version: '0.1.0-rc.4', released_at: '2026-07-01T10:00:00Z' },
         { version: '0.1.0-rc.3', released_at: '2026-06-15T08:00:00Z' },
       ] as T
+    case 'start_download_version_task': {
+      const version = String(args?.version ?? '').trim()
+      if (!semver.valid(version) || version.startsWith('v')) {
+        fail('版本号无效')
+      }
+      if (db.versions.some((v) => v.version === version && !v.wsl)) {
+        fail(`本地已安装 DSH ${version}`)
+      }
+      if ([...mockTasks.values()].some((task) =>
+        task.kind === 'download-version' && task.version === version &&
+        (task.state === 'running' || task.state === 'queued'),
+      )) {
+        fail(`DSH ${version} 的下载任务已在进行中`)
+      }
+
+      const task: TaskInfo = {
+        id: mockNewId('t'),
+        kind: 'download-version',
+        label: `下载 DSH ${version}`,
+        version,
+        state: 'running',
+        percent: 0,
+        created_at: Date.now(),
+        message: null,
+        instance_id: null,
+        instance_name: null,
+        logs: [],
+      }
+      mockTasks.set(task.id, task)
+      emitTaskProgress({ id: task.id, state: 'running', percent: 0, message: null, instance_id: null })
+
+      const timer = setInterval(() => {
+        if (task.state !== 'running') {
+          clearInterval(timer)
+          return
+        }
+        if (task.percent === 0) {
+          const line = `正在下载安装 DSH ${version}…`
+          task.logs.push(line)
+          task.percent = 50
+          emitTaskLog({ id: task.id, line })
+          emitTaskProgress({ id: task.id, state: 'running', percent: task.percent, message: null, instance_id: null })
+          return
+        }
+        clearInterval(timer)
+        const current = loadDb()
+        if (!current.versions.some((v) => v.version === version && !v.wsl)) {
+          current.versions.push({
+            id: mockNewId('v'),
+            version,
+            dir: `C:\\Users\\Administrator\\AppData\\Roaming\\in.dsh-plug.dsh-launcher\\versions\\${version}`,
+            wsl: null,
+          })
+          saveDb(current)
+        }
+        task.state = 'done'
+        task.percent = 100
+        emitTaskProgress({ id: task.id, state: 'done', percent: 100, message: null, instance_id: null })
+      }, 600)
+      return task.id as T
+    }
     case 'start_create_instance_task': {
       const name = String(args?.name ?? '').trim()
       const version = String(args?.version ?? '').trim()
@@ -649,9 +711,10 @@ async function mockCall<T>(cmd: string, args?: Record<string, unknown>): Promise
     }
     case 'start_install_node_task':
       return 'task-mock-node' as T
-    case 'list_tasks': {
-      return [...mockTasks.values()].sort((a, b) => b.created_at - a.created_at) as T
-    }
+    case 'list_tasks':
+      return [...mockTasks.values()]
+        .sort((a, b) => b.created_at - a.created_at)
+        .map((task) => ({ ...task, logs: [...task.logs] })) as T
     case 'remove_task': {
       const id = String(args?.id)
       const t = mockTasks.get(id)
@@ -1654,6 +1717,8 @@ export const api = {
   fetchAvailableVersions: () => call<RemoteVersion[]>('fetch_available_versions'),
   loadVersionIcons: () => call<VersionIcons>('load_version_icons'),
   removeVersion: (id: string) => call<void>('remove_version', { id }),
+  /** 后台安装本地版本，供启动器后续创建实例时复用。 */
+  startDownloadVersionTask: (version: string) => call<string>('start_download_version_task', { version }),
 
   startCreateInstanceTask: (
     name: string,
