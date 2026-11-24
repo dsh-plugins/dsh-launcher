@@ -234,6 +234,8 @@
       "aggregated": "Aggregated",
       "unverified": "Unverified"
     },
+    "scopeRegistryWarning": "All npm packages in scope {scope} in the selected profile will use {registry}. Credentials and other scopes stay unchanged.",
+    "scopeRegistryAck": "Use this npm registry for the entire scope in this profile",
     "unverifiedConfirm": "This plugin comes from an unreviewed source and its code is provided by a third party; it may contain harmful behavior. Only install it if you trust the source.",
     "unverifiedAck": "I understand the risk and want to install anyway"
   },

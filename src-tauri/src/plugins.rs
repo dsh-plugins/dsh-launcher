@@ -721,6 +721,9 @@ pub struct InstallPluginInput {
     pub wsl_scratch: Option<String>,
     #[serde(default)]
     pub install_source: Option<crate::market_index::InstallSource>,
+    /// Explicit install-wizard approval for persisting a scope mapping.
+    #[serde(default)]
+    pub scoped_registry_catalog: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -2293,9 +2296,16 @@ pub async fn check_plugin_updates(
     let dir = profile_dir(&home_path, &profile);
     // Manifest + node_modules probes go through \\wsl$\ for WSL instances;
     // keep them off the runtime workers (issue #49 G3).
-    let manifest = {
+    let (manifest, npmrc, workspace) = {
         let dir = dir.clone();
-        crate::wsl::run_blocking(move || read_profile_manifest(&dir)).await??
+        crate::wsl::run_blocking(move || -> Result<_, String> {
+            Ok((
+                read_profile_manifest(&dir)?,
+                read_optional_profile_file(&dir.join(".npmrc"))?.unwrap_or_default(),
+                read_optional_profile_file(&dir.join("pnpm-workspace.yaml"))?.unwrap_or_default(),
+            ))
+        })
+        .await??
     };
 
     let channel = {
@@ -2334,7 +2344,34 @@ pub async fn check_plugin_updates(
     let mut set = tokio::task::JoinSet::new();
     for (id, kind, spec) in deps {
         let dir = dir.clone();
-        let versions = indexed.get(&id).cloned().unwrap_or_default();
+        let mut versions = indexed.get(&id).cloned().unwrap_or_default();
+        let scope_route = (kind == DepKind::Npm)
+            .then(|| profile_update_scope(&id, &npmrc, &workspace))
+            .flatten();
+        let known_private = versions.iter().any(|entry| {
+            entry.source.registry().is_some_and(|raw| {
+                crate::market_index::scoped_registry_url(raw)
+                    .ok()
+                    .as_deref()
+                    != Some("https://registry.npmjs.org/")
+            })
+        });
+        if kind == DepKind::Npm {
+            versions.retain(|entry| {
+                let catalog_route = entry
+                    .source
+                    .registry()
+                    .and_then(|raw| crate::market_index::scoped_registry_url(raw).ok());
+                match &scope_route {
+                    Some(Some(route)) => catalog_route.as_ref() == Some(route),
+                    Some(None) => false,
+                    None => {
+                        entry.source.registry().is_none()
+                            || catalog_route.as_deref() == Some("https://registry.npmjs.org/")
+                    }
+                }
+            });
+        }
         set.spawn(async move {
             let probe_dir = dir.clone();
             let probe_id = id.clone();
@@ -2358,7 +2395,7 @@ pub async fn check_plugin_updates(
             });
             let (latest, source, install_source) = match picked {
                 Some(found) => found,
-                None if kind == DepKind::Npm => {
+                None if kind == DepKind::Npm && package_scope(&id).is_none() && !known_private => {
                     (npm_channel_version(&id, channel).await, None, None)
                 }
                 None => (None, None, None),
@@ -2525,7 +2562,7 @@ pub async fn uninstall_plugin(
             subcommand: "remove",
             spec: &input.plugin_id,
             loglevel: "warn",
-            registry: None,
+            scoped_registry: None,
         },
     )
     .await?;
@@ -3046,6 +3083,7 @@ pub async fn start_install_plugin_file_task(
         repo: None,
         wsl_scratch: scratch,
         install_source: None,
+        scoped_registry_catalog: None,
     };
     start_install_plugin_task(app, state, input).await
 }
@@ -3212,6 +3250,7 @@ async fn do_install_plugin(
         return Err("已取消".to_string());
     }
     set_task_running(app, state, task_id).await;
+    let scoped_registry = scoped_install_registry(state.inner(), input).await?;
 
     // 1. `dsh plugin add <spec>` through the instance's own CLI: it installs
     //    into the profile dir and reconciles dsh.profile.bundles itself, so the
@@ -3230,10 +3269,7 @@ async fn do_install_plugin(
             subcommand: "add",
             spec: &spec,
             loglevel: "http",
-            registry: input
-                .install_source
-                .as_ref()
-                .and_then(|source| source.registry()),
+            scoped_registry: scoped_registry.as_ref(),
         },
     )
     .await?;
@@ -3472,7 +3508,322 @@ struct PluginCliOp<'a> {
     subcommand: &'a str,
     spec: &'a str,
     loglevel: &'a str,
-    registry: Option<&'a str>,
+    scoped_registry: Option<&'a ScopedRegistry>,
+}
+
+struct ScopedRegistry {
+    key: String,
+    url: String,
+    may_configure: bool,
+}
+
+fn package_scope(name: &str) -> Option<&str> {
+    let (scope, _) = name.split_once('/')?;
+    scope.starts_with('@').then_some(scope)
+}
+
+fn cached_catalog_matches(
+    cache: &SourceCache,
+    source: &PluginSourceConfig,
+    input: &InstallPluginInput,
+) -> bool {
+    cache.plugins.iter().any(|entry| {
+        entry.id == input.plugin_id
+            && entry.source == source.id
+            && entry.catalog.as_ref().is_some_and(|catalog| {
+                catalog.index_url == source.url
+                    && catalog.versions.iter().any(|version| {
+                        version.version == input.version
+                            && Some(&version.source) == input.install_source.as_ref()
+                    })
+            })
+    })
+}
+
+async fn scoped_install_registry(
+    state: &AppState,
+    input: &InstallPluginInput,
+) -> Result<Option<ScopedRegistry>, String> {
+    let Some(crate::market_index::InstallSource::Npm { registry }) = &input.install_source else {
+        return Ok(None);
+    };
+    let url =
+        crate::market_index::scoped_registry_url(registry.as_deref().unwrap_or(NPM_REGISTRY))?;
+    let public = url == format!("{NPM_REGISTRY}/");
+    if public && package_scope(&input.plugin_id).is_none() {
+        return Ok(None);
+    }
+    let scope = package_scope(&input.plugin_id)
+        .filter(|scope| !scope.eq_ignore_ascii_case("@deepseek-ai"))
+        .ok_or("私有 npm 源只允许非 DSH 核心的 scoped 包")?;
+    let may_configure = if public {
+        false
+    } else if let Some(id) = &input.scoped_registry_catalog {
+        let source = effective_plugin_sources(state)
+            .into_iter()
+            .find(|src| src.enabled && src.kind == SourceKind::Primary && &src.id == id)
+            .ok_or("插件来源不再是已启用的主目录，请刷新市场后重试")?;
+        crate::market_index::catalog_https_url(&source.url)?;
+        let cache_dir = state.data_dir.join("plugin-cache");
+        let input = input.clone();
+        let matched = crate::wsl::run_blocking(move || {
+            read_source_cache(&cache_dir, &source.id)
+                .as_ref()
+                .is_some_and(|cache| cached_catalog_matches(cache, &source, &input))
+        })
+        .await?;
+        if !matched {
+            return Err("无法确认所选插件版本及其私有源，请刷新市场后重试".into());
+        }
+        true
+    } else {
+        false
+    };
+    Ok(Some(ScopedRegistry {
+        key: format!("{scope}:registry"),
+        url,
+        may_configure,
+    }))
+}
+
+fn read_optional_profile_file(path: &std::path::Path) -> Result<Option<String>, String> {
+    match std::fs::read_to_string(path) {
+        Ok(raw) => Ok(Some(raw)),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(format!("读取 profile 配置失败: {error}")),
+    }
+}
+
+fn scope_assignments<'a>(raw: &'a str, key: &'a str) -> impl Iterator<Item = &'a str> + 'a {
+    raw.lines().filter_map(move |line| {
+        let line = line.trim_start_matches('\u{feff}').trim();
+        let (name, value) = line.split_once('=')?;
+        name.trim()
+            .trim_matches(['"', '\''])
+            .eq_ignore_ascii_case(key)
+            .then(|| value.trim().trim_matches(['"', '\'']))
+    })
+}
+
+// Some(None) denotes an existing ambiguous scope. Never send it to public npm.
+fn profile_update_scope(package: &str, npmrc: &str, workspace: &str) -> Option<Option<String>> {
+    let scope = package_scope(package)?;
+    let key = format!("{scope}:registry");
+    let mut expected = None;
+    for value in scope_assignments(npmrc, &key) {
+        let Ok(value) = crate::market_index::scoped_registry_url(value) else {
+            return Some(None);
+        };
+        if expected.as_deref().is_some_and(|old| old != value.as_str()) {
+            return Some(None);
+        }
+        expected = Some(value);
+    }
+    if !workspace.trim().is_empty() {
+        let Ok(workspace) = serde_yaml::from_str::<serde_yaml::Value>(workspace) else {
+            return Some(None);
+        };
+        if let Some(value) = workspace.get("registries").and_then(|v| v.get(scope)) {
+            let Some(value) = value
+                .as_str()
+                .and_then(|url| crate::market_index::scoped_registry_url(url).ok())
+            else {
+                return Some(None);
+            };
+            if expected.as_deref().is_some_and(|old| old != value.as_str()) {
+                return Some(None);
+            }
+            expected = Some(value);
+        }
+    }
+    expected.map(Some)
+}
+
+fn scoped_npmrc_edit(raw: &str, registry: &ScopedRegistry) -> Result<Option<String>, String> {
+    let mut present = false;
+    for value in scope_assignments(raw, &registry.key) {
+        if crate::market_index::scoped_registry_url(value)
+            .ok()
+            .as_deref()
+            != Some(registry.url.as_str())
+        {
+            return Err(format!("profile 已为 {} 配置了其他 npm 源", registry.key));
+        }
+        present = true;
+    }
+    if present {
+        return Ok(None);
+    }
+    let newline = if raw.contains("\r\n") { "\r\n" } else { "\n" };
+    let separator = if raw.is_empty() || raw.ends_with('\n') {
+        ""
+    } else {
+        newline
+    };
+    Ok(Some(format!(
+        "{raw}{separator}{}={}{newline}",
+        registry.key, registry.url
+    )))
+}
+
+/// Query the exact pnpm binary the DSH process uses. pnpm 11's workspace
+/// registries and other layers can override .npmrc; never log the output.
+async fn effective_scoped_registry(
+    target: &PluginCliTarget<'_>,
+    dir: &std::path::Path,
+    node: &std::path::Path,
+    pnpm: &std::path::Path,
+    key: &str,
+) -> Result<Option<String>, String> {
+    let mut cmd = if let Some(distro) = target.wsl {
+        let node_dir = node.parent().ok_or("无法定位 WSL Node")?.to_string_lossy();
+        let pnpm_dir = pnpm.parent().ok_or("无法定位 WSL pnpm")?.to_string_lossy();
+        let home = target.home_path.to_string_lossy();
+        let linux_dir = format!("{}/profiles/{}", home.trim_end_matches('/'), target.profile);
+        let shell = format!(
+            "export PATH={}:{}:\"$PATH\"; cd -- {} && {} config get {}",
+            crate::wsl::sh_quote(&node_dir),
+            crate::wsl::sh_quote(&pnpm_dir),
+            crate::wsl::sh_quote(&linux_dir),
+            crate::wsl::sh_quote(&pnpm.to_string_lossy()),
+            crate::wsl::sh_quote(key)
+        );
+        crate::wsl::wsl_bash(distro, &shell)
+    } else {
+        let mut cmd = tokio::process::Command::new(pnpm);
+        crate::process::hide_console(&mut cmd);
+        cmd.current_dir(dir).args(["config", "get", key]);
+        cmd
+    };
+    cmd.env("CI", "true").kill_on_drop(true);
+    let result = tokio::time::timeout(std::time::Duration::from_secs(20), cmd.output())
+        .await
+        .map_err(|_| "读取 pnpm 生效的 npm 源配置超时")?
+        .map_err(|_| "无法读取 pnpm 生效的 npm 源配置")?;
+    if !result.status.success() {
+        return Err("无法读取 pnpm 生效的 npm 源配置".into());
+    }
+    let value = std::str::from_utf8(&result.stdout)
+        .map_err(|_| "无法解析 pnpm npm 源配置")?
+        .trim();
+    if matches!(value, "" | "undefined") {
+        return Ok(None);
+    }
+    crate::market_index::scoped_registry_url(value)
+        .map(Some)
+        .map_err(|_| "pnpm 生效的 npm 源设置无效或含有凭据，已停止安装".into())
+}
+
+async fn ensure_scoped_registry(
+    target: &PluginCliTarget<'_>,
+    dir: &std::path::Path,
+    node: &std::path::Path,
+    pnpm: &std::path::Path,
+    registry: &ScopedRegistry,
+) -> Result<(), String> {
+    let path = dir.join(".npmrc");
+    let (before, edit) = {
+        let path = path.clone();
+        let registry = ScopedRegistry {
+            key: registry.key.clone(),
+            url: registry.url.clone(),
+            may_configure: registry.may_configure,
+        };
+        crate::wsl::run_blocking(move || -> Result<_, String> {
+            let before = read_profile_npmrc(&path)?;
+            let edit = scoped_npmrc_edit(before.as_deref().unwrap_or_default(), &registry)?;
+            Ok((before, edit))
+        })
+        .await??
+    };
+    let effective = effective_scoped_registry(target, dir, node, pnpm, &registry.key).await?;
+    if effective.as_deref() == Some(registry.url.as_str())
+        || (effective.is_none() && registry.url == format!("{NPM_REGISTRY}/") && edit.is_some())
+    {
+        return Ok(());
+    }
+    if effective.is_some() || edit.is_none() {
+        return Err(format!("{} 的实际 pnpm 源与所选来源冲突", registry.key));
+    }
+    if !registry.may_configure {
+        return Err(format!(
+            "{} 尚未配置私有源，请在市场中明确确认后安装",
+            registry.key
+        ));
+    }
+    let edit = edit.expect("checked above");
+    let (file, before, edit) = crate::wsl::run_blocking(move || -> Result<_, String> {
+        let file = append_profile_scope(&path, before.as_deref(), &edit)?;
+        Ok((file, before, edit))
+    })
+    .await??;
+    let verified = effective_scoped_registry(target, dir, node, pnpm, &registry.key).await;
+    if matches!(verified, Ok(Some(ref effective)) if effective == &registry.url) {
+        return Ok(());
+    }
+    // Use the opened file, not the path: never follow a replacement symlink.
+    crate::wsl::run_blocking(move || {
+        rollback_profile_scope(file, before.as_deref().unwrap_or_default(), &edit)
+    })
+    .await??;
+    Err(format!("{} 的私有 npm 源未生效，已停止安装", registry.key))
+}
+
+fn read_profile_npmrc(path: &std::path::Path) -> Result<Option<String>, String> {
+    match std::fs::symlink_metadata(path) {
+        Ok(meta) if !meta.file_type().is_file() => Err("profile .npmrc 不是普通文件".into()),
+        Ok(_) => read_optional_profile_file(path),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(format!("读取 profile .npmrc 失败: {error}")),
+    }
+}
+
+/// Append only the approved setting, preserving existing bytes and file rights
+/// without making a temporary copy of credentials.
+fn append_profile_scope(
+    path: &std::path::Path,
+    before: Option<&str>,
+    edit: &str,
+) -> Result<std::fs::File, String> {
+    use std::io::{Read, Seek, SeekFrom, Write};
+    if read_profile_npmrc(path)?.as_deref() != before {
+        return Err("profile .npmrc 已变化，请重试".into());
+    }
+    let expected = before.unwrap_or_default();
+    let err = |e| format!("追加 profile .npmrc 失败: {e}");
+    let mut options = std::fs::OpenOptions::new();
+    options.read(true).write(true).create_new(before.is_none());
+    let mut file = options.open(path).map_err(err)?;
+    let mut actual = String::new();
+    file.read_to_string(&mut actual).map_err(err)?;
+    if actual != expected || read_profile_npmrc(path)?.as_deref() != Some(expected) {
+        return Err("profile .npmrc 已变化，请重试".into());
+    }
+    let append = edit
+        .strip_prefix(expected)
+        .ok_or("无效的 profile .npmrc 追加")?;
+    file.seek(SeekFrom::End(0)).map_err(err)?;
+    if let Err(error) = file
+        .write_all(append.as_bytes())
+        .and_then(|()| file.sync_data())
+    {
+        let _ = rollback_profile_scope(file, expected, edit);
+        return Err(err(error));
+    }
+    Ok(file)
+}
+
+fn rollback_profile_scope(mut file: std::fs::File, before: &str, edit: &str) -> Result<(), String> {
+    use std::io::{Read, Seek, SeekFrom};
+    let err = |e| format!("恢复 profile .npmrc 失败: {e}");
+    let mut actual = Vec::new();
+    file.seek(SeekFrom::Start(0)).map_err(err)?;
+    file.read_to_end(&mut actual).map_err(err)?;
+    if actual.starts_with(before.as_bytes()) && edit.as_bytes().starts_with(&actual) {
+        file.set_len(before.len() as u64).map_err(err)?;
+        file.sync_data().map_err(err)?;
+    }
+    Ok(())
 }
 
 /// Runs one `dsh plugin --profile <name> <pnpm subcommand> <spec/id>` through
@@ -3514,9 +3865,6 @@ async fn run_dsh_plugin(
         let dir = dir.clone();
         crate::wsl::run_blocking(move || -> Result<(), String> {
             std::fs::create_dir_all(&dir).map_err(|e| format!("创建 profile 目录失败: {e}"))?;
-            ensure_build_scripts_allowed(&dir)?;
-            // Never let a plugin's peers pull a second copy of a core package in.
-            ensure_profile_npmrc(&dir)?;
             Ok(())
         })
         .await??;
@@ -3542,6 +3890,18 @@ async fn run_dsh_plugin(
                 .to_string(),
         ),
     };
+    // DSH metadata preflight, pnpm, and any store relink must agree.
+    if let Some(registry) = op.scoped_registry {
+        ensure_scoped_registry(target, &dir, &node_exe, &pnpm_prog, registry).await?;
+    }
+    {
+        let dir = dir.clone();
+        crate::wsl::run_blocking(move || -> Result<(), String> {
+            ensure_build_scripts_allowed(&dir)?;
+            ensure_profile_npmrc(&dir)
+        })
+        .await??;
+    }
     let what = format!("dsh plugin {subcommand}");
 
     // A node_modules tree linked from a *different* pnpm store (e.g. the
@@ -3573,12 +3933,7 @@ async fn run_dsh_plugin(
 
     for attempt in 1..=2 {
         let mut args: Vec<String> = vec![subcommand.to_string(), spec.to_string()];
-        args.extend(forwarded_pnpm_flags_with_registry(
-            loglevel,
-            subcommand,
-            &linux_store,
-            op.registry,
-        ));
+        args.extend(forwarded_pnpm_flags(loglevel, subcommand, &linux_store));
         let cmd = dsh_plugin_command(
             target.wsl,
             version_dir,
@@ -3854,15 +4209,6 @@ async fn dsh_plugin_command(
 /// `install`): `pnpm remove` rejects them outright ("Unknown options:
 /// 'fetch-timeout', …") and would fail before touching anything.
 fn forwarded_pnpm_flags(loglevel: &str, subcommand: &str, store_dir: &str) -> Vec<String> {
-    forwarded_pnpm_flags_with_registry(loglevel, subcommand, store_dir, None)
-}
-
-fn forwarded_pnpm_flags_with_registry(
-    loglevel: &str,
-    subcommand: &str,
-    store_dir: &str,
-    registry: Option<&str>,
-) -> Vec<String> {
     let mut args: Vec<String> = vec![
         "--store-dir".to_string(),
         store_dir.to_string(),
@@ -3880,14 +4226,11 @@ fn forwarded_pnpm_flags_with_registry(
             "4".to_string(),
         ]);
     }
-    if let Some(registry) = registry
-        .map(str::to_owned)
-        .or_else(|| std::env::var("DSH_NPM_REGISTRY").ok())
-    {
-        let registry = registry.trim().to_string();
+    if let Ok(registry) = std::env::var("DSH_NPM_REGISTRY") {
+        let registry = registry.trim();
         if !registry.is_empty() {
-            args.push("--registry".to_string());
-            args.push(registry);
+            // One argument keeps the registry URL out of DSH positional operands.
+            args.push(format!("--registry={registry}"));
         }
     }
     args
@@ -3905,11 +4248,7 @@ fn forwarded_pnpm_flags_with_registry(
 pub(crate) fn ensure_profile_npmrc(dir: &std::path::Path) -> Result<(), String> {
     const KEY: &str = "auto-install-peers";
     let path = dir.join(".npmrc");
-    let raw = if path.exists() {
-        std::fs::read_to_string(&path).map_err(|e| format!("读取 .npmrc 失败: {e}"))?
-    } else {
-        String::new()
-    };
+    let raw = read_profile_npmrc(&path)?.unwrap_or_default();
 
     let mut lines: Vec<String> = raw.lines().map(|l| l.to_string()).collect();
     let mut found = false;
@@ -4300,20 +4639,117 @@ mod tests {
     }
 
     #[test]
-    fn index_registry_is_forwarded_once() {
-        let args = forwarded_pnpm_flags_with_registry(
-            "http",
-            "add",
-            "/example/store",
-            Some("https://example.com/"),
+    fn scoped_registry_preserves_npmrc_and_rejects_conflicts() {
+        let route = ScopedRegistry {
+            key: "@team:registry".into(),
+            url: "https://npm.example/repository/group/".into(),
+            may_configure: true,
+        };
+        let original =
+            "registry=https://public.example/\r\n# preserve\r\n//npm.example/:_authToken=fake";
+        let edit = scoped_npmrc_edit(original, &route).unwrap().unwrap();
+        assert_eq!(
+            edit,
+            format!("{original}\r\n@team:registry={}\r\n", route.url)
         );
-        let positions: Vec<usize> = args
-            .iter()
-            .enumerate()
-            .filter_map(|(i, arg)| (arg == "--registry").then_some(i))
-            .collect();
-        assert_eq!(positions.len(), 1);
-        assert_eq!(args[positions[0] + 1], "https://example.com/");
+        assert_eq!(scoped_npmrc_edit(&edit, &route).unwrap(), None);
+        assert!(scoped_npmrc_edit("@team:registry=https://other.example/", &route).is_err());
+        assert!(
+            scoped_npmrc_edit("@team:registry=https://user:secret@npm.example/", &route).is_err()
+        );
+        assert!(
+            crate::market_index::scoped_registry_url("https://npm.example/\nregistry=x").is_err()
+        );
+        assert!(crate::market_index::scoped_registry_url("http://npm.example/").is_err());
+    }
+
+    #[test]
+    fn scoped_registry_rollback_preserves_existing_config_and_concurrent_changes() {
+        use std::io::Write;
+        let dir = std::env::temp_dir().join(new_id("dshl-scope"));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join(".npmrc");
+        let original = "# original setting\n";
+        let appended = format!("{original}@team:registry=https://private.example/\n");
+        std::fs::write(&path, original).unwrap();
+        let file = append_profile_scope(&path, Some(original), &appended).unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), appended);
+        rollback_profile_scope(file, original, &appended).unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), original);
+        let file = append_profile_scope(&path, Some(original), &appended).unwrap();
+        let mut user_edit = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .unwrap();
+        writeln!(user_edit, "# subsequent edit").unwrap();
+        drop(user_edit);
+        rollback_profile_scope(file, original, &appended).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            format!("{appended}# subsequent edit\n")
+        );
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn scoped_registry_refuses_different_effective_pnpm_origin_before_mutation() {
+        let home = std::env::temp_dir().join(new_id("dshl-scope"));
+        let dir = profile_dir(&home, "web");
+        std::fs::create_dir_all(&dir).unwrap();
+        let pnpm = if cfg!(windows) {
+            let path = home.join("fixture-pnpm.cmd");
+            std::fs::write(&path, "@echo off\r\necho https://other.example/\r\n").unwrap();
+            path
+        } else {
+            #[cfg(unix)]
+            use std::os::unix::fs::PermissionsExt;
+            let path = home.join("fixture-pnpm");
+            std::fs::write(
+                &path,
+                "#!/bin/sh\nprintf '%s\\n' 'https://other.example/'\n",
+            )
+            .unwrap();
+            #[cfg(unix)]
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700)).unwrap();
+            path
+        };
+        let target = PluginCliTarget {
+            version_dir: &home,
+            home_path: &home,
+            profile: "web",
+            wsl: None,
+        };
+        let route = ScopedRegistry {
+            key: "@team:registry".into(),
+            url: "https://private.example/".into(),
+            may_configure: true,
+        };
+        let error = ensure_scoped_registry(&target, &dir, &home, &pnpm, &route)
+            .await
+            .unwrap_err();
+        assert!(error.contains("冲突"));
+        assert!(!error.contains("other.example"));
+        assert!(!dir.join(".npmrc").exists());
+        std::fs::remove_dir_all(home).unwrap();
+    }
+
+    #[test]
+    fn private_update_does_not_guess_across_workspace_conflicts() {
+        let npmrc = "@team:registry=https://npm.example/repository/group";
+        let good = "registries: { '@team': 'https://npm.example/repository/group/' }";
+        let other = "registries: { '@team': 'https://other.example/' }";
+        assert_eq!(
+            profile_update_scope("@team/package", npmrc, good),
+            Some(Some("https://npm.example/repository/group/".into()))
+        );
+        assert_eq!(
+            profile_update_scope("@team/package", npmrc, other),
+            Some(None)
+        );
+        assert_eq!(
+            profile_update_scope("@unrelated/package", npmrc, other),
+            None
+        );
     }
 
     #[test]
@@ -4807,15 +5243,16 @@ mod tests {
         std::env::remove_var("DSH_NPM_REGISTRY");
         assert!(!forwarded_pnpm_flags("warn", "add", "/s")
             .iter()
-            .any(|a| a == "--registry"));
+            .any(|a| a.starts_with("--registry")));
         std::env::set_var("DSH_NPM_REGISTRY", "   ");
         assert!(!forwarded_pnpm_flags("warn", "add", "/s")
             .iter()
-            .any(|a| a == "--registry"));
+            .any(|a| a.starts_with("--registry")));
         std::env::set_var("DSH_NPM_REGISTRY", "https://mirror.example/npm");
         let args = forwarded_pnpm_flags("warn", "add", "/s");
-        let i = args.iter().position(|a| a == "--registry").unwrap();
-        assert_eq!(args[i + 1], "https://mirror.example/npm");
+        assert!(args
+            .iter()
+            .any(|a| a == "--registry=https://mirror.example/npm"));
         match saved {
             Some(v) => std::env::set_var("DSH_NPM_REGISTRY", v),
             None => std::env::remove_var("DSH_NPM_REGISTRY"),

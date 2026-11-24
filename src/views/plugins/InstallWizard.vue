@@ -53,6 +53,17 @@ const compatibilitySelection = computed(() => JSON.stringify([
 ]))
 const compatibilityAck = useCompatibilityAck(compatibilitySelection)
 
+const scopedRegistry = computed(() => {
+  const source = state.value?.version?.install_source
+  if (source?.type !== 'npm' || !source.registry) return ''
+  return /^https:\/\/registry\.npmjs\.org\/?$/i.test(source.registry) ? '' : source.registry
+})
+const scopeSelection = computed(() => JSON.stringify([
+  state.value?.plugin.id, state.value?.plugin.source, state.value?.version?.version,
+  scopedRegistry.value, instanceId.value, profile.value,
+]))
+const scopedRegistryAck = useCompatibilityAck(scopeSelection)
+
 /** Distro of the selected instance, or null for a local Windows instance. */
 const selectedDistro = computed(() => {
   const inst = selectedInstance.value
@@ -116,6 +127,7 @@ const canSubmit = computed(
     !!profile.value &&
     !submitting.value &&
     (!needsUnverifiedAck.value || unverifiedAck.value) &&
+    (!scopedRegistry.value || scopedRegistryAck.value) &&
     (compatibilityResult.value.status !== 'incompatible' || compatibilityAck.value),
 )
 
@@ -126,6 +138,7 @@ async function startInstall() {
   try {
     const taskId = await api.startInstallPluginTask({
       installSource: s.version.install_source,
+      scopedRegistryCatalog: scopedRegistry.value && scopedRegistryAck.value ? s.plugin.source : undefined,
       pluginId: s.plugin.id,
       version: s.version.version,
       channel: s.channel,
@@ -182,6 +195,18 @@ async function startInstall() {
         <dsh-alert type="warning" :show-icon="true">{{ t('plugins.unverifiedConfirm') }}</dsh-alert>
         <dsh-checkbox v-model="unverifiedAck" class="unverified-ack">
           {{ t('plugins.unverifiedAck') }}
+        </dsh-checkbox>
+      </div>
+
+      <div v-if="scopedRegistry" class="unverified-block">
+        <dsh-alert type="warning" :show-icon="true">
+          {{ t('plugins.scopeRegistryWarning', {
+            scope: state.plugin.id.split('/')[0],
+            registry: scopedRegistry,
+          }) }}
+        </dsh-alert>
+        <dsh-checkbox v-model="scopedRegistryAck" class="unverified-ack">
+          {{ t('plugins.scopeRegistryAck') }}
         </dsh-checkbox>
       </div>
 

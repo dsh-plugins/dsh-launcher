@@ -746,6 +746,7 @@ export interface PluginUpdateInfo {
 
 export interface InstallPluginInput {
   installSource?: InstallSource
+  scopedRegistryCatalog?: string
   pluginId: string
   version: string
   channel: PluginChannel

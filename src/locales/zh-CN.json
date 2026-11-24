@@ -234,6 +234,8 @@
       "aggregated": "聚合",
       "unverified": "未验证"
     },
+    "scopeRegistryWarning": "此操作会把当前 profile 下 {scope} 作用域的所有 npm 包指向 {registry}。现有凭据不会被修改，其他作用域保持不变。",
+    "scopeRegistryAck": "确认在此 profile 中为整个作用域使用该 npm 源",
     "unverifiedConfirm": "该插件来自未经审核的来源，代码由第三方提供，可能包含危险行为。请确认你信任该来源后再安装。",
     "unverifiedAck": "我已了解风险，仍要安装"
   },

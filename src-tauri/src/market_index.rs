@@ -20,6 +20,9 @@ pub enum InstallSource {
 }
 
 fn web_url(value: &str, https_only: bool) -> Result<reqwest::Url, String> {
+    if value.chars().any(|c| c.is_control() || c.is_whitespace()) {
+        return Err("来源地址不得包含空白或控制字符".into());
+    }
     let url = reqwest::Url::parse(value).map_err(|e| format!("无效来源地址: {e}"))?;
     if !(url.scheme() == "https" || (!https_only && url.scheme() == "http"))
         || url.host_str().is_none()
@@ -31,6 +34,19 @@ fn web_url(value: &str, https_only: bool) -> Result<reqwest::Url, String> {
         return Err("来源地址必须使用 HTTP(S)，且不得包含凭据、查询或片段".into());
     }
     Ok(url)
+}
+
+/// Normalize a credential-free scoped registry without accepting npmrc syntax.
+pub(crate) fn scoped_registry_url(value: &str) -> Result<String, String> {
+    if value.contains("${") || value.contains(['\\', ';', '"', '\'']) {
+        return Err("来源地址不得包含环境变量或 npm 配置特殊字符".into());
+    }
+    let url = web_url(value, true)?;
+    Ok(format!("{}/", url.as_str().trim_end_matches('/')))
+}
+
+pub(crate) fn catalog_https_url(value: &str) -> Result<(), String> {
+    web_url(value, true).map(|_| ())
 }
 
 impl InstallSource {
