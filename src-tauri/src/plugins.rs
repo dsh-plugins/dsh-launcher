@@ -9,7 +9,7 @@ use crate::config::{
 use crate::market_index::LocalizedText;
 use crate::AppState;
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::io::Read;
 use tauri::{AppHandle, Manager, State};
 
@@ -2132,25 +2132,75 @@ fn newest_version(versions: &[SourceVersion], channel: UpdateChannel) -> Option<
 /// must not hold the plugin list hostage.
 const UPDATE_SOURCE_BUDGET: std::time::Duration = std::time::Duration::from_secs(15);
 
-/// Reads the configured official-format indexes and collects their versions
-/// per package name. Earlier sources win, mirroring the market's priority, and
-/// a failing source only costs its own entries.
+#[derive(Default)]
+struct UpdateIndex {
+    versions: HashMap<String, Vec<SourceVersion>>,
+    public_names: HashSet<String>,
+}
+
+impl UpdateIndex {
+    fn add(&mut self, source: &PluginSourceConfig, plugins: Vec<MarketPlugin>) {
+        let builtin_public = source.id == crate::config::BUILTIN_PLUGIN_SOURCE_ID
+            && matches!(
+                source.url.as_str(),
+                crate::config::BUILTIN_PLUGIN_DIRECTORY
+                    | crate::config::BUILTIN_PLUGIN_VERSION_INDEX
+            );
+        for plugin in plugins {
+            if builtin_public
+                && match &plugin.catalog {
+                    None => source.url == crate::config::BUILTIN_PLUGIN_DIRECTORY,
+                    Some(catalog) => catalog.versions.iter().any(|entry| {
+                        npm_source_registry(&entry.source)
+                            .is_some_and(|route| route.is_ok_and(|url| is_public_registry(&url)))
+                    }),
+                }
+            {
+                self.public_names.insert(plugin.id.clone());
+            }
+            if let Some(catalog) = plugin.catalog {
+                self.versions.entry(plugin.id).or_default().extend(
+                    catalog.versions.into_iter().map(|entry| SourceVersion {
+                        version: entry.version,
+                        source: entry.source,
+                        source_id: source.id.clone(),
+                    }),
+                );
+            }
+        }
+    }
+}
+
+fn companion_version_index(source: &PluginSourceConfig) -> Option<PluginSourceConfig> {
+    (source.id == crate::config::BUILTIN_PLUGIN_SOURCE_ID
+        && source.url == crate::config::BUILTIN_PLUGIN_DIRECTORY
+        && source.kind == SourceKind::Primary)
+        .then(|| PluginSourceConfig {
+            url: crate::config::BUILTIN_PLUGIN_VERSION_INDEX.to_string(),
+            ..source.clone()
+        })
+}
+
+/// 提取更新信息；旧版公开描述符与配套版本索引独立加载并共享超时预算。
 async fn source_versions(
     sources: Vec<PluginSourceConfig>,
     budget: std::time::Duration,
-) -> std::collections::HashMap<String, Vec<SourceVersion>> {
+) -> UpdateIndex {
     let mut ordered = sources;
     ordered.sort_by_key(|source| source.order);
     let mut set = tokio::task::JoinSet::new();
-    for source in ordered {
-        let order = source.order;
+    let endpoints = ordered.into_iter().flat_map(|source| {
+        let companion = companion_version_index(&source);
+        std::iter::once(source).chain(companion)
+    });
+    for (order, source) in endpoints.enumerate() {
         set.spawn(async move {
             let result = fetch_catalog(&source).await;
-            (order, source.id, result)
+            (order, source, result)
         });
     }
     let deadline = tokio::time::Instant::now() + budget;
-    let mut collected: Vec<(u32, String, Vec<MarketPlugin>)> = Vec::new();
+    let mut collected = Vec::new();
     loop {
         let joined = match tokio::time::timeout_at(deadline, set.join_next()).await {
             Ok(Some(joined)) => joined,
@@ -2158,9 +2208,9 @@ async fn source_versions(
             Err(_) => break,
         };
         match joined {
-            Ok((order, id, Ok(plugins))) => collected.push((order, id, plugins)),
-            Ok((_, id, Err(error))) => {
-                crate::log_warn!("插件更新检查读取来源「{id}」失败: {error}");
+            Ok((order, source, Ok(plugins))) => collected.push((order, source, plugins)),
+            Ok((_, source, Err(error))) => {
+                crate::log_warn!("插件更新检查读取来源「{}」失败: {error}", source.id);
             }
             Err(error) => crate::log_warn!("插件更新检查来源任务异常: {error}"),
         }
@@ -2169,24 +2219,40 @@ async fn source_versions(
     // 完成顺序取决于网络，按来源顺序重排后同一版本才能稳定归因到高优先级来源。
     collected.sort_by_key(|(order, _, _)| *order);
 
-    let mut out: std::collections::HashMap<String, Vec<SourceVersion>> =
-        std::collections::HashMap::new();
-    for (_, source_id, plugins) in collected {
-        for plugin in plugins {
-            let Some(catalog) = plugin.catalog else {
-                continue;
-            };
-            let versions = out.entry(plugin.id).or_default();
-            for entry in catalog.versions {
-                versions.push(SourceVersion {
-                    version: entry.version,
-                    source: entry.source,
-                    source_id: source_id.clone(),
-                });
-            }
-        }
+    let mut index = UpdateIndex::default();
+    for (_, source, plugins) in collected {
+        index.add(&source, plugins);
     }
-    out
+    index
+}
+
+fn is_public_registry(normalized: &str) -> bool {
+    normalized.strip_suffix('/') == Some(NPM_REGISTRY)
+}
+
+fn npm_source_registry(
+    source: &crate::market_index::InstallSource,
+) -> Option<Result<String, String>> {
+    matches!(source, crate::market_index::InstallSource::Npm { .. }).then(|| {
+        crate::market_index::scoped_registry_url(source.registry().unwrap_or(NPM_REGISTRY))
+    })
+}
+
+fn allow_public_npm_update(
+    id: &str,
+    kind: DepKind,
+    scope_route: Option<&Option<String>>,
+    known_private: bool,
+    listed_public: bool,
+) -> bool {
+    if kind != DepKind::Npm || known_private {
+        return false;
+    }
+    match scope_route {
+        Some(Some(route)) => is_public_registry(route),
+        Some(None) => false,
+        None => !id.starts_with('@') || listed_public,
+    }
 }
 
 /// One npm dist-tag target: the version it points at, plus when that version
@@ -2344,34 +2410,33 @@ pub async fn check_plugin_updates(
     let mut set = tokio::task::JoinSet::new();
     for (id, kind, spec) in deps {
         let dir = dir.clone();
-        let mut versions = indexed.get(&id).cloned().unwrap_or_default();
+        let mut versions = indexed.versions.get(&id).cloned().unwrap_or_default();
         let scope_route = (kind == DepKind::Npm)
             .then(|| profile_update_scope(&id, &npmrc, &workspace))
             .flatten();
         let known_private = versions.iter().any(|entry| {
-            entry.source.registry().is_some_and(|raw| {
-                crate::market_index::scoped_registry_url(raw)
-                    .ok()
-                    .as_deref()
-                    != Some("https://registry.npmjs.org/")
-            })
+            npm_source_registry(&entry.source)
+                .is_some_and(|route| !route.is_ok_and(|url| is_public_registry(&url)))
         });
         if kind == DepKind::Npm {
             versions.retain(|entry| {
-                let catalog_route = entry
-                    .source
-                    .registry()
-                    .and_then(|raw| crate::market_index::scoped_registry_url(raw).ok());
+                let catalog_route = npm_source_registry(&entry.source);
                 match &scope_route {
-                    Some(Some(route)) => catalog_route.as_ref() == Some(route),
+                    Some(Some(route)) => catalog_route.and_then(Result::ok).as_ref() == Some(route),
                     Some(None) => false,
-                    None => {
-                        entry.source.registry().is_none()
-                            || catalog_route.as_deref() == Some("https://registry.npmjs.org/")
-                    }
+                    None if known_private && id.starts_with('@') => false,
+                    None => catalog_route
+                        .is_none_or(|route| route.is_ok_and(|url| is_public_registry(&url))),
                 }
             });
         }
+        let can_query_public = allow_public_npm_update(
+            &id,
+            kind,
+            scope_route.as_ref(),
+            known_private,
+            indexed.public_names.contains(&id),
+        );
         set.spawn(async move {
             let probe_dir = dir.clone();
             let probe_id = id.clone();
@@ -2395,8 +2460,16 @@ pub async fn check_plugin_updates(
             });
             let (latest, source, install_source) = match picked {
                 Some(found) => found,
-                None if kind == DepKind::Npm && package_scope(&id).is_none() && !known_private => {
-                    (npm_channel_version(&id, channel).await, None, None)
+                None if can_query_public => {
+                    let npm = crate::market_index::InstallSource::Npm { registry: None };
+                    if npm.install_spec(&id, "0.0.0").is_err() {
+                        (None, None, None)
+                    } else {
+                        let latest = npm_channel_version(&id, channel).await;
+                        let install_source =
+                            (id.starts_with('@') && latest.is_some()).then_some(npm);
+                        (latest, None, install_source)
+                    }
                 }
                 None => (None, None, None),
             };
@@ -4942,6 +5015,118 @@ mod tests {
                 .source_id,
             "official"
         );
+    }
+
+    #[test]
+    fn builtin_version_index_keeps_public_evidence_and_channel_selection() {
+        let id = "@dsh-plugin/dsh-loader";
+        let builtin = crate::config::default_plugin_sources().remove(0);
+        let companion = companion_version_index(&builtin).unwrap();
+        let custom = PluginSourceConfig {
+            url: "https://example.com/plugins.json".into(),
+            ..builtin.clone()
+        };
+        assert!(companion_version_index(&custom).is_none());
+        let descriptor = entry(id, "插件加载器");
+        let mut index = UpdateIndex::default();
+        index.add(&custom, vec![descriptor.clone()]);
+        assert!(!index.public_names.contains(id));
+        index.add(&builtin, vec![descriptor]);
+        assert!(index.public_names.contains(id));
+        assert!(!index.versions.contains_key(id));
+        let plugins = crate::market_index::parse_index(serde_json::json!({
+            "format": 1, "title": "公开目录", "plugins": [{"name": id, "title": "插件加载器", "versions": [
+                {"version": "2.0.0-dev.45328381034", "publishTimestamp": 200, "source": {"type": "npm"}},
+                {"version": "1.3.5", "publishTimestamp": 100, "source": {"type": "npm"}}
+            ]}]
+        }), &companion.url).unwrap();
+        index.add(&companion, plugins);
+        let candidates = &index.versions[id];
+        let current = "2.0.0-dev.45160670240";
+        let stable = newest_version(candidates, UpdateChannel::Release).unwrap();
+        let beta = newest_version(candidates, UpdateChannel::Beta).unwrap();
+        assert!(!semver_newer(&stable.version, current));
+        assert!(semver_newer(&beta.version, current));
+        assert_eq!(
+            beta.source,
+            crate::market_index::InstallSource::Npm { registry: None }
+        );
+        assert_eq!(beta.source_id, builtin.id);
+    }
+
+    #[test]
+    fn public_fallback_does_not_disclose_unknown_or_private_scoped_packages() {
+        let id = "@dsh-plugin/dsh-loader";
+        let public = Some("https://registry.npmjs.org/".to_owned());
+        let private = Some("https://npm.example.com/".to_owned());
+        assert!(allow_public_npm_update(id, DepKind::Npm, None, false, true));
+        assert!(allow_public_npm_update(
+            id,
+            DepKind::Npm,
+            Some(&public),
+            false,
+            false
+        ));
+        assert!(!allow_public_npm_update(
+            id,
+            DepKind::Npm,
+            None,
+            false,
+            false
+        ));
+        assert!(!allow_public_npm_update(
+            id,
+            DepKind::Npm,
+            Some(&private),
+            false,
+            true
+        ));
+        assert!(!allow_public_npm_update(
+            id,
+            DepKind::Npm,
+            Some(&None),
+            false,
+            true
+        ));
+        assert!(!allow_public_npm_update(
+            id,
+            DepKind::Npm,
+            Some(&public),
+            true,
+            true
+        ));
+        assert!(!allow_public_npm_update(
+            id,
+            DepKind::Git,
+            None,
+            false,
+            true
+        ));
+        assert!(allow_public_npm_update(
+            "dsh-plugin",
+            DepKind::Npm,
+            None,
+            false,
+            false
+        ));
+    }
+
+    #[tokio::test]
+    #[ignore = "需要访问公开插件索引和 npm"]
+    async fn live_loader_beta_update_is_discoverable() {
+        let id = "@dsh-plugin/dsh-loader";
+        let builtin = crate::config::default_plugin_sources().remove(0);
+        let index = source_versions(vec![builtin], UPDATE_SOURCE_BUDGET).await;
+        let candidate = newest_version(
+            index.versions.get(id).expect("索引没有加载器版本"),
+            UpdateChannel::Beta,
+        )
+        .unwrap();
+        let npm = npm_channel_version(id, UpdateChannel::Beta).await.unwrap();
+        assert!(index.public_names.contains(id));
+        assert!(semver_newer(&candidate.version, "2.0.0-dev.45160670240"));
+        assert!(semver_newer(&npm, "2.0.0-dev.45160670240"));
+        println!("loader beta: index={}, npm={npm}", candidate.version);
     }
 
     #[test]

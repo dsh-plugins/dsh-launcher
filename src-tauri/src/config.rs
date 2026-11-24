@@ -117,14 +117,18 @@ pub struct PluginSourceConfig {
     pub order: u32,
 }
 
+pub(crate) const BUILTIN_PLUGIN_SOURCE_ID: &str = "dsh-plugins";
+pub(crate) const BUILTIN_PLUGIN_DIRECTORY: &str = "https://dsh-plug.in/api/plugins.json";
+pub(crate) const BUILTIN_PLUGIN_VERSION_INDEX: &str = "https://dsh-plug.in/api/dsh-plugins.json";
+
 /// The built-in catalog sources, in display/dedup priority order. The live
 /// GitHub topic channel ships disabled: it is rate-limited and unverified, so
 /// the user opts in from Settings.
 pub fn default_plugin_sources() -> Vec<PluginSourceConfig> {
     vec![
         PluginSourceConfig {
-            id: "dsh-plugins".to_string(),
-            url: "https://dsh-plug.in/api/plugins.json".to_string(),
+            id: BUILTIN_PLUGIN_SOURCE_ID.to_string(),
+            url: BUILTIN_PLUGIN_DIRECTORY.to_string(),
             kind: SourceKind::Primary,
             enabled: true,
             confidence: Confidence::Official,
