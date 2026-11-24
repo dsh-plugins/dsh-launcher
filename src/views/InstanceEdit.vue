@@ -286,13 +286,18 @@ async function clearIcon() {
   }
 }
 
-watch(homeId, async (v) => {
+watch(homeId, async (v, _previous, onCleanup) => {
+  let current = true
+  onCleanup(() => { current = false })
   profiles.value = []
   // A different HOME means a different patch layer: reset the MCP scope.
   mcpScope.value = MCP_GLOBAL
   mcpServers.value = []
   if (v === DEDICATED) {
-    dedicatedPath.value = await api.defaultDedicatedHomePath(name.value.trim() || 'instance')
+    const path = await api.defaultDedicatedHomePath(name.value.trim() || 'instance')
+    if (current) {
+      dedicatedPath.value = path
+    }
     return
   }
   if (!v) return
@@ -300,12 +305,18 @@ watch(homeId, async (v) => {
   // selected HOME has a TUI profile to launch.
   void loadProfileKinds(v)
   try {
-    profiles.value = await api.listProfiles(v)
+    const available = await api.listProfiles(v)
+    if (!current) {
+      return
+    }
+    profiles.value = available
     if (defaultProfile.value && !profiles.value.includes(defaultProfile.value)) {
       defaultProfile.value = undefined
     }
   } catch (e) {
-    Message.error(String(e))
+    if (current) {
+      Message.error(String(e))
+    }
   }
 })
 
@@ -1665,27 +1676,43 @@ async function createShortcut(profile: string) {
 const pluginProfile = ref<string>('')
 const compatibility = ref<CompatibilityReportType | null>(null)
 const compatibilityBusy = ref(false)
-const compatibilityRequests = latestRequest()
-watch([editingId, pluginProfile], () => { compatibilityRequests.invalidate(); compatibility.value = null })
+let compatibilityRevision = 0
 async function checkCompatibility() {
   const id = editingId.value
   const profile = pluginProfile.value
-  if (!id || !profile) return
-  const request = compatibilityRequests.begin()
+  if (!id || !profile) {
+    return
+  }
+  const request = ++compatibilityRevision
   compatibility.value = null
   compatibilityBusy.value = true
   try {
     const report = await api.checkPluginCompatibility(id, profile)
-    if (compatibilityRequests.isCurrent(request)) compatibility.value = report
+    if (request === compatibilityRevision) {
+      compatibility.value = report
+    }
   } catch (e) {
-    if (compatibilityRequests.isCurrent(request)) Message.error(String(e))
+    if (request === compatibilityRevision) {
+      Message.error(String(e))
+    }
   } finally {
-    if (compatibilityRequests.isCurrent(request)) compatibilityBusy.value = false
+    if (request === compatibilityRevision) {
+      compatibilityBusy.value = false
+    }
   }
 }
-function invalidateCompatibility() { compatibilityRequests.invalidate(); compatibility.value = null; compatibilityBusy.value = false }
+function invalidateCompatibility() {
+  compatibilityRevision++
+  compatibility.value = null
+  compatibilityBusy.value = false
+}
 const installedPlugins = ref<InstalledPlugin[]>([])
+const pluginContext = computed(() => ({ instanceId: editingId.value, profile: pluginProfile.value, home: homeId.value }))
+const pluginRequests = latestRequest()
 const pluginsLoading = ref(false)
+const pluginsLoaded = ref(false)
+const pluginsLoadError = ref('')
+const checkingPluginUpdates = ref(false)
 const selectedPlugins = ref<string[]>([])
 const pluginsBusy = ref(false)
 /** Migrate-plugins dialog (move plugins from another instance's profile). */
@@ -1706,9 +1733,15 @@ function displayVersion(v: string | undefined): string {
   return v ?? ''
 }
 
-watch([pluginProfile, homeId], async () => {
-  await loadPlugins()
+watch(pluginContext, () => {
+  invalidateCompatibility()
+  installedPlugins.value = []
+  selectedPlugins.value = []
+  pluginUpdates.value = {}
+  pluginsLoaded.value = false
+  void loadPlugins()
 })
+onBeforeUnmount(() => pluginRequests.invalidate())
 
 // --- Storage redirection tab (issue #51) ---------------------------------------
 
@@ -2104,8 +2137,6 @@ async function clearLink(link: HomeLinkInfo) {
   }
 }
 
-// 进入插件页时若未选择 Profile：优先选中实例的默认 Profile；若实例没有
-// 设置默认 Profile，则选中找到的第一个 Profile。
 watch(activeTab, async (tab) => {
   if (tab === 'skills') {
     await loadSkills()
@@ -2146,112 +2177,147 @@ watch(activeTab, async (tab) => {
     await loadModels()
     return
   }
-  if (tab !== 'plugins') return
-  if (pluginProfile.value) return
-  if (profiles.value.length === 0) return
-  if (defaultProfile.value && profiles.value.includes(defaultProfile.value)) {
-    pluginProfile.value = defaultProfile.value
-  } else {
-    pluginProfile.value = profiles.value[0]
+})
+
+watch([activeTab, profiles], ([tab, available]) => {
+  if (tab !== 'plugins' || available.includes(pluginProfile.value)) {
+    return
   }
+  const preferred = defaultProfile.value
+  pluginProfile.value = preferred && available.includes(preferred) ? preferred : available[0] ?? ''
 })
 
 async function loadPlugins() {
-  invalidateCompatibility()
-  installedPlugins.value = []
-  selectedPlugins.value = []
-  pluginUpdates.value = {}
-  if (!editingId.value || !pluginProfile.value) return
+  const previousCheck = compatibilityRevision
+  const request = pluginRequests.begin()
+  const { instanceId, profile } = pluginContext.value
+  pluginsLoadError.value = ''
+  checkingPluginUpdates.value = false
+  if (!instanceId || !profile) {
+    pluginsLoading.value = false
+    return
+  }
   pluginsLoading.value = true
   try {
-    installedPlugins.value = await api.listInstalledPlugins(editingId.value, pluginProfile.value)
-    // Update detection is best-effort (network/registry): never block the list.
-    try {
-      const updates = await api.checkPluginUpdates(editingId.value, pluginProfile.value)
+    const plugins = await api.listInstalledPlugins(instanceId, profile)
+    if (!pluginRequests.isCurrent(request)) {
+      return
+    }
+    const byId = new Map(plugins.map((p) => [p.id, p]))
+    if (pluginsLoaded.value && previousCheck === compatibilityRevision) {
+      const changed = installedPlugins.value.length !== plugins.length || installedPlugins.value.some((p) => {
+        const next = byId.get(p.id)
+        return !next || next.version !== p.version || next.enabled !== p.enabled || next.cordis_id !== p.cordis_id
+      })
+      if (changed) {
+        invalidateCompatibility()
+      }
+    }
+    const retainedUpdates = installedPlugins.value.filter(
+      (p) => byId.has(p.id) && byId.get(p.id)?.version === p.version && pluginUpdates.value[p.id],
+    )
+    pluginUpdates.value = Object.fromEntries(retainedUpdates.map((p) => [p.id, pluginUpdates.value[p.id]]))
+    installedPlugins.value = plugins
+    selectedPlugins.value = selectedPlugins.value.filter((id) => byId.has(id))
+    pluginsLoaded.value = true
+  } catch (e) {
+    if (pluginRequests.isCurrent(request)) {
+      pluginsLoadError.value = String(e)
+      if (pluginsLoaded.value) {
+        Message.error(String(e))
+      }
+    }
+    return
+  } finally {
+    if (pluginRequests.isCurrent(request)) {
+      pluginsLoading.value = false
+    }
+  }
+  if (installedPlugins.value.length === 0) {
+    return
+  }
+  checkingPluginUpdates.value = true
+  try {
+    const updates = await api.checkPluginUpdates(instanceId, profile)
+    if (pluginRequests.isCurrent(request)) {
       pluginUpdates.value = Object.fromEntries(updates.map((u) => [u.id, u]))
-    } catch {
-      pluginUpdates.value = {}
     }
   } catch (e) {
-    Message.error(String(e))
+    if (pluginRequests.isCurrent(request)) {
+      Message.warning(String(e))
+    }
   } finally {
-    pluginsLoading.value = false
+    if (pluginRequests.isCurrent(request)) {
+      checkingPluginUpdates.value = false
+    }
   }
 }
 
-async function onTogglePlugin(p: InstalledPlugin, enabled: boolean) {
-  if (!editingId.value || !pluginProfile.value) return
+async function setPluginsEnabled(enabled: boolean, pluginId?: string) {
+  const context = pluginContext.value
+  const ids = pluginId ? [pluginId] : [...selectedPlugins.value]
+  if (!context.instanceId || !context.profile || ids.length === 0) {
+    return
+  }
   invalidateCompatibility()
   pluginsBusy.value = true
   try {
     await api.setPluginsEnabled({
-      instanceId: editingId.value,
-      profile: pluginProfile.value,
-      pluginIds: [p.id],
+      instanceId: context.instanceId,
+      profile: context.profile,
+      pluginIds: ids,
       enabled,
     })
-    p.enabled = enabled
-    Message.success(
-      enabled
-        ? t('instanceEdit.pluginEnabled', { name: p.id })
-        : t('instanceEdit.pluginDisabled', { name: p.id }),
-    )
+    if (context !== pluginContext.value) {
+      return
+    }
+    for (const plugin of installedPlugins.value) {
+      if (ids.includes(plugin.id)) {
+        plugin.enabled = enabled
+      }
+    }
+    if (pluginId) {
+      Message.success(t(enabled ? 'instanceEdit.pluginEnabled' : 'instanceEdit.pluginDisabled', { name: pluginId }))
+    } else {
+      selectedPlugins.value = selectedPlugins.value.filter((id) => !ids.includes(id))
+      Message.success(t(enabled ? 'instanceEdit.pluginsBatchEnabled' : 'instanceEdit.pluginsBatchDisabled', { count: ids.length }))
+    }
+    if (pluginsLoading.value) {
+      // 重新读取，避免写入前的列表快照覆盖已保存的启用状态。
+      void loadPlugins()
+    }
   } catch (e) {
     Message.error(String(e))
-    await loadPlugins()
+    if (context === pluginContext.value) {
+      void loadPlugins()
+    }
   } finally {
     pluginsBusy.value = false
   }
 }
 
 async function onUninstallPlugin(p: InstalledPlugin) {
-  if (!editingId.value || !pluginProfile.value) return
+  const context = pluginContext.value
+  if (!context.instanceId || !context.profile) {
+    return
+  }
   invalidateCompatibility()
   pluginsBusy.value = true
   try {
     await api.uninstallPlugin({
-      instanceId: editingId.value,
-      profile: pluginProfile.value,
+      instanceId: context.instanceId,
+      profile: context.profile,
       pluginId: p.id,
     })
     Message.success(t('instanceEdit.pluginUninstalled', { name: p.id }))
     Message.info(t('instanceEdit.pluginRestartHint'))
-    await loadPlugins()
-  } catch (e) {
-    Message.error(String(e))
-  } finally {
-    pluginsBusy.value = false
-  }
-}
-
-function onSwitchChange(p: InstalledPlugin, val: string | number | boolean) {
-  onTogglePlugin(p, val === true)
-}
-
-async function batchSetEnabled(enabled: boolean) {
-  if (!editingId.value || !pluginProfile.value || selectedPlugins.value.length === 0) return
-  invalidateCompatibility()
-  pluginsBusy.value = true
-  const ids = [...selectedPlugins.value]
-  try {
-    await api.setPluginsEnabled({
-      instanceId: editingId.value,
-      profile: pluginProfile.value,
-      pluginIds: ids,
-      enabled,
-    })
-    for (const p of installedPlugins.value) {
-      if (ids.includes(p.id)) p.enabled = enabled
+    if (context === pluginContext.value) {
+      installedPlugins.value = installedPlugins.value.filter((plugin) => plugin.id !== p.id)
+      selectedPlugins.value = selectedPlugins.value.filter((id) => id !== p.id)
+      void loadPlugins()
     }
-    selectedPlugins.value = []
-    Message.success(
-      enabled
-        ? t('instanceEdit.pluginsBatchEnabled', { count: ids.length })
-        : t('instanceEdit.pluginsBatchDisabled', { count: ids.length }),
-    )
   } catch (e) {
     Message.error(String(e))
-    await loadPlugins()
   } finally {
     pluginsBusy.value = false
   }
@@ -2279,28 +2345,33 @@ const selectedUpdatableIds = computed(() =>
   selectedPlugins.value.filter((id) => updatableIds.value.includes(id)),
 )
 
-/** Update task ids started from this page; the list reloads as they settle. */
-const pendingUpdateTasks = ref<string[]>([])
+const pendingUpdateTasks = new Map<string, { instanceId: string; profile: string }>()
 
 /** Starts one background install task per plugin at its latest stable version. */
 async function updatePlugins(ids: string[]) {
-  if (!editingId.value || !pluginProfile.value || ids.length === 0) return
+  const { instanceId, profile } = pluginContext.value
+  if (!instanceId || !profile || ids.length === 0) {
+    return
+  }
+  const updates = pluginUpdates.value
   invalidateCompatibility()
   pluginsBusy.value = true
   let started = 0
   try {
     for (const id of ids) {
-      const info = pluginUpdates.value[id]
-      if (!info?.has_update || !info.latest) continue
+      const info = updates[id]
+      if (!info?.has_update || !info.latest) {
+        continue
+      }
       const taskId = await api.startInstallPluginTask({
         pluginId: id,
         version: info.latest,
         channel: info.channel ?? 'stable',
-        instanceId: editingId.value,
-        profile: pluginProfile.value,
+        instanceId,
+        profile,
         installSource: info.install_source ?? undefined,
       })
-      pendingUpdateTasks.value.push(taskId)
+      pendingUpdateTasks.set(taskId, { instanceId, profile })
       started += 1
     }
     if (started > 0) {
@@ -2317,15 +2388,22 @@ async function updatePlugins(ids: string[]) {
 const unlistenTaskProgress = ref<(() => void) | null>(null)
 onMounted(async () => {
   unlistenTaskProgress.value = await api.onTaskProgress((p) => {
-    const idx = pendingUpdateTasks.value.indexOf(p.id)
-    if (idx === -1 || (p.state !== 'done' && p.state !== 'error' && p.state !== 'cancelled')) return
-    pendingUpdateTasks.value.splice(idx, 1)
+    const target = pendingUpdateTasks.get(p.id)
+    if (!target || (p.state !== 'done' && p.state !== 'error' && p.state !== 'cancelled')) {
+      return
+    }
+    pendingUpdateTasks.delete(p.id)
     if (p.state === 'done') {
       Message.success(t('instanceEdit.pluginUpdateDone'))
     } else if (p.state === 'error') {
       Message.error(p.message ?? t('instanceEdit.pluginUpdateFailed'))
     }
-    loadPlugins()
+    if (target.instanceId === editingId.value && target.profile === pluginProfile.value) {
+      if (p.state === 'done') {
+        invalidateCompatibility()
+      }
+      void loadPlugins()
+    }
   })
 })
 onBeforeUnmount(() => unlistenTaskProgress.value?.())
@@ -2651,7 +2729,7 @@ const terminalRunning = ref(false)
                 </dsh-button>
                 <dsh-button variant="secondary"
                   :disabled="!pluginProfile"
-                  :loading="pluginsLoading"
+                  :loading="pluginsLoading || checkingPluginUpdates"
                   @click="loadPlugins"
                 >
                   {{ t('common.refresh') }}
@@ -2660,11 +2738,12 @@ const terminalRunning = ref(false)
               <CompatibilityReport v-if="compatibility" :report="compatibility" />
 
               <template v-if="pluginProfile">
-                <div :aria-busy="pluginsLoading" class="plugins-table">
+                <div class="plugins-table">
                   <dsh-table
+                    v-if="visiblePlugins.length"
                     :data="visiblePlugins"
-                    :inert="pluginsLoading"
                     :row-selection="rowSelection"
+                    :selected-keys="selectedPlugins"
                     row-key="id"
                     :pagination="false"
                     :scroll="contentSizedTable"
@@ -2703,7 +2782,7 @@ const terminalRunning = ref(false)
                             :model-value="record.enabled"
                             :disabled="pluginsBusy"
                             :aria-label="t('instanceEdit.pluginStatus') + ': ' + record.id"
-                            @change="onSwitchChange(record, $event)"
+                            @change="setPluginsEnabled($event === true, record.id)"
                           />
                         </template>
                       </dsh-table-column>
@@ -2731,21 +2810,23 @@ const terminalRunning = ref(false)
                       </dsh-table-column>
                     </template>
                   </dsh-table>
-                  <dsh-spin v-if="pluginsLoading" class="plugins-table-spinner" />
+                  <dsh-spin v-else-if="pluginsLoading && !pluginsLoaded" />
+                  <dsh-alert v-else-if="pluginsLoadError && !pluginsLoaded" type="error">{{ pluginsLoadError }}</dsh-alert>
+                  <dsh-empty v-else-if="pluginsLoaded" :description="t('instanceEdit.pluginsEmpty')" />
                 </div>
 
                 <div class="plugins-batch">
                   <dsh-button variant="primary"
                     size="sm"
                     :disabled="selectedPlugins.length === 0 || pluginsBusy"
-                    @click="batchSetEnabled(true)"
+                    @click="setPluginsEnabled(true)"
                   >
                     {{ t('instanceEdit.pluginsBatchEnable', { count: selectedPlugins.length }) }}
                   </dsh-button>
                   <dsh-button variant="danger"
                     size="sm"
                     :disabled="selectedPlugins.length === 0 || pluginsBusy"
-                    @click="batchSetEnabled(false)"
+                    @click="setPluginsEnabled(false)"
                   >
                     {{ t('instanceEdit.pluginsBatchDisable', { count: selectedPlugins.length }) }}
                   </dsh-button>
@@ -2758,10 +2839,6 @@ const terminalRunning = ref(false)
                   </dsh-button>
                 </div>
 
-                <dsh-empty
-                  v-if="!pluginsLoading && visiblePlugins.length === 0"
-                  :description="t('instanceEdit.pluginsEmpty')"
-                />
               </template>
               <dsh-empty v-else :description="t('instanceEdit.pluginsPickProfile')" />
             </template>
@@ -3266,10 +3343,7 @@ const terminalRunning = ref(false)
       :ok-button-props="{ disabled: !mcpFormValid }"
       @ok="onSaveMcpServer"
     >
-      <!-- Issue #93: the dialog grew tall with rows; cap the body and scroll.
-           A pasted mcpServers JSON anywhere in the form fills the first entry. -->
-      <div class="mcp-dialog-body" @paste="onMcpDialogPaste">
-      <dsh-form :model="mcpForm" layout="vertical">
+      <dsh-form :model="mcpForm" layout="vertical" @paste="onMcpDialogPaste">
         <dsh-form-item
           :label="t('instanceEdit.mcpServerName')"
           required
@@ -3379,7 +3453,6 @@ const terminalRunning = ref(false)
           {{ t('instanceEdit.mcpExtraKept', { keys: mcpExtraKeys.join(', ') }) }}
         </dsh-alert>
       </dsh-form>
-      </div>
     </dsh-modal>
 
     <!-- Model provider editor (issue #89) -->
@@ -3729,13 +3802,6 @@ const terminalRunning = ref(false)
   word-break: break-all;
 }
 
-/* Issue #93: keep the create/edit dialog compact; long header/arg/env row
-   lists scroll inside the body instead of stretching the modal. */
-.mcp-dialog-body {
-  max-height: 56vh;
-  overflow-y: auto;
-}
-
 .mcp-target {
   font-family: monospace;
   font-size: 13px;
@@ -3977,21 +4043,7 @@ const terminalRunning = ref(false)
 }
 
 .plugins-table {
-  position: relative;
   margin-bottom: 12px;
-
-  &[aria-busy='true'] :deep(.arco-table-element > tbody) {
-    filter: blur(6px);
-    clip-path: inset(0 round calc(var(--radius) * 2));
-  }
-}
-
-.plugins-table-spinner {
-  position: absolute;
-  inset: 0;
-  z-index: 3;
-  display: grid;
-  place-items: center;
 }
 
 .plugin-cell-name {

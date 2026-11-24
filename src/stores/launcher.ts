@@ -356,6 +356,9 @@ export const useLauncherStore = defineStore('launcher', {
     },
 
     async refreshRemoteVersions() {
+      if (this.remoteLoading) {
+        return
+      }
       this.remoteLoading = true
       try {
         this.remoteVersions = await api.fetchAvailableVersions()
