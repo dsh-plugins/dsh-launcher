@@ -48,6 +48,9 @@ pub type CachedInstanceIcon = (
     std::sync::Arc<tokio::sync::OnceCell<Option<Vec<u8>>>>,
 );
 
+type VersionLockKey = (String, Option<String>);
+type VersionFileLock = std::sync::Arc<tokio::sync::RwLock<()>>;
+
 pub struct AppState {
     pub config_path: std::path::PathBuf,
     pub data_dir: std::path::PathBuf,
@@ -60,9 +63,7 @@ pub struct AppState {
     pub running: tokio::sync::Mutex<HashMap<String, process::RunningInstance>>,
     pub tasks: tokio::sync::Mutex<HashMap<String, tasks::TaskInfo>>,
     /// 安装和维护独占版本目录；现有实例可以并行读取并启动。
-    version_locks: tokio::sync::Mutex<
-        HashMap<(String, Option<String>), std::sync::Arc<tokio::sync::RwLock<()>>>,
-    >,
+    version_locks: tokio::sync::Mutex<HashMap<VersionLockKey, VersionFileLock>>,
     /// One mutex per profile directory, serializing plugin installs and
     /// removals against that profile. `dsh plugin` (pnpm + the bundle
     /// reconcile) is a read-modify-write cycle over the profile's

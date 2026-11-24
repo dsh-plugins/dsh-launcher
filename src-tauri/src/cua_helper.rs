@@ -319,17 +319,15 @@ fn windows_complete(dir: &Path) -> bool {
 }
 
 fn mac_app_complete(app: &Path) -> bool {
-    if !nonempty_file(&app.join("Contents/Info.plist")) || !nonempty_file(&app.join(MAC_EXE)) {
-        return false;
-    }
+    let executable = app.join(MAC_EXE);
     #[cfg(unix)]
-    {
+    let ready = fs::symlink_metadata(&executable).is_ok_and(|meta| {
         use std::os::unix::fs::PermissionsExt;
-        if !fs::metadata(app.join(MAC_EXE)).is_ok_and(|m| m.permissions().mode() & 0o111 != 0) {
-            return false;
-        }
-    }
-    true
+        meta.is_file() && meta.len() > 0 && meta.permissions().mode() & 0o111 != 0
+    });
+    #[cfg(not(unix))]
+    let ready = nonempty_file(&executable);
+    ready && nonempty_file(&app.join("Contents/Info.plist"))
 }
 
 #[derive(serde::Deserialize)]
