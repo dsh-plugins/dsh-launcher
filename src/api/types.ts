@@ -269,6 +269,7 @@ export interface TaskInfo {
   message: string | null
   instance_id: string | null
   instance_name: string | null
+  version_id?: string
   logs: string[]
 }
 

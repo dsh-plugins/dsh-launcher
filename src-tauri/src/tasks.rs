@@ -12,6 +12,7 @@ pub const TASK_LOG_EVENT: &str = "task://log";
 
 const MAX_LOG_LINES: usize = 1000;
 const DOWNLOAD_VERSION: &str = "download-version";
+const REPAIR_VERSION: &str = "repair-version";
 
 #[derive(Clone, Debug, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
@@ -37,6 +38,8 @@ pub struct TaskInfo {
     pub message: Option<String>,
     pub instance_id: Option<String>,
     pub instance_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub version_id: Option<String>,
     /// Reserved dedicated HOME path while the task is running; the actual
     /// HOME record is only created when the instance is created, so a
     /// cancelled/failed task never leaves an orphan HOME. Not serialized.
@@ -171,6 +174,7 @@ pub async fn start_create_instance_task(
         message: None,
         instance_id: None,
         instance_name: Some(name.clone()),
+        version_id: None,
         reserved_home_path,
         dedicated_home_name,
         logs: Vec::new(),
@@ -234,6 +238,7 @@ pub async fn start_download_version_task(
                 message: None,
                 instance_id: None,
                 instance_name: None,
+                version_id: None,
                 reserved_home_path: None,
                 dedicated_home_name: None,
                 logs: Vec::new(),
@@ -268,6 +273,78 @@ pub async fn start_download_version_task(
         }
     });
 
+    Ok(task_id)
+}
+
+/// 补齐指定已安装版本的文件，不创建新版本或实例。
+#[tauri::command(rename_all = "snake_case")]
+pub async fn start_repair_version_task(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    version_id: String,
+) -> Result<String, String> {
+    let version = installed_version(&state, &version_id)?;
+    let task_id = new_id("t");
+    {
+        let mut tasks = state.tasks.lock().await;
+        if tasks.values().any(|task| {
+            task.kind == REPAIR_VERSION
+                && task.version_id.as_deref() == Some(version_id.as_str())
+                && matches!(task.state, TaskState::Running | TaskState::Queued)
+        }) {
+            return Err(format!("DSH {} 的补全任务已在进行中", version.version));
+        }
+        tasks.insert(
+            task_id.clone(),
+            TaskInfo {
+                id: task_id.clone(),
+                kind: REPAIR_VERSION.into(),
+                label: format!("补全 DSH {} 文件", version.version),
+                version: version.version.clone(),
+                state: TaskState::Running,
+                percent: 0,
+                created_at: now_millis(),
+                message: None,
+                instance_id: None,
+                instance_name: None,
+                version_id: Some(version_id),
+                reserved_home_path: None,
+                dedicated_home_name: None,
+                logs: Vec::new(),
+                child: None,
+            },
+        );
+        emit_progress(&app, &task_id, TaskState::Running, 0, None, None);
+    }
+    let worker_id = task_id.clone();
+    tauri::async_runtime::spawn(async move {
+        let state = app.state::<AppState>();
+        let result = repair_version(&app, &state, &worker_id, &version).await;
+        let mut tasks = state.tasks.lock().await;
+        let Ok(task) = running_task(&mut tasks, &worker_id) else {
+            return;
+        };
+        match result {
+            Ok(warning) => {
+                task.state = TaskState::Done;
+                task.percent = 100;
+                task.message = warning;
+            }
+            Err(error) => {
+                task.state = TaskState::Error;
+                push_log_locked(task, &format!("error: {error}"));
+                task.message = Some(error);
+            }
+        }
+        emit_progress(
+            &app,
+            &worker_id,
+            task.state.clone(),
+            task.percent,
+            task.message.clone(),
+            None,
+        );
+    });
     Ok(task_id)
 }
 
@@ -601,6 +678,8 @@ pub(crate) async fn install_version_streamed_wsl(
     version: &str,
     distro: &str,
 ) -> Result<DshVersion, String> {
+    let _install = lock_version_files(state, version, Some(distro)).await;
+    require_running_task(state, task_id).await?;
     {
         let cfg = state.config.lock().unwrap();
         if let Some(v) = cfg
@@ -848,6 +927,7 @@ pub async fn start_create_wsl_instance_task(
         message: None,
         instance_id: None,
         instance_name: Some(name.clone()),
+        version_id: None,
         reserved_home_path: None,
         dedicated_home_name: None,
         logs: Vec::new(),
@@ -1016,6 +1096,244 @@ fn copy_dir(src: &std::path::Path, dst: &std::path::Path) -> std::io::Result<()>
     Ok(())
 }
 
+fn installed_version(state: &AppState, id: &str) -> Result<DshVersion, String> {
+    state
+        .config
+        .lock()
+        .unwrap()
+        .versions
+        .iter()
+        .find(|version| version.id == id)
+        .cloned()
+        .ok_or_else(|| "版本不存在".into())
+}
+
+async fn repair_version(
+    app: &AppHandle,
+    state: &State<'_, AppState>,
+    task_id: &str,
+    version: &DshVersion,
+) -> Result<Option<String>, String> {
+    let _guard = lock_version_files(state, &version.version, version.wsl.as_deref()).await;
+    require_running_task(state, task_id).await?;
+    let current = installed_version(state, &version.id)?;
+    if current.dir != version.dir
+        || current.version != version.version
+        || current.wsl != version.wsl
+    {
+        return Err("版本记录已变更，请重新发起补全".into());
+    }
+    let instances: Vec<_> = state
+        .config
+        .lock()
+        .unwrap()
+        .instances
+        .iter()
+        .filter(|instance| instance.version_id == version.id)
+        .map(|instance| instance.id.clone())
+        .collect();
+    {
+        let running = state.running.lock().await;
+        if instances.iter().any(|id| running.contains_key(id)) {
+            return Err("请先停止使用此版本的实例，再补全文件".into());
+        }
+    }
+    {
+        let tui = state.tui_sessions.lock().await;
+        if instances.iter().any(|id| tui.contains_key(id)) {
+            return Err("请先停止使用此版本的 TUI 实例，再补全文件".into());
+        }
+    }
+    push_task_log(app, state, task_id, "正在补全 pnpm 依赖…").await;
+    if let Some(distro) = version.wsl.as_deref() {
+        let root = crate::wsl::WslRoot::resolve(distro).await?;
+        crate::wsl::ensure_node(app, state, task_id, distro, &root).await?;
+        let pnpm = crate::wsl::ensure_pnpm(app, state, task_id, distro, &root).await?;
+        if version.dir == std::path::Path::new(&root.version_dir(&version.version)) {
+            let dir = crate::wsl::version_fs_path(version);
+            require_running_task(state, task_id).await?;
+            crate::wsl::run_blocking(move || invalidate_virtual_store_lock(&dir)).await??;
+        }
+        let script = format!(
+            "export PATH={}:\"$PATH\"; export CI=true; {} install --no-optimistic-repeat-install --prefix {} --store-dir {} --loglevel=http --fetch-timeout 300000 --fetch-retries 5 --fetch-retry-maxtimeout 120000 --network-concurrency 4 {}",
+            crate::wsl::sh_quote(&root.node_bin_dir()), crate::wsl::sh_quote(&pnpm),
+            crate::wsl::sh_quote(&version.dir.to_string_lossy()), crate::wsl::sh_quote(&root.pnpm_store()),
+            npm_registry().map(|url| format!("--registry {}", crate::wsl::sh_quote(&url))).unwrap_or_default(),
+        );
+        run_version_command(
+            app,
+            state,
+            task_id,
+            crate::wsl::wsl_bash(distro, &script),
+            "pnpm install（WSL）",
+        )
+        .await?;
+        let bin = format!(
+            "{}/node_modules/@deepseek-ai/dsh/lib/bin.js",
+            version.dir.display()
+        );
+        if !crate::wsl::wsl_test(distro, "-f", &bin).await {
+            return Err("依赖补全后仍未找到 WSL 版本的 DSH CLI".into());
+        }
+        return Ok(None);
+    }
+
+    let pnpm = ensure_pnpm(app, state, task_id, TaskBinding::Required).await?;
+    let dir = &version.dir;
+    let source = crate::process::is_repo_checkout(dir);
+    if !dir.join("package.json").is_file() {
+        return Err(format!("版本目录中缺少 package.json：{}", dir.display()));
+    }
+    let managed =
+        crate::config::paths_equal(dir, &state.data_dir.join("versions").join(&version.version));
+    let store = state.data_dir.join(".pnpm-store");
+    if managed && !source {
+        require_running_task(state, task_id).await?;
+        invalidate_virtual_store_lock(dir)?;
+    }
+    for attempt in 1..=2 {
+        let mut cmd = tokio::process::Command::new(&pnpm);
+        crate::process::hide_console(&mut cmd);
+        // 关闭快速重复安装检查，让 pnpm 重新链接缺失的依赖。
+        cmd.args(["install", "--no-optimistic-repeat-install"])
+            .current_dir(dir);
+        if source || dir.join("pnpm-lock.yaml").is_file() {
+            cmd.arg("--frozen-lockfile");
+        }
+        if managed {
+            cmd.arg("--store-dir").arg(&store);
+        }
+        configure_pnpm_install(&mut cmd);
+        match run_version_command(app, state, task_id, cmd, "pnpm install（补全）").await {
+            Ok(()) => break,
+            Err(_)
+                if managed && attempt == 1 && task_log_mentions_ignored_builds(state, task_id) =>
+            {
+                require_running_task(state, task_id).await?;
+                crate::plugins::ensure_build_scripts_allowed(dir)?;
+            }
+            Err(error) => return Err(error),
+        }
+    }
+    require_running_task(state, task_id).await?;
+    if !crate::process::version_bin_ready(dir) {
+        return Err(format!(
+            "依赖补全后仍未找到 DSH CLI：{}",
+            crate::process::version_bin(dir).display()
+        ));
+    }
+    complete_cua_helper(app, state, task_id, dir, &version.version).await
+}
+
+async fn complete_cua_helper(
+    app: &AppHandle,
+    state: &State<'_, AppState>,
+    task_id: &str,
+    dir: &std::path::Path,
+    version: &str,
+) -> Result<Option<String>, String> {
+    require_running_task(state, task_id).await?;
+    let work = async {
+        let Some(location) = crate::cua_helper::locate(dir, version).await? else {
+            return Ok(None);
+        };
+        push_task_log(
+            app,
+            state,
+            task_id,
+            &format!(
+                "正在检查 DSH {version} 的 CUA 助手（{}）…",
+                location.target()
+            ),
+        )
+        .await;
+        location.prepare(version).await
+    };
+    let mut cancellation = tokio::time::interval(std::time::Duration::from_millis(200));
+    tokio::pin!(work);
+    let prepared = loop {
+        tokio::select! {
+            result = &mut work => break result,
+            _ = cancellation.tick() => require_running_task(state, task_id).await?,
+        }
+    };
+    let result = {
+        let mut tasks = state.tasks.lock().await;
+        running_task(&mut tasks, task_id)?;
+        // 提交目录与取消使用同一任务锁；解包与签名校验均已完成。
+        prepared.and_then(|helper| {
+            helper
+                .map(crate::cua_helper::PreparedHelper::commit)
+                .transpose()
+        })
+    };
+    match result {
+        Ok(Some(path)) => {
+            push_task_log(
+                app,
+                state,
+                task_id,
+                &format!("已补全 CUA 助手：{}", path.display()),
+            )
+            .await;
+            Ok(None)
+        }
+        Ok(None) => Ok(None),
+        Err(error) => {
+            let warning = format!("DSH {version} 的 CUA 助手未补全：{error}");
+            crate::log_warn!("{warning}");
+            push_task_log(app, state, task_id, &format!("警告：{warning}")).await;
+            Ok(Some(warning))
+        }
+    }
+}
+
+// pnpm 的虚拟仓库锁表示依赖已物化。只清除启动器管理目录内的这份派生状态，保留项目锁。
+fn invalidate_virtual_store_lock(dir: &std::path::Path) -> Result<(), String> {
+    use std::fs;
+    use std::io::ErrorKind;
+
+    let path = dir.join("node_modules/.pnpm/lock.yaml");
+    match fs::symlink_metadata(&path) {
+        Err(error) if error.kind() == ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(format!("无法读取 pnpm 安装状态：{error}")),
+        Ok(meta) if !meta.is_file() => Err("pnpm 安装状态不是普通文件".into()),
+        Ok(_) => {
+            let root = fs::canonicalize(dir).map_err(|error| error.to_string())?;
+            let real = fs::canonicalize(&path).map_err(|error| error.to_string())?;
+            if real != root.join("node_modules/.pnpm/lock.yaml") {
+                return Err("pnpm 安装状态位于重定向路径，无法安全补全".into());
+            }
+            fs::remove_file(real).map_err(|error| format!("无法刷新 pnpm 安装状态：{error}"))
+        }
+    }
+}
+
+fn npm_registry() -> Option<String> {
+    std::env::var("DSH_NPM_REGISTRY")
+        .ok()
+        .map(|url| url.trim().to_owned())
+        .filter(|url| !url.is_empty())
+}
+
+fn configure_pnpm_install(cmd: &mut tokio::process::Command) {
+    cmd.args([
+        "--loglevel=http",
+        "--fetch-timeout",
+        "300000",
+        "--fetch-retries",
+        "5",
+        "--fetch-retry-maxtimeout",
+        "120000",
+        "--network-concurrency",
+        "4",
+    ])
+    .env("CI", "true");
+    if let Some(registry) = npm_registry() {
+        cmd.args(["--registry", &registry]);
+    }
+}
+
 fn find_local_version(state: &AppState, version: &str) -> Option<DshVersion> {
     state
         .config
@@ -1041,7 +1359,7 @@ async fn install_version_streamed(
     task_id: &str,
     version: &str,
 ) -> Result<DshVersion, String> {
-    let _install = lock_local_version(state, version).await;
+    let _install = lock_version_files(state, version, None).await;
     let existing = {
         let mut tasks = state.tasks.lock().await;
         let task = running_task(&mut tasks, task_id)?;
@@ -1056,25 +1374,50 @@ async fn install_version_streamed(
     }
 
     let dir = download_local_version(app, state, task_id, version).await?;
+    let warning = complete_cua_helper(app, state, task_id, &dir, version).await?;
     let mut tasks = state.tasks.lock().await;
     let task = running_task(&mut tasks, task_id)?;
     let record = register_version(state, version, dir, None)?;
+    if task.kind == DOWNLOAD_VERSION {
+        task.message = warning;
+    }
     complete_version_download(app, task);
     Ok(record)
 }
 
-pub(crate) async fn lock_local_version(
+async fn version_lock(
     state: &AppState,
     version: &str,
-) -> tokio::sync::OwnedMutexGuard<()> {
-    let lock = state
-        .local_version_locks
+    distro: Option<&str>,
+) -> Arc<tokio::sync::RwLock<()>> {
+    state
+        .version_locks
         .lock()
         .await
-        .entry(version.to_string())
+        .entry((version.to_owned(), distro.map(str::to_owned)))
         .or_default()
-        .clone();
-    lock.lock_owned().await
+        .clone()
+}
+
+pub(crate) async fn lock_version_files(
+    state: &AppState,
+    version: &str,
+    distro: Option<&str>,
+) -> tokio::sync::OwnedRwLockWriteGuard<()> {
+    version_lock(state, version, distro)
+        .await
+        .write_owned()
+        .await
+}
+
+pub(crate) async fn try_lock_version_for_launch(
+    state: &AppState,
+    version: &DshVersion,
+) -> Result<tokio::sync::OwnedRwLockReadGuard<()>, String> {
+    version_lock(state, &version.version, version.wsl.as_deref())
+        .await
+        .try_read_owned()
+        .map_err(|_| format!("DSH {} 正在维护，请稍后重试", version.version))
 }
 
 fn running_task<'a>(
@@ -1092,7 +1435,14 @@ fn complete_version_download(app: &AppHandle, task: &mut TaskInfo) {
         task.state = TaskState::Done;
         task.percent = 100;
         crate::log_info!("任务 {} 完成，本地 DSH {} 已安装", task.id, task.version);
-        emit_progress(app, &task.id, TaskState::Done, 100, None, None);
+        emit_progress(
+            app,
+            &task.id,
+            TaskState::Done,
+            100,
+            task.message.clone(),
+            None,
+        );
     }
 }
 
@@ -1146,37 +1496,12 @@ async fn download_local_version(
     for attempt in 1..=2 {
         let mut cmd = tokio::process::Command::new(&pnpm_prog);
         crate::process::hide_console(&mut cmd);
-        // Network robustness: the default fetch timeout (60s) and retries (2)
-        // are too tight for large native binaries (e.g. sharp-win32-x64),
-        // which fail with "error (23) ... aborted due to timeout" on flaky
-        // connections.
         cmd.args(["install", "--prefix"])
             .arg(&dir)
             .arg("--store-dir")
-            .arg(&store_dir)
-            .args(["--loglevel=http"])
-            .args([
-                "--fetch-timeout",
-                "300000", // 5 min per request
-                "--fetch-retries",
-                "5",
-                "--fetch-retry-maxtimeout",
-                "120000",
-                "--network-concurrency",
-                "4",
-            ]);
-        // Optional npm registry mirror (e.g. npmmirror) via DSH_NPM_REGISTRY.
-        if let Ok(registry) = std::env::var("DSH_NPM_REGISTRY") {
-            let registry = registry.trim().to_string();
-            if !registry.is_empty() {
-                cmd.args(["--registry", &registry]);
-            }
-        }
+            .arg(&store_dir);
+        configure_pnpm_install(&mut cmd);
         cmd.arg(format!("@deepseek-ai/dsh@{version}"));
-        // No TTY under the launcher: keep pnpm non-interactive so a modules
-        // purge (store relink) never aborts with
-        // ERR_PNPM_ABORTED_REMOVE_MODULES_DIR_NO_TTY.
-        cmd.env("CI", "true");
 
         match run_version_command(app, state, task_id, cmd, "pnpm install").await {
             Ok(()) => break,
@@ -1968,6 +2293,7 @@ pub async fn start_copy_instance_task(
         message: None,
         instance_id: None,
         instance_name: Some(name.clone()),
+        version_id: None,
         dedicated_home_name: Some(dedicated_home_name_or(&name, input.home_name.clone())),
         reserved_home_path: Some(dest.clone()),
         logs: Vec::new(),

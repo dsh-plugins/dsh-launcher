@@ -119,6 +119,8 @@
     "prerelease": "Pre-release",
     "installedTag": "Installed",
     "installedTitle": "Installed versions",
+    "repairVersion": "Repair files",
+    "repairVersionHint": "Restore pnpm dependencies, then try to download the matching Computer Use helper. Stop any instances using this version first.",
     "emptyInstalled": "No DSH version installed yet",
     "back": "Back",
     "instanceName": "Instance name",
@@ -917,6 +919,7 @@
     "cancel": "Cancel",
     "remove": "Remove",
     "downloadVersion": "Download DSH {version} only",
+    "repairVersion": "Repair DSH {version} files",
     "createdInstance": "Instance \"{name}\" created",
     "queuedHint": "Waiting for another plugin operation on the same profile",
     "state": {

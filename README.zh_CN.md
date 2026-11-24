@@ -18,7 +18,8 @@ Tauri 2 + Vue 3 + TypeScript + Sass + vue-router + vue-i18n + Arco Design Vue。
 
 ## 功能
 
-- **多版本安装**：从 npm registry 查询并安装多个 `@deepseek-ai/dsh` 版本到隔离目录，互不干扰。
+- **多版本安装**：从 npm registry 查询并安装多个 `@deepseek-ai/dsh` 版本到隔离目录，互不干扰。原生 Windows 和 macOS 安装 `0.2.3-alpha.2` 或更新版本时，如果缺少 Computer Use 助手，启动器会尝试从[社区助手 Releases](https://github.com/dsh-plugins/dsh-cua-helper/releases)下载对应版本并校验 SHA-256。助手补全失败只在任务中记录警告。
+- **补全版本文件**：停止使用该版本的实例，在「下载 → 实例创建 → 已安装版本」点击「补全文件」。任务先执行 `pnpm install` 补全依赖，再按相同规则尝试补全助手。Linux 和 WSL 只补全依赖。社区 Windows 助手未签名，macOS 助手采用临时签名且未经公证。启动器信任社区 Release 仓库作为下载来源，校验和用于检查文件完整性。启动器不会修改现有的应用授权。
 - **多实例管理**：同一版本可创建多个实例，每个实例拥有独立的名称、Profile 与运行时环境变量。
 - **DSH_HOME 三种模式**：
   - 复用/共用已有的 DSH_HOME；

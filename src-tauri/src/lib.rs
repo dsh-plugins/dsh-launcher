@@ -4,6 +4,7 @@ mod commands;
 mod compatibility;
 mod config;
 mod credentials;
+mod cua_helper;
 mod doctor;
 mod early_loading;
 mod icons;
@@ -58,9 +59,10 @@ pub struct AppState {
     pub data_dir_source: crate::migrate::DataDirSource,
     pub running: tokio::sync::Mutex<HashMap<String, process::RunningInstance>>,
     pub tasks: tokio::sync::Mutex<HashMap<String, tasks::TaskInfo>>,
-    /// 同一版本的本地安装共用目录，不同版本可以并行安装。
-    local_version_locks:
-        tokio::sync::Mutex<HashMap<String, std::sync::Arc<tokio::sync::Mutex<()>>>>,
+    /// 安装和维护独占版本目录；现有实例可以并行读取并启动。
+    version_locks: tokio::sync::Mutex<
+        HashMap<(String, Option<String>), std::sync::Arc<tokio::sync::RwLock<()>>>,
+    >,
     /// One mutex per profile directory, serializing plugin installs and
     /// removals against that profile. `dsh plugin` (pnpm + the bundle
     /// reconcile) is a read-modify-write cycle over the profile's
@@ -274,7 +276,7 @@ pub fn run() {
                 config: StdMutex::new(cfg),
                 running: tokio::sync::Mutex::new(HashMap::new()),
                 tasks: tokio::sync::Mutex::new(HashMap::new()),
-                local_version_locks: tokio::sync::Mutex::new(HashMap::new()),
+                version_locks: tokio::sync::Mutex::new(HashMap::new()),
                 profile_locks: tokio::sync::Mutex::new(HashMap::new()),
                 tui_compat: tokio::sync::Mutex::new(HashMap::new()),
                 tui_start_lock: tokio::sync::Mutex::new(()),
@@ -356,6 +358,7 @@ pub fn run() {
             commands::fetch_available_versions,
             commands::remove_version,
             tasks::start_download_version_task,
+            tasks::start_repair_version_task,
             tasks::start_create_instance_task,
             tasks::start_create_wsl_instance_task,
             tasks::start_copy_instance_task,

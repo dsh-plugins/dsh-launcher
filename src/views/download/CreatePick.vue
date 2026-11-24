@@ -67,6 +67,32 @@ function pick(version: string) {
 
 /** Version id whose directory is being deleted; empty when idle. */
 const removingId = ref<string | null>(null)
+const submittingRepairs = ref(new Set<string>())
+
+function repairBusy(id: string) {
+  return submittingRepairs.value.has(id) || store.repairVersionBusy(id)
+}
+
+function versionInUse(id: string) {
+  return store.instances.some((instance) => instance.version_id === id && (
+    ['running', 'starting'].includes(store.statusOf(instance.id).state) || Boolean(store.externalOf(instance.id))
+  ))
+}
+
+async function onRepair(id: string) {
+  if (repairBusy(id) || removingId.value === id || versionInUse(id)) return
+  submittingRepairs.value.add(id)
+  try {
+    await api.startRepairVersionTask(id)
+    await store.refreshTasks()
+    store.notifyTaskQueued()
+    Message.success(t('download.taskAdded'))
+  } catch (error) {
+    Message.error(String(error))
+  } finally {
+    submittingRepairs.value.delete(id)
+  }
+}
 
 function usedByCount(versionId: string) {
   return store.instances.filter((i) => i.version_id === versionId).length
@@ -202,10 +228,20 @@ function confirmRemove(id: string, version: string) {
             <div class="version-sub">{{ v.dir }}</div>
           </div>
           <span class="used-by">{{ t('download.usedBy', { count: usedByCount(v.id) }) }}</span>
+          <dsh-button
+            variant="secondary"
+            size="sm"
+            :title="t('download.repairVersionHint')"
+            :loading="repairBusy(v.id)"
+            :disabled="removingId === v.id || repairBusy(v.id) || versionInUse(v.id)"
+            @click="onRepair(v.id)"
+          >
+            {{ t('download.repairVersion') }}
+          </dsh-button>
           <dsh-button variant="danger"
             size="sm"
             :loading="removingId === v.id"
-            :disabled="removingId !== null"
+            :disabled="removingId !== null || repairBusy(v.id)"
             @click="confirmRemove(v.id, v.version)"
           >
             {{ t('download.deleteVersion') }}

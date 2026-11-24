@@ -92,7 +92,7 @@ pub fn hide_console(cmd: &mut Command) -> &mut Command {
 /// Whether a version directory is a source checkout (GitHub-only tags
 /// installed via clone + build) rather than an npm-installed package tree.
 /// The marker is the upstream monorepo's CLI package manifest.
-fn is_repo_checkout(version_dir: &std::path::Path) -> bool {
+pub(crate) fn is_repo_checkout(version_dir: &std::path::Path) -> bool {
     version_dir
         .join("apps")
         .join("cli")
@@ -267,6 +267,7 @@ pub async fn start_instance_process(
         .iter()
         .find(|v| v.id == inst.version_id)
         .ok_or_else(|| "实例引用的 DSH 版本未安装".to_string())?;
+    let _version = crate::tasks::try_lock_version_for_launch(state, version).await?;
 
     let home = cfg
         .homes

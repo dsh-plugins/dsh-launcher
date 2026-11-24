@@ -589,6 +589,31 @@ async function mockCall<T>(cmd: string, args?: Record<string, unknown>): Promise
       }, 600)
       return task.id as T
     }
+    case 'start_repair_version_task': {
+      const versionId = String(args?.version_id ?? '')
+      const version = db.versions.find((v) => v.id === versionId) ?? fail('版本不存在')
+      if ([...mockTasks.values()].some((task) => task.kind === 'repair-version' &&
+        task.version_id === versionId && (task.state === 'running' || task.state === 'queued'))) {
+        fail(`DSH ${version.version} 的补全任务已在进行中`)
+      }
+      const task: TaskInfo = {
+        id: mockNewId('t'), kind: 'repair-version', label: `补全 DSH ${version.version} 文件`,
+        version: version.version, version_id: versionId, state: 'running', percent: 0,
+        created_at: Date.now(), message: null, instance_id: null, instance_name: null, logs: [],
+      }
+      mockTasks.set(task.id, task)
+      emitTaskProgress({ id: task.id, state: 'running', percent: 0, message: null, instance_id: null })
+      setTimeout(() => {
+        if (task.state !== 'running') return
+        const line = 'pnpm install: done'
+        task.logs.push(line)
+        emitTaskLog({ id: task.id, line })
+        task.state = 'done'
+        task.percent = 100
+        emitTaskProgress({ id: task.id, state: 'done', percent: 100, message: null, instance_id: null })
+      }, 1400)
+      return task.id as T
+    }
     case 'start_create_instance_task': {
       const name = String(args?.name ?? '').trim()
       const version = String(args?.version ?? '').trim()
@@ -1719,6 +1744,7 @@ export const api = {
   removeVersion: (id: string) => call<void>('remove_version', { id }),
   /** 后台安装本地版本，供启动器后续创建实例时复用。 */
   startDownloadVersionTask: (version: string) => call<string>('start_download_version_task', { version }),
+  startRepairVersionTask: (versionId: string) => call<string>('start_repair_version_task', { version_id: versionId }),
 
   startCreateInstanceTask: (
     name: string,

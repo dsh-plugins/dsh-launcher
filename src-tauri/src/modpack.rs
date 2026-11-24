@@ -1794,6 +1794,7 @@ pub async fn start_import_modpack_task(
         message: None,
         instance_id: None,
         instance_name: Some(input.source.clone()),
+        version_id: None,
         reserved_home_path: None,
         dedicated_home_name: None,
         logs: Vec::new(),

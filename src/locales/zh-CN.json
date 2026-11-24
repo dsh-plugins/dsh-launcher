@@ -119,6 +119,8 @@
     "prerelease": "预览版",
     "installedTag": "已安装",
     "installedTitle": "已安装版本",
+    "repairVersion": "补全文件",
+    "repairVersionHint": "先补全 pnpm 依赖，再尝试下载匹配的 Computer Use 助手。请先停止使用此版本的实例。",
     "emptyInstalled": "尚未安装任何 DSH 版本",
     "back": "返回",
     "instanceName": "实例名称",
@@ -917,6 +919,7 @@
     "cancel": "取消",
     "remove": "移除",
     "downloadVersion": "仅下载 DSH {version}",
+    "repairVersion": "补全 DSH {version} 文件",
     "createdInstance": "已创建实例「{name}」",
     "queuedHint": "同一 Profile 的其他插件操作进行中，排队等待",
     "state": {

@@ -149,6 +149,12 @@ async fn start_tui_session_inner(
         .iter()
         .find(|i| i.id == instance_id)
         .ok_or_else(|| "实例不存在".to_string())?;
+    let version = cfg
+        .versions
+        .iter()
+        .find(|version| version.id == inst.version_id)
+        .ok_or_else(|| "实例引用的 DSH 版本未安装".to_string())?;
+    let _version = crate::tasks::try_lock_version_for_launch(state, version).await?;
     let wsl_distro = cfg
         .homes
         .iter()

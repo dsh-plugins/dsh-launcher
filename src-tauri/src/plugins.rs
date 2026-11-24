@@ -2994,6 +2994,7 @@ pub async fn start_install_plugin_task(
         message: None,
         instance_id: Some(input.instance_id.clone()),
         instance_name: None,
+        version_id: None,
         reserved_home_path: None,
         dedicated_home_name: None,
         logs: Vec::new(),

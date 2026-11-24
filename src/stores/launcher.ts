@@ -182,6 +182,11 @@ export const useLauncherStore = defineStore('launcher', {
         (t) => t.kind === 'download-version' && t.version === version &&
           (t.state === 'running' || t.state === 'queued'),
       ),
+    repairVersionBusy: (s) => (versionId: string) =>
+      Object.values(s.tasks).some(
+        (task) => task.kind === 'repair-version' && task.version_id === versionId &&
+          (task.state === 'running' || task.state === 'queued'),
+      ),
   },
 
   actions: {

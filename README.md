@@ -18,7 +18,8 @@ Tauri 2 + Vue 3 + TypeScript + Sass + vue-router + vue-i18n + Arco Design Vue.
 
 ## Features
 
-- **Multi-version installs**: query the npm registry and install multiple `@deepseek-ai/dsh` versions into isolated directories that never interfere with each other.
+- **Multi-version installs**: query the npm registry and install multiple `@deepseek-ai/dsh` versions into isolated directories that never interfere with each other. For native Windows and macOS installs of `0.2.3-alpha.2` or newer, the launcher tries to fill in a missing Computer Use helper from the [community Releases](https://github.com/dsh-plugins/dsh-cua-helper/releases), using the exact version and verifying SHA-256. Helper failures are logged as task warnings.
+- **Repair version files**: stop instances using the version, then select **Repair files** under **Download → Create instance → Installed versions**. The task runs `pnpm install` to restore dependencies before trying to restore the helper. Linux and WSL only restore dependencies. Community helpers are unsigned on Windows and ad-hoc signed without notarization on macOS. The launcher trusts the community Release repository as the download source; its checksum protects file integrity, not publisher identity. The launcher does not modify any application grants.
 - **Multi-instance management**: create several instances per version, each with its own name, profile, and runtime environment variables.
 - **Three DSH_HOME modes**:
   - Reuse/share an existing DSH_HOME;
