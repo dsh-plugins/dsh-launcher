@@ -739,19 +739,26 @@ pub struct SetPluginsEnabledInput {
 // HTTP helpers
 // ---------------------------------------------------------------------------
 
-fn http_client() -> Result<reqwest::Client, String> {
+fn http_client_builder() -> reqwest::ClientBuilder {
     crate::proxy::apply(reqwest::Client::builder())
         .timeout(std::time::Duration::from_secs(30))
         .user_agent("dsh-launcher")
+}
+
+async fn fetch_json(url: &str, cap: usize) -> Result<serde_json::Value, String> {
+    let client = http_client_builder()
         .build()
-        .map_err(|e| format!("创建 HTTP 客户端失败: {e}"))
+        .map_err(|e| format!("创建 HTTP 客户端失败: {e}"))?;
+    fetch_json_request(client.get(url), url, cap).await
 }
 
 /// 逐块限制响应大小，避免先读取完整的超限响应再拒绝。
-async fn fetch_json(url: &str, cap: usize) -> Result<serde_json::Value, String> {
-    let client = http_client()?;
-    let mut resp = client
-        .get(url)
+async fn fetch_json_request(
+    request: reqwest::RequestBuilder,
+    url: &str,
+    cap: usize,
+) -> Result<serde_json::Value, String> {
+    let mut resp = request
         .send()
         .await
         .map_err(|e| format!("请求失败 {url}: {e}"))?;
@@ -1444,6 +1451,66 @@ async fn github_release_versions(
     })
 }
 
+// npm 以主机、端口和路径绑定凭证。同一域名下的不同仓库可能使用不同账号。
+fn private_registry_auth(
+    registry: &str,
+    npmrc: &str,
+) -> Result<Option<reqwest::header::HeaderValue>, String> {
+    let scope = registry
+        .strip_prefix("https:")
+        .ok_or("私有 npm 源需要 HTTPS")?;
+    let bearer_key = format!("{scope}:_authToken");
+    let basic_key = format!("{scope}:_auth");
+    let mut token = None;
+    let mut basic = None;
+    for (key, value) in npmrc
+        .trim_start_matches('\u{feff}')
+        .lines()
+        .filter_map(|line| line.split_once('='))
+    {
+        let value = value.trim().trim_matches(['"', '\'']);
+        let key = key.trim().trim_matches(['"', '\'']);
+        if key == bearer_key {
+            token = (!value.is_empty()).then_some(value);
+        } else if key == basic_key {
+            basic = (!value.is_empty()).then_some(value);
+        }
+    }
+    let Some((scheme, value)) = token
+        .map(|t| ("Bearer", t))
+        .or_else(|| basic.map(|b| ("Basic", b)))
+    else {
+        return Ok(None);
+    };
+    if value.contains("${") {
+        return Ok(None);
+    }
+    let mut auth = reqwest::header::HeaderValue::from_str(&format!("{scheme} {value}"))
+        .map_err(|_| "私有 npm 源的认证项格式无效")?;
+    auth.set_sensitive(true);
+    Ok(Some(auth))
+}
+
+async fn private_npm_metadata(
+    id: &str,
+    registry: &str,
+    npmrc: &str,
+) -> Result<serde_json::Value, String> {
+    let registry = crate::market_index::scoped_registry_url(registry)?;
+    let npm = crate::market_index::InstallSource::Npm { registry: None };
+    npm.install_spec(id, "0.0.0")?;
+    let url = format!("{registry}{}", id.replace('/', "%2f"));
+    let client = http_client_builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .map_err(|e| format!("创建私有 npm 源客户端失败: {e}"))?;
+    let mut request = client.get(&url);
+    if let Some(auth) = private_registry_auth(&registry, npmrc)? {
+        request = request.header(reqwest::header::AUTHORIZATION, auth);
+    }
+    fetch_json_request(request, &url, 16 * 1024 * 1024).await
+}
+
 async fn npm_versions(
     plugin_id: &str,
     channel: &PluginChannel,
@@ -1993,8 +2060,7 @@ pub struct PluginUpdateInfo {
     /// the plugin and the registry lookup failed or does not apply.
     pub latest: Option<String>,
     pub has_update: bool,
-    /// Catalog source that supplied `latest`; None when the version came from
-    /// the npm registry fallback.
+    /// 提供 `latest` 的市场目录 ID，直接从 npm 仓库取得版本时为空。
     pub source: Option<String>,
     /// Exact install source of `latest` in the catalog index; Git updates use
     /// the pinned commit instead of a moving tag.
@@ -2097,12 +2163,28 @@ fn dep_kind(spec: &str) -> DepKind {
     }
 }
 
-/// One installable version listed by a catalog source.
+/// 插件更新候选，保留精确安装来源及提供该版本的目录。
 #[derive(Clone, Debug)]
 struct SourceVersion {
     version: String,
     source: crate::market_index::InstallSource,
-    source_id: String,
+    source_id: Option<String>,
+}
+
+impl SourceVersion {
+    fn from_registry(
+        registry: String,
+        metadata: &serde_json::Value,
+        channel: UpdateChannel,
+    ) -> Option<Self> {
+        Some(Self {
+            version: private_channel_version(metadata, channel)?,
+            source: crate::market_index::InstallSource::Npm {
+                registry: Some(registry),
+            },
+            source_id: None,
+        })
+    }
 }
 
 /// Newest version of a plugin that the channel accepts. Pre-releases are
@@ -2163,7 +2245,7 @@ impl UpdateIndex {
                     catalog.versions.into_iter().map(|entry| SourceVersion {
                         version: entry.version,
                         source: entry.source,
-                        source_id: source.id.clone(),
+                        source_id: Some(source.id.clone()),
                     }),
                 );
             }
@@ -2302,6 +2384,30 @@ fn later_dist_tag(
     }
 }
 
+/// 按更新渠道选择私有 npm 仓库的版本。
+fn private_channel_version(doc: &serde_json::Value, channel: UpdateChannel) -> Option<String> {
+    let parse = |text: &str| {
+        semver::Version::parse(text)
+            .ok()
+            .filter(|version| channel.includes_prerelease() || version.pre.is_empty())
+    };
+    let tag = |name| dist_tag(doc, name).filter(|tag| parse(&tag.version).is_some());
+    let target = match channel {
+        UpdateChannel::Release => tag("latest"),
+        UpdateChannel::Beta => later_dist_tag(tag("latest"), tag("next")),
+    };
+    if let Some(target) = target {
+        return Some(target.version);
+    }
+
+    doc.get("versions")?
+        .as_object()?
+        .keys()
+        .filter_map(|text| parse(text))
+        .max_by(semver::Version::cmp_precedence)
+        .map(|version| version.to_string())
+}
+
 /// Reads both release tags of a package in one registry request.
 async fn npm_dist_tags(
     id: &str,
@@ -2348,10 +2454,8 @@ async fn npm_channel_version(id: &str, channel: UpdateChannel) -> Option<String>
     None
 }
 
-/// Checks every installed plugin against the newest version offered by the
-/// configured plugin sources, falling back to the npm dist-tags for npm
-/// dependencies. Per-plugin failures degrade to `latest: None` instead of
-/// failing the whole check.
+/// 按 Profile 的作用域配置和更新渠道检查已安装插件。私有 npm 源与匹配的目录
+/// 一起参与版本比较，单个来源查询失败时继续使用其余可用候选。
 #[tauri::command(rename_all = "snake_case")]
 pub async fn check_plugin_updates(
     state: State<'_, AppState>,
@@ -2406,6 +2510,7 @@ pub async fn check_plugin_updates(
         .filter(|source| source.enabled && source.kind == SourceKind::Primary)
         .collect();
     let indexed = source_versions(sources, UPDATE_SOURCE_BUDGET).await;
+    let npmrc = std::sync::Arc::<str>::from(npmrc);
 
     let mut set = tokio::task::JoinSet::new();
     for (id, kind, spec) in deps {
@@ -2437,6 +2542,8 @@ pub async fn check_plugin_updates(
             known_private,
             indexed.public_names.contains(&id),
         );
+        let private_registry = scope_route.flatten().filter(|url| !is_public_registry(url));
+        let npmrc = npmrc.clone();
         set.spawn(async move {
             let probe_dir = dir.clone();
             let probe_id = id.clone();
@@ -2451,10 +2558,18 @@ pub async fn check_plugin_updates(
                 None
             });
 
+            if let Some(registry) = private_registry {
+                match private_npm_metadata(&id, &registry, &npmrc).await {
+                    Ok(metadata) => {
+                        versions.extend(SourceVersion::from_registry(registry, &metadata, channel));
+                    }
+                    Err(error) => crate::log_warn!("查询插件 {id} 的私有 npm 源失败: {error}"),
+                }
+            }
             let picked = newest_version(&versions, channel).map(|entry| {
                 (
                     Some(entry.version.clone()),
-                    Some(entry.source_id.clone()),
+                    entry.source_id.clone(),
                     Some(entry.source.clone()),
                 )
             });
@@ -4713,6 +4828,31 @@ mod tests {
     }
 
     #[test]
+    fn private_registry_credentials_match_the_exact_repository() {
+        let registry = "https://example.com:444/team/";
+        let npmrc = "\u{feff}//example.com:444/team/:_authToken=example\r\n//example.com:444/team/:_auth=Zm9vOmJhcg==";
+        let header = private_registry_auth(registry, npmrc).unwrap().unwrap();
+        assert_eq!(header.to_str().unwrap(), "Bearer example");
+        assert!(header.is_sensitive());
+        for other in [
+            "https://example.com/team/",
+            "https://example.com:444/Team/",
+            "https://example.com:444/team/child/",
+            "https://other.example:444/team/",
+        ] {
+            assert!(private_registry_auth(other, npmrc).unwrap().is_none());
+        }
+        let basic = format!("{npmrc}\n//example.com:444/team/:_authToken=");
+        let header = private_registry_auth(registry, &basic).unwrap().unwrap();
+        assert_eq!(header.to_str().unwrap(), "Basic Zm9vOmJhcg==");
+        assert!(
+            private_registry_auth(registry, "//example.com:444/team/:_authToken=${NPM_TOKEN}")
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[test]
     fn scoped_registry_preserves_npmrc_and_rejects_conflicts() {
         let route = ScopedRegistry {
             key: "@team:registry".into(),
@@ -4972,7 +5112,7 @@ mod tests {
         SourceVersion {
             version: version.to_string(),
             source: crate::market_index::InstallSource::Npm { registry: None },
-            source_id: id.to_string(),
+            source_id: Some(id.to_string()),
         }
     }
 
@@ -5003,6 +5143,43 @@ mod tests {
     }
 
     #[test]
+    fn private_registry_can_advance_a_stale_index_and_keeps_the_install_origin() {
+        let registry = profile_update_scope(
+            "@team/example",
+            "",
+            "registries:\n  '@team': https://npm.example.com/repository/npm/",
+        )
+        .unwrap()
+        .unwrap();
+        let source = crate::market_index::InstallSource::Npm {
+            registry: Some(registry.clone()),
+        };
+        let catalog = SourceVersion {
+            version: "0.1.1".into(),
+            source: source.clone(),
+            source_id: Some("team".into()),
+        };
+        let mut candidates = vec![catalog];
+        for (latest, expected, catalog_id) in [
+            ("0.1.0", "0.1.1", Some("team")),
+            ("0.1.1", "0.1.1", Some("team")),
+            ("0.2.0", "0.2.0", None),
+        ] {
+            let metadata = serde_json::json!({ "dist-tags": { "latest": latest } });
+            candidates.truncate(1);
+            candidates.extend(SourceVersion::from_registry(
+                registry.clone(),
+                &metadata,
+                UpdateChannel::Release,
+            ));
+            let picked = newest_version(&candidates, UpdateChannel::Release).unwrap();
+            assert_eq!(picked.version, expected);
+            assert_eq!(picked.source, source);
+            assert_eq!(picked.source_id.as_deref(), catalog_id);
+        }
+    }
+
+    #[test]
     fn equal_versions_keep_the_first_source() {
         // 来源按优先级排序后传入：同一版本必须归因到更靠前的来源。
         let versions = [
@@ -5012,8 +5189,9 @@ mod tests {
         assert_eq!(
             newest_version(&versions, UpdateChannel::Release)
                 .unwrap()
-                .source_id,
-            "official"
+                .source_id
+                .as_deref(),
+            Some("official")
         );
     }
 
@@ -5051,7 +5229,7 @@ mod tests {
             beta.source,
             crate::market_index::InstallSource::Npm { registry: None }
         );
-        assert_eq!(beta.source_id, builtin.id);
+        assert_eq!(beta.source_id.as_deref(), Some(builtin.id.as_str()));
     }
 
     #[test]
@@ -5139,10 +5317,10 @@ mod tests {
         let versions = [SourceVersion {
             version: "1.2.0".into(),
             source: source.clone(),
-            source_id: "dsh-plugins".into(),
+            source_id: Some("dsh-plugins".into()),
         }];
         let picked = newest_version(&versions, UpdateChannel::Release).unwrap();
-        assert_eq!(picked.source_id, "dsh-plugins");
+        assert_eq!(picked.source_id.as_deref(), Some("dsh-plugins"));
         assert_eq!(picked.source, source);
     }
 
@@ -5236,6 +5414,59 @@ mod tests {
         assert!(dist_tag(&doc, "beta").is_none());
         let untimed = serde_json::json!({ "dist-tags": { "latest": "1.0.0" } });
         assert!(dist_tag(&untimed, "latest").unwrap().published_at.is_none());
+    }
+
+    #[test]
+    fn private_channel_version_prefers_applicable_tags() {
+        let mut doc = serde_json::json!({
+            "dist-tags": { "latest": "1.2.0", "next": "1.3.0-alpha.1" },
+            "time": {
+                "1.2.0": "2026-06-02T00:00:00Z",
+                "1.3.0-alpha.1": "2026-06-01T00:00:00Z"
+            },
+            "versions": { "1.2.0": {}, "1.3.0-alpha.1": {}, "2.0.0": {} }
+        });
+        assert_eq!(
+            private_channel_version(&doc, UpdateChannel::Release).as_deref(),
+            Some("1.2.0")
+        );
+        assert_eq!(
+            private_channel_version(&doc, UpdateChannel::Beta).as_deref(),
+            Some("1.2.0")
+        );
+        doc["time"]["1.3.0-alpha.1"] = serde_json::json!("2026-06-03T00:00:00Z");
+        assert_eq!(
+            private_channel_version(&doc, UpdateChannel::Beta).as_deref(),
+            Some("1.3.0-alpha.1")
+        );
+        doc["dist-tags"]["next"] = serde_json::json!("invalid");
+        assert_eq!(
+            private_channel_version(&doc, UpdateChannel::Beta).as_deref(),
+            Some("1.2.0")
+        );
+    }
+
+    #[test]
+    fn private_channel_version_uses_semver_when_tags_are_missing_or_ineligible() {
+        let mut doc = serde_json::json!({
+            "versions": {
+                "1.9.0": {}, "1.10.0": {}, "2.0.0-alpha.11": {}, "2.0.0-alpha.2": {}, "bad": {}
+            }
+        });
+        assert_eq!(
+            private_channel_version(&doc, UpdateChannel::Beta).as_deref(),
+            Some("2.0.0-alpha.11")
+        );
+        doc["dist-tags"] = serde_json::json!({ "latest": "2.0.0-alpha.2" });
+        assert_eq!(
+            private_channel_version(&doc, UpdateChannel::Release).as_deref(),
+            Some("1.10.0")
+        );
+        let prerelease = serde_json::json!({ "versions": { "1.0.0-alpha.1": {} } });
+        assert_eq!(
+            private_channel_version(&prerelease, UpdateChannel::Release),
+            None
+        );
     }
 
     #[test]
