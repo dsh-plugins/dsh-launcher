@@ -36,7 +36,7 @@ A `DSH_HOME` holds profiles, conversations, and other DSH configuration. Use a d
 
 ## Screenshots
 
-Screenshots from the Linux desktop app using a sample instance.
+Screenshots from the Linux desktop app using a sample instance. The desktop compositor draws the outer window corners and shadows.
 
 | Launch | Create instance |
 | --- | --- |
