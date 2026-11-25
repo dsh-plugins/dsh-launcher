@@ -1,6 +1,8 @@
 fn main() {
     if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("macos") {
         println!("cargo:rerun-if-changed=src/native_browser/macos.m");
+        // rustc 使用 -nodefaultlibs，Objective-C 的 @available 仍需 Clang 的内建运行库。
+        println!("cargo:rustc-link-arg=-fapple-link-rtlib");
         // Intel 版本也支持尚无 Network.framework 的 macOS 10.13。
         println!("cargo:rustc-link-arg=-Wl,-weak_framework,Network");
         let minimum = if std::env::var("CARGO_CFG_TARGET_ARCH").as_deref() == Ok("aarch64") {
