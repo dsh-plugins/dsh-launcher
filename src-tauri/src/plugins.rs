@@ -530,7 +530,9 @@ async fn topic_search_page(page: u32) -> Result<Vec<serde_json::Value>, String> 
 async fn repo_has_dsh_manifest(full_name: &str) -> bool {
     // Probes are best-effort and numerous, so use a much shorter timeout than
     // the catalog fetches: a stalled CDN must not stall the whole refresh.
-    let Ok(builder) = crate::proxy::apply(reqwest::Client::builder()) else { return false; };
+    let Ok(builder) = crate::proxy::apply(reqwest::Client::builder()) else {
+        return false;
+    };
     let Ok(client) = builder
         .timeout(std::time::Duration::from_secs(8))
         .user_agent("dsh-launcher")
@@ -740,7 +742,7 @@ pub struct SetPluginsEnabledInput {
 // HTTP helpers
 // ---------------------------------------------------------------------------
 
-fn http_client_builder() -> Result<reqwest::ClientBuilder,String> {
+fn http_client_builder() -> Result<reqwest::ClientBuilder, String> {
     Ok(crate::proxy::apply(reqwest::Client::builder())?
         .timeout(std::time::Duration::from_secs(30))
         .user_agent("dsh-launcher"))

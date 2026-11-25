@@ -151,10 +151,11 @@ pub(crate) async fn prepare(data: &Path, distro: Option<&str>) -> Result<Bridge,
             url.set_path(&path);
             url
         }
-        None => tauri::Url::from_file_path(&module)
-            .map_err(|_| "通知桥接路径无效")?,
+        None => tauri::Url::from_file_path(&module).map_err(|_| "通知桥接路径无效")?,
     };
-    let sidebar_module = module.join("sidebar/index.mjs").map_err(|e| e.to_string())?;
+    let sidebar_module = module
+        .join("sidebar/index.mjs")
+        .map_err(|e| e.to_string())?;
     let content = serde_json::json!([{
         "insert": [{
             "id": "launcher-notifications",

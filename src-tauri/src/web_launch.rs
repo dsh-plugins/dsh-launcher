@@ -119,11 +119,10 @@ impl WebLinks {
 
 pub fn redact_tokens(line: &str) -> Cow<'_, str> {
     static TOKEN: OnceLock<Regex> = OnceLock::new();
-    let token = TOKEN
-        .get_or_init(|| {
-            Regex::new(r#"(?i)([?&](?:t|%74)(?:o|%6f)(?:k|%6b)(?:e|%65)(?:n|%6e)=)[^&#\s"'<>]+"#)
-                .unwrap()
-        });
+    let token = TOKEN.get_or_init(|| {
+        Regex::new(r#"(?i)([?&](?:t|%74)(?:o|%6f)(?:k|%6b)(?:e|%65)(?:n|%6e)=)[^&#\s"'<>]+"#)
+            .unwrap()
+    });
     let replacement = "${1}[redacted]";
     match crate::proxy::redact_credentials(line) {
         Cow::Borrowed(line) => token.replace_all(line, replacement),

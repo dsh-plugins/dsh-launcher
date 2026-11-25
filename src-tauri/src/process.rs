@@ -390,7 +390,10 @@ pub async fn start_instance_process(
             // Web 参数可能已包含分隔符，启动器的 CLI 参数须排在它们之前。
             cli_args.splice(
                 patch_index..patch_index,
-                ["--patch".into(), patch.path().to_string_lossy().into_owned()],
+                [
+                    "--patch".into(),
+                    patch.path().to_string_lossy().into_owned(),
+                ],
             );
         }
         cmd.arg(bin).args(cli_args).envs(env);

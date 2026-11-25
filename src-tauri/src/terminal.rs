@@ -328,7 +328,9 @@ async fn spawn_session(
         // distro (that needs WSLENV), so DSH_HOME / DSH_LAUNCHER_INSTANCE /
         // overrides / proxy would silently never reach the shell (issue #49 S2).
         let script = format!("{}; exec bash -i", crate::wsl::env_exports(&env));
-        for (key,value) in crate::wsl::proxy_forwarding(&env) { cmd.env(key,value); }
+        for (key, value) in crate::wsl::proxy_forwarding(&env) {
+            cmd.env(key, value);
+        }
         cmd.args(["-d", d, "--", "bash", "-lc", &script]);
         cmd.cwd(std::env::temp_dir().as_os_str());
     } else {

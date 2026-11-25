@@ -43,7 +43,8 @@ async fn cached_version_icon(path: PathBuf, url: &str) -> Option<String> {
         return Some(icon);
     }
 
-    let client = crate::proxy::apply(reqwest::Client::builder()).ok()?
+    let client = crate::proxy::apply(reqwest::Client::builder())
+        .ok()?
         .timeout(std::time::Duration::from_secs(8))
         .user_agent("dsh-launcher")
         .build()

@@ -1,5 +1,7 @@
 mod applog;
 mod autostart;
+mod browser_proxy;
+mod browser_settings;
 mod commands;
 mod compatibility;
 mod config;
@@ -15,14 +17,13 @@ mod market_index;
 mod mcp;
 mod migrate;
 mod modpack;
+mod native_browser;
 mod notifications;
 mod packforge;
 mod plugins;
 mod process;
 mod providers;
 mod proxy;
-mod browser_proxy;
-mod browser_settings;
 mod runtime;
 mod scan;
 mod sessions;
@@ -37,7 +38,6 @@ mod update_window;
 mod web_access;
 mod web_launch;
 mod windows;
-mod native_browser;
 mod wsl;
 
 use std::collections::HashMap;
@@ -250,7 +250,9 @@ pub fn run() {
             let data_dir = bootstrap.data_dir.clone();
             let cleanup_app = app.handle().clone();
             let cleanup_dir = data_dir.clone();
-            tauri::async_runtime::spawn_blocking(move || browser_settings::clean_abandoned_sessions(&cleanup_app, &cleanup_dir));
+            tauri::async_runtime::spawn_blocking(move || {
+                browser_settings::clean_abandoned_sessions(&cleanup_app, &cleanup_dir)
+            });
             std::fs::create_dir_all(&data_dir)?;
             let data_dir_notice = bootstrap.notice;
             let data_dir_source = bootstrap.source;
