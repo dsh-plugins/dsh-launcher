@@ -67,6 +67,8 @@ impl Reporter {
 struct Payload {
     id: Option<Uuid>,
     url: Option<String>,
+    session_id: Option<String>,
+    turn: Option<u64>,
     #[serde(flatten)]
     bounds: Bounds,
 }
@@ -317,6 +319,28 @@ async fn send(webview: Webview, token: String, action: String, payload: Payload)
             != origin
         {
             return Err("侧栏只能由当前 DSH 页面操作".into());
+        }
+        if action == "acknowledge-session" {
+            if generation != host.generation.load(Ordering::SeqCst) {
+                return Err("会话页面已切换".into());
+            }
+            let instance = webview
+                .label()
+                .strip_prefix("instance-")
+                .ok_or("无法识别 DSH 实例")?;
+            let session = payload
+                .session_id
+                .as_deref()
+                .filter(|id| !id.is_empty())
+                .ok_or("缺少 DSH 会话标识")?;
+            let turn = payload.turn.ok_or("缺少已读轮次")?;
+            crate::notifications::acknowledge_session(
+                webview.app_handle(),
+                instance,
+                session,
+                turn,
+            );
+            return Ok(());
         }
         if action == "external" {
             return crate::commands::open_external(http_url(payload.url.as_deref())?.into());

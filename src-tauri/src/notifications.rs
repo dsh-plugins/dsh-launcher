@@ -230,24 +230,14 @@ pub(crate) fn begin(app: &AppHandle, id: &str, generation: &str) {
     );
 }
 
-pub(crate) fn viewed_navigation(app: &AppHandle, id: &str, url: &tauri::Url) -> bool {
-    if url.scheme() != "dsh-launcher-read" {
-        return true;
+/// 只确认前台实例中当前会话的提醒，避免切换窗口时误标已读。
+pub(crate) fn acknowledge_session(app: &AppHandle, id: &str, session: &str, turn: u64) {
+    if !foreground(app, id) {
+        return;
     }
-    if foreground(app, id) {
-        let query: HashMap<_, _> = url.query_pairs().collect();
-        if let (Some(session), Some(turn)) = (
-            query.get("id"),
-            query
-                .get("turn")
-                .and_then(|value| value.parse::<u64>().ok()),
-        ) {
-            if let Some(alerts) = app.state::<Notifications>().0.lock().unwrap().get_mut(id) {
-                alerts.acknowledge(session, turn);
-            }
-        }
+    if let Some(alerts) = app.state::<Notifications>().0.lock().unwrap().get_mut(id) {
+        alerts.acknowledge(session, turn);
     }
-    false
 }
 
 pub(crate) fn receive(app: &AppHandle, id: &str, generation: &str, payload: &str) {

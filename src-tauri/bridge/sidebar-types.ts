@@ -5,6 +5,7 @@ export interface BrowserBridge {
   version: number
   native: boolean
   send(action: string, payload: Record<string, string | number>): Promise<void>
+  acknowledgeSession(sessionId: string, turn: number): Promise<void>
 }
 
 /** 原生页只向所属窗口报告导航和标题。 */

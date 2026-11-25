@@ -7,7 +7,12 @@
     token, action, payload,
   });
   Object.defineProperty(window, '__DSH_LAUNCHER_BROWSER__', {
-    value: Object.freeze({ version: 1, native: __SUPPORTED__, send }),
+    value: Object.freeze({
+      version: 1,
+      native: __SUPPORTED__,
+      send,
+      acknowledgeSession: (sessionId, turn) => send('acknowledge-session', { sessionId, turn }),
+    }),
   });
   window.dispatchEvent(new Event('dsh-launcher-browser-ready'));
 })();
