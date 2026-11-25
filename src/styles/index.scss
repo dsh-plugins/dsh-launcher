@@ -134,6 +134,7 @@ body:has(.app-shell) .dsh-ui-portal .dsh-toast-region[data-position$='Right'] {
 }
 
 .dl-sidebar {
+  min-width: max-content;
   min-height: 0;
   padding: 12px 0;
   overflow-y: auto;

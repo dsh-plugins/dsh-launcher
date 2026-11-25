@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { useFeedback } from '@dsh-plugin/dsh-ui-components-vue'
-import { IconRefresh } from '@dsh-plugin/dsh-ui-components-vue/icons'
+import { IconApps, IconLayers, IconPlusCircle, IconRefresh } from '@dsh-plugin/dsh-ui-components-vue/icons'
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
@@ -96,24 +96,31 @@ onUnmounted(() => scroller()?.removeEventListener('scroll', onScroll))
   <div class="download-page dl-split-page">
     <aside class="download-sidebar dl-sidebar">
       <dsh-menu :selected-keys="selectedKeys" @menu-item-click="onMenuSelect">
-        <dsh-menu-item key="create">
-          <span class="menu-line">
-            {{ t('download.createInstance') }}
+        <dsh-menu-item key="create" style="padding-inline-end: 6px">
+          <template #icon><IconPlusCircle aria-hidden="true" /></template>
+          {{ t('download.createInstance') }}
+          <template #action>
             <dsh-button variant="ghost"
-              v-if="onCreatePage"
               size="sm"
               icon-only
               class="refresh-btn"
+              :class="{ 'refresh-hidden': !onCreatePage }"
               :aria-label="t('common.refresh')"
               :loading="store.remoteLoading"
-              @click.stop="onRefreshVersions"
+              @click="onRefreshVersions"
             >
               <template #icon><IconRefresh aria-hidden="true" /></template>
             </dsh-button>
-          </span>
+          </template>
         </dsh-menu-item>
-        <dsh-menu-item key="plugins">{{ t('download.plugins') }}</dsh-menu-item>
-        <dsh-menu-item key="modpacks">{{ t('download.modpacks') }}</dsh-menu-item>
+        <dsh-menu-item key="plugins">
+          <template #icon><IconApps aria-hidden="true" /></template>
+          {{ t('download.plugins') }}
+        </dsh-menu-item>
+        <dsh-menu-item key="modpacks">
+          <template #icon><IconLayers aria-hidden="true" /></template>
+          {{ t('download.modpacks') }}
+        </dsh-menu-item>
       </dsh-menu>
     </aside>
     <section class="download-content dl-page-content">
@@ -141,21 +148,15 @@ onUnmounted(() => scroller()?.removeEventListener('scroll', onScroll))
   flex-shrink: 0;
 }
 
-.menu-line {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  width: 100%;
+.refresh-hidden {
+  visibility: hidden;
 }
 
-.menu-line .refresh-btn.dsh-button {
+.download-sidebar .refresh-btn.dsh-button {
   --button-fg: var(--accent-foreground);
   width: 24px;
   height: 24px;
   flex-shrink: 0;
-  margin-left: auto;
-  // 16px item padding minus the 6px gap between the concentric circles.
-  margin-right: -10px;
   padding: 0;
   gap: 0;
   font-size: 14px;

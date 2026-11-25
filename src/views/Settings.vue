@@ -2,7 +2,18 @@
 import { computed, onMounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { HintIcon, useFeedback, useDialog } from '@dsh-plugin/dsh-ui-components-vue'
-import { IconArrowUp, IconArrowDown } from '@dsh-plugin/dsh-ui-components-vue/icons'
+import {
+  IconArchive,
+  IconArrowDown,
+  IconArrowUp,
+  IconCompass,
+  IconDesktop,
+  IconInfoCircle,
+  IconNotification,
+  IconPalette,
+  IconPlayCircle,
+  IconWifi,
+} from '@dsh-plugin/dsh-ui-components-vue/icons'
 import { api } from '@/api'
 import type {
   Confidence,
@@ -26,7 +37,17 @@ const { modal: Modal } = useDialog()
 const { t } = useI18n()
 const store = useLauncherStore()
 
-type SettingsSection = 'launch' | 'notifications' | 'personal' | 'network' | 'browser' | 'cua' | 'resources' | 'about'
+const settingsSections = [
+  { key: 'launch', label: 'settings.sections.launch', icon: IconPlayCircle },
+  { key: 'notifications', label: 'settings.notifications.title', icon: IconNotification },
+  { key: 'personal', label: 'settings.sections.personal', icon: IconPalette },
+  { key: 'browser', label: 'browser.title', icon: IconCompass },
+  { key: 'cua', label: 'cua.title', icon: IconDesktop },
+  { key: 'network', label: 'settings.sections.network', icon: IconWifi },
+  { key: 'resources', label: 'settings.sections.resources', icon: IconArchive },
+  { key: 'about', label: 'settings.sections.about', icon: IconInfoCircle },
+] as const
+type SettingsSection = (typeof settingsSections)[number]['key']
 const section = ref<SettingsSection>('launch')
 
 /** Project links shown on the About section (issue #72). */
@@ -543,14 +564,10 @@ const pluginSourceColumns = computed(() => [
         :selected-keys="[section]"
         @menu-item-click="(key: string) => (section = key as SettingsSection)"
       >
-        <dsh-menu-item key="launch">{{ t('settings.sections.launch') }}</dsh-menu-item>
-        <dsh-menu-item key="notifications">{{ t('settings.notifications.title') }}</dsh-menu-item>
-        <dsh-menu-item key="personal">{{ t('settings.sections.personal') }}</dsh-menu-item>
-        <dsh-menu-item key="browser">{{ t('browser.title') }}</dsh-menu-item>
-        <dsh-menu-item key="cua">{{ t('cua.title') }}</dsh-menu-item>
-        <dsh-menu-item key="network">{{ t('settings.sections.network') }}</dsh-menu-item>
-        <dsh-menu-item key="resources">{{ t('settings.sections.resources') }}</dsh-menu-item>
-        <dsh-menu-item key="about">{{ t('settings.sections.about') }}</dsh-menu-item>
+        <dsh-menu-item v-for="item in settingsSections" :key="item.key">
+          <template #icon><component :is="item.icon" aria-hidden="true" /></template>
+          {{ t(item.label) }}
+        </dsh-menu-item>
       </dsh-menu>
     </aside>
     <section class="settings-content dl-page-content">

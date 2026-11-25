@@ -3,6 +3,20 @@ import { computed, onBeforeUnmount, onMounted, ref, watch, type Ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { HintIcon, useFeedback, useDialog } from '@dsh-plugin/dsh-ui-components-vue'
+import {
+  IconApps,
+  IconBook,
+  IconCodeSquare,
+  IconCompass,
+  IconFile,
+  IconFolder,
+  IconFormula,
+  IconIdcard,
+  IconLink,
+  IconRobot,
+  IconSettings,
+  IconWifi,
+} from '@dsh-plugin/dsh-ui-components-vue/icons'
 import { api } from '@/api'
 import type { CompatibilityReport as CompatibilityReportType } from '@/api/types'
 import CompatibilityReport from '@/components/CompatibilityReport.vue'
@@ -65,7 +79,24 @@ const homeOptions = computed(() =>
 
 // --- Sidebar tabs ---------------------------------------------------------------
 
-type TabKey = 'basic' | 'browser' | 'network' | 'env' | 'profiles' | 'plugins' | 'skills' | 'agents' | 'mcp' | 'models' | 'storage' | 'terminal'
+const instanceTabs = [
+  { key: 'basic', label: 'instanceEdit.tabs.basic', icon: IconSettings },
+  { key: 'browser', label: 'browser.title', icon: IconCompass },
+  { key: 'network', label: 'network.title', icon: IconWifi },
+  { key: 'env', label: 'instanceEdit.tabs.env', icon: IconFormula },
+  { key: 'profiles', label: 'instanceEdit.tabs.profiles', icon: IconIdcard },
+  { key: 'plugins', label: 'instanceEdit.tabs.plugins', icon: IconApps },
+  { key: 'skills', label: 'instanceEdit.tabs.skills', icon: IconBook },
+  { key: 'agents', label: 'instanceEdit.tabs.agents', icon: IconFile },
+  { key: 'mcp', label: 'instanceEdit.tabs.mcp', icon: IconLink },
+  { key: 'models', label: 'instanceEdit.tabs.models', icon: IconRobot },
+  { key: 'storage', label: 'instanceEdit.tabs.storage', icon: IconFolder },
+  { key: 'terminal', label: 'instanceEdit.tabs.terminal', icon: IconCodeSquare },
+] as const
+const visibleTabs = computed(() => networkInstance.value
+  ? instanceTabs
+  : instanceTabs.filter(tab => tab.key !== 'browser' && tab.key !== 'network'))
+type TabKey = (typeof instanceTabs)[number]['key']
 const activeTab = ref<TabKey>('basic')
 
 // --- Form state ---------------------------------------------------------------
@@ -2417,18 +2448,10 @@ const terminalRunning = ref(false)
   <div class="edit-page dl-split-page">
     <aside class="edit-sidebar dl-sidebar">
       <dsh-menu :selected-keys="[activeTab]" @menu-item-click="(key: string) => (activeTab = key as TabKey)">
-        <dsh-menu-item key="basic">{{ t('instanceEdit.tabs.basic') }}</dsh-menu-item>
-        <dsh-menu-item v-if="networkInstance" key="browser">{{ t('browser.title') }}</dsh-menu-item>
-        <dsh-menu-item v-if="networkInstance" key="network">{{ t('network.title') }}</dsh-menu-item>
-        <dsh-menu-item key="env">{{ t('instanceEdit.tabs.env') }}</dsh-menu-item>
-        <dsh-menu-item key="profiles">{{ t('instanceEdit.tabs.profiles') }}</dsh-menu-item>
-        <dsh-menu-item key="plugins">{{ t('instanceEdit.tabs.plugins') }}</dsh-menu-item>
-        <dsh-menu-item key="skills">{{ t('instanceEdit.tabs.skills') }}</dsh-menu-item>
-        <dsh-menu-item key="agents">{{ t('instanceEdit.tabs.agents') }}</dsh-menu-item>
-        <dsh-menu-item key="mcp">{{ t('instanceEdit.tabs.mcp') }}</dsh-menu-item>
-        <dsh-menu-item key="models">{{ t('instanceEdit.tabs.models') }}</dsh-menu-item>
-        <dsh-menu-item key="storage">{{ t('instanceEdit.tabs.storage') }}</dsh-menu-item>
-        <dsh-menu-item key="terminal">{{ t('instanceEdit.tabs.terminal') }}</dsh-menu-item>
+        <dsh-menu-item v-for="tab in visibleTabs" :key="tab.key">
+          <template #icon><component :is="tab.icon" aria-hidden="true" /></template>
+          {{ t(tab.label) }}
+        </dsh-menu-item>
       </dsh-menu>
     </aside>
     <section class="edit-content dl-page-content">
