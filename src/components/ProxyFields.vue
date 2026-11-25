@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { useFeedback } from '@dsh-plugin/dsh-ui-components-vue'
+import { HintIcon, useFeedback } from '@dsh-plugin/dsh-ui-components-vue'
 import { api } from '@/api'
 import type { ProxyEndpoint, ProxyPasswordScope } from '@/api/types'
 
@@ -27,19 +27,35 @@ onMounted(async () => {
 </script>
 
 <template>
-  <dsh-form-item :label="t('settings.proxy.url')" :extra="t('browser.endpointHint')">
+  <dsh-form-item>
+    <template #label>
+      {{ t('settings.proxy.url') }}
+      <HintIcon :content="t('browser.endpointHint')" />
+    </template>
     <dsh-input v-model="endpoint.url" placeholder="http://127.0.0.1" :disabled="disabled" />
   </dsh-form-item>
   <dsh-form-item :label="t('settings.proxy.port')">
     <dsh-input-number v-model="endpoint.port" :min="1" :max="65535" :precision="0" :disabled="disabled" />
   </dsh-form-item>
-  <dsh-form-item :label="t('settings.proxy.noProxy')" :extra="t('settings.proxy.noProxyHint')">
+  <dsh-form-item>
+    <template #label>
+      {{ t('settings.proxy.noProxy') }}
+      <HintIcon :content="t('settings.proxy.noProxyHint')" />
+    </template>
     <dsh-input v-model="endpoint.no_proxy" placeholder="127.0.0.1,localhost,::1" :disabled="disabled" />
   </dsh-form-item>
-  <dsh-form-item :label="t('browser.username')" :extra="t('browser.usernameHint')">
+  <dsh-form-item>
+    <template #label>
+      {{ t('browser.username') }}
+      <HintIcon :content="t('browser.usernameHint')" />
+    </template>
     <dsh-input v-model="endpoint.username" autocomplete="off" :disabled="disabled" />
   </dsh-form-item>
-  <dsh-form-item :label="t('browser.password')" :extra="passwordStatus">
+  <dsh-form-item :extra="password === '' ? passwordStatus : undefined">
+    <template #label>
+      {{ t('browser.password') }}
+      <HintIcon v-if="password !== ''" :content="passwordStatus" />
+    </template>
     <dsh-input-group class="proxy-password">
       <dsh-input-password :model-value="password ?? ''" autocomplete="new-password" :disabled="disabled"
         @update:model-value="(value: string) => password = value || undefined" />

@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { useFeedback } from '@dsh-plugin/dsh-ui-components-vue'
+import { HintIcon, useFeedback } from '@dsh-plugin/dsh-ui-components-vue'
 import { api } from '@/api'
 import { useLauncherStore } from '@/stores/launcher'
 import { validProxyEndpoint } from '@/utils/proxy-endpoint'
@@ -50,11 +50,19 @@ async function save() {
   <div class="dl-card">
     <div class="dl-card-title"><h3>{{ t('settings.proxy.title') }}</h3></div>
     <dsh-form layout="vertical" :model="endpoint" class="proxy-form">
-      <dsh-form-item :label="t('settings.proxy.enabled')" :extra="t('settings.proxy.enabledHint')">
+      <dsh-form-item>
+        <template #label>
+          {{ t('settings.proxy.enabled') }}
+          <HintIcon :content="t('settings.proxy.enabledHint')" />
+        </template>
         <dsh-switch v-model="enabled" :disabled="busy" />
       </dsh-form-item>
       <ProxyFields :key="revision" v-model="endpoint" v-model:password="password" scope="launcher" :disabled="!enabled || busy" />
-      <dsh-form-item :label="t('settings.proxy.applyDsh')" :extra="t('settings.proxy.applyDshHint')">
+      <dsh-form-item>
+        <template #label>
+          {{ t('settings.proxy.applyDsh') }}
+          <HintIcon :content="t('settings.proxy.applyDshHint')" />
+        </template>
         <dsh-switch v-model="applyDsh" :disabled="!enabled || busy" />
       </dsh-form-item>
       <dsh-button variant="primary" :loading="busy" @click="save">{{ t('common.save') }}</dsh-button>

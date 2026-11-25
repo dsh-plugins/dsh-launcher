@@ -1,11 +1,10 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { useFeedback } from '@dsh-plugin/dsh-ui-components-vue'
+import { HintIcon, useFeedback } from '@dsh-plugin/dsh-ui-components-vue'
 import { api } from '@/api'
 import type { InstalledPlugin } from '@/api/types'
 import { useLauncherStore } from '@/stores/launcher'
-import HintIcon from '@/components/HintIcon.vue'
 
 const { message: Message } = useFeedback()
 
@@ -171,7 +170,6 @@ async function confirm() {
       await store.refreshTasks()
       store.notifyTaskQueued()
       Message.success(t('plugins.migrateStarted', { count: started }))
-      Message.info(t('plugins.installRestartHint'))
     } else {
       Message.info(t('plugins.migrateNothing'))
     }
@@ -187,7 +185,6 @@ async function confirm() {
 <template>
   <dsh-modal
     :visible="visible"
-    :title="t('plugins.migrateTitle')"
     :ok-text="t('plugins.migrateConfirm', { count: installCount })"
     :cancel-text="t('instanceEdit.cancel')"
     :ok-button-props="{ disabled: !canConfirm, loading: busy }"
@@ -195,12 +192,20 @@ async function confirm() {
     @ok="confirm"
     @cancel="close"
   >
+    <template #title>
+      {{ t('plugins.migrateTitle') }}
+      <HintIcon :content="t('plugins.installRestartHint')" />
+    </template>
     <dsh-form layout="vertical" :model="{}" class="migrate-body">
       <!-- CSS grid (not flex): the three controls must never wrap into a
            vertical stack (issue #41). minmax(0,…) keeps the selects
            shrinkable so the row holds at any width. -->
       <div class="migrate-source-row">
-        <dsh-form-item :label="t('plugins.migrateSourceInstance')" class="migrate-source-col">
+        <dsh-form-item class="migrate-source-col">
+          <template #label>
+            {{ t('plugins.migrateSourceInstance') }}
+            <HintIcon :content="t('plugins.migrateLoadHint')" />
+          </template>
           <dsh-select v-model="sourceInstanceId" :placeholder="t('plugins.migrateSourceInstanceHint')">
             <dsh-option v-for="inst in sourceInstances" :key="inst.id" :value="inst.id">
               {{ inst.name }}（{{ store.versionById(inst.version_id)?.version ?? '?' }}）
@@ -242,7 +247,7 @@ async function confirm() {
           <HintIcon v-if="isUnmigratable(p)" :content="t('plugins.migrateUnmigratableHint')" />
         </div>
       </div>
-      <dsh-empty v-else-if="!loading" class="migrate-empty" :description="t('plugins.migrateEmpty')" />
+      <dsh-empty v-else-if="!loading" class="migrate-empty" :description="t('download.noData')" />
 
       <dsh-form-item>
         <template #label>

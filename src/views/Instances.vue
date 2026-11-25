@@ -2,13 +2,12 @@
 import { computed, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
-import { useFeedback } from '@dsh-plugin/dsh-ui-components-vue'
+import { HintIcon, useFeedback } from '@dsh-plugin/dsh-ui-components-vue'
 import { api } from '@/api'
 import InstanceAccessLinks from '@/components/InstanceAccessLinks.vue'
 import { useLauncherStore } from '@/stores/launcher'
 import type { DshInstance, InstanceState } from '@/api/types'
 import ModpackImportDialog from '@/components/ModpackImportDialog.vue'
-import HintIcon from '@/components/HintIcon.vue'
 
 const { message: Message } = useFeedback()
 
@@ -202,14 +201,10 @@ async function confirmCopy() {
           <dsh-tag :color="stateColor(store.statusOf(record.id).state)">
             {{ t(`home.status.${store.statusOf(record.id).state}`) }}
           </dsh-tag>
-          <dsh-tooltip
-            v-if="store.externalOf(record.id)"
-            :content="t('home.externalHint', { port: store.externalOf(record.id)!.port })"
-          >
-            <dsh-tag size="small" color="arcoblue">
-              {{ t('home.statusExternal') }} :{{ store.externalOf(record.id)!.port }}
-            </dsh-tag>
-          </dsh-tooltip>
+          <dsh-tag v-if="store.externalOf(record.id)" size="small" color="arcoblue">
+            {{ t('home.statusExternal') }} :{{ store.externalOf(record.id)!.port }}
+            <HintIcon :content="t('home.externalHint', { port: store.externalOf(record.id)!.port })" />
+          </dsh-tag>
           <InstanceAccessLinks :status="store.statusOf(record.id)" />
         </template>
         <template #actions="{ record }">
@@ -235,9 +230,12 @@ async function confirmCopy() {
           </dsh-space>
         </template>
         <template #empty>
-          <dsh-empty :description="t('instances.emptyDesc')">
+          <dsh-empty>
             <template #image>
-              <div class="empty-title">{{ t('instances.emptyTitle') }}</div>
+              <div class="empty-title">
+                {{ t('instances.emptyTitle') }}
+                <HintIcon :content="t('instances.emptyDesc')" />
+              </div>
             </template>
             <dsh-button variant="primary" @click="router.push({ name: 'download' })">
               {{ t('instances.newInstance') }}
@@ -254,6 +252,7 @@ async function confirmCopy() {
         <dsh-link href="#" @click.prevent="router.push({ name: 'settings' })">
           {{ t('instances.homesWithoutInstancesAction') }}
         </dsh-link>
+        <HintIcon :content="t('instances.homesWithoutInstancesHint')" />
       </div>
     </div>
 
@@ -282,7 +281,7 @@ async function confirmCopy() {
           </dsh-radio-group>
         </dsh-form-item>
         <dsh-form-item v-if="copyNewHome" :label="t('instances.copyHomeNameLabel')" required>
-          <dsh-input v-model="copyHomeName" :placeholder="t('instances.copyHomeNamePlaceholder')" />
+          <dsh-input v-model="copyHomeName" />
         </dsh-form-item>
       </dsh-form>
     </dsh-modal>

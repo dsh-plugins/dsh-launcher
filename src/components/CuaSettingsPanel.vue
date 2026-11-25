@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { useDialog, useFeedback } from '@dsh-plugin/dsh-ui-components-vue'
+import { HintIcon, useDialog, useFeedback } from '@dsh-plugin/dsh-ui-components-vue'
 import { api } from '@/api'
 import type { CuaRelease, CuaSettings } from '@/api/types'
 import { useLauncherStore } from '@/stores/launcher'
@@ -23,6 +23,15 @@ const directoryError = ref('')
 const releaseError = ref('')
 const activeDownload = computed(() => store.taskList.some(task => task.kind === 'download-cua'
   && task.version === selected.value && (task.state === 'running' || task.state === 'queued')))
+
+const downloadHint = computed(() => {
+  const target = settings.value?.target
+  if (!target) {
+    return ''
+  }
+  const platform = t('cua.platform', { target })
+  return target.startsWith('win-') ? platform + ' ' + t('cua.wsl') : platform
+})
 
 async function loadReleases() {
   if (listing.value || !settings.value?.target) {
@@ -153,11 +162,19 @@ watch(() => store.taskList.filter(task => task.kind === 'download-cua' && task.s
       <dsh-button @click="loadSettings">{{ t('common.retry') }}</dsh-button>
     </div>
     <dsh-form v-else-if="settings" :model="settings" layout="vertical" class="cua-form">
-      <dsh-form-item :label="t('cua.auto')" :extra="t('cua.autoHint')">
+      <dsh-form-item>
+        <template #label>
+          {{ t('cua.auto') }}
+          <HintIcon :content="t('cua.autoHint')" />
+        </template>
         <dsh-switch :model-value="settings.auto_complete" :aria-label="t('cua.auto')"
           :disabled="saving || !settings.target" @change="toggleAuto" />
       </dsh-form-item>
-      <dsh-form-item :label="t('cua.root')" :extra="t('cua.rootHint')">
+      <dsh-form-item>
+        <template #label>
+          {{ t('cua.root') }}
+          <HintIcon :content="t('cua.rootHint')" />
+        </template>
         <div class="cua-controls">
           <dsh-input v-model="directory" :aria-label="t('cua.root')" :disabled="saving" @input="directoryError = ''" />
           <dsh-button variant="secondary" :disabled="saving" @click="pickDirectory">{{ t('settings.pickDir') }}</dsh-button>
@@ -172,12 +189,16 @@ watch(() => store.taskList.filter(task => task.kind === 'download-cua' && task.s
   </div>
   <div v-if="settings" class="dl-card">
     <div class="dl-card-title">
-      <h3>{{ t('cua.manual') }}</h3>
+      <h3>
+        {{ t('cua.manual') }}
+        <HintIcon v-if="settings.target" :content="downloadHint" />
+      </h3>
       <dsh-button variant="ghost" size="sm" :disabled="!settings.target || listing" :loading="listing"
         @click="loadReleases">{{ t('common.refresh') }}</dsh-button>
     </div>
-    <p class="cua-hint">{{ settings.target ? t('cua.platform', { target: settings.target }) : t('cua.unsupported') }}</p>
-    <p v-if="settings.target?.startsWith('win-')" class="cua-hint">{{ t('cua.wsl') }}</p>
+    <p v-if="!settings.target" role="status" class="cua-hint">
+      {{ t('cua.unsupported') }}<HintIcon :content="t('cua.supportedPlatforms')" />
+    </p>
     <p v-if="releaseError" role="alert" class="cua-error">{{ releaseError }}</p>
     <p v-else-if="settings.target && !listing && !releases.length" role="status" class="cua-hint">{{ t('cua.empty') }}</p>
     <div class="cua-controls">

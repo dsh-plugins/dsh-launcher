@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
-import { useFeedback } from '@dsh-plugin/dsh-ui-components-vue'
+import { HintIcon, useFeedback } from '@dsh-plugin/dsh-ui-components-vue'
 import { useI18n } from 'vue-i18n'
 import { api } from '@/api'
 import type { DshInstance, WebAccess, WebInterface, WebMode } from '@/api/types'
@@ -125,8 +125,7 @@ async function openGuide() {
 
 <template>
   <div class="dl-card edit-card">
-    <h3>{{ t('network.title') }}</h3>
-    <p>{{ t('network.description') }}</p>
+    <h3>{{ t('network.title') }}<HintIcon :content="t('network.description')" /></h3>
     <dsh-space v-if="status.web_mode" direction="vertical" fill>
       <dsh-tag color="green">{{ t('network.active', { mode: t('network.modes.' + status.web_mode) }) }}</dsh-tag>
       <span v-if="status.web_mode === 'lan'">{{ t('network.activeNetworks', { networks: status.allowed_networks?.join(', ') }) }}</span>
@@ -138,7 +137,11 @@ async function openGuide() {
           <dsh-option v-for="item in modes" :key="item" :value="item">{{ t('network.modes.' + item) }}</dsh-option>
         </dsh-select>
       </dsh-form-item>
-      <dsh-form-item v-if="needsAddress || mode === 'proxy'" :label="t('network.interface')" :extra="mode === 'proxy' ? t('network.proxyAddress') : undefined">
+      <dsh-form-item v-if="needsAddress || mode === 'proxy'">
+        <template #label>
+          {{ t('network.interface') }}
+          <HintIcon v-if="mode === 'proxy'" :content="t('network.proxyAddress')" />
+        </template>
         <dsh-space fill>
           <dsh-select :model-value="address || undefined" :allow-clear="mode === 'proxy'" :placeholder="mode === 'proxy' ? '127.0.0.1' : t('network.chooseInterface')" @change="(value) => chooseAddress(typeof value === 'string' ? value : '')">
             <dsh-option v-for="item in interfaces" :key="item.name + item.address" :value="item.address">
@@ -148,23 +151,44 @@ async function openGuide() {
           <dsh-button variant="secondary" @click="loadInterfaces">{{ t('network.refresh') }}</dsh-button>
         </dsh-space>
       </dsh-form-item>
-      <dsh-form-item :label="t('instanceEdit.port')" :extra="mode === 'proxy' ? t('network.fixedPort') : t('instanceEdit.portPlaceholder')">
-        <dsh-input v-model="port" :placeholder="mode === 'proxy' ? '3080' : t('instanceEdit.portPlaceholder')" allow-clear />
+      <dsh-form-item>
+        <template #label>
+          {{ t('instanceEdit.port') }}
+          <HintIcon :content="mode === 'proxy' ? t('network.fixedPort') : t('instanceEdit.portPlaceholder')" />
+        </template>
+        <dsh-input v-model="port" :placeholder="mode === 'proxy' ? '3080' : undefined" allow-clear />
       </dsh-form-item>
-      <dsh-form-item v-if="mode === 'lan'" :label="t('network.networks')" :extra="t('network.networksHint')">
+      <dsh-form-item v-if="mode === 'lan'">
+        <template #label>
+          {{ t('network.networks') }}
+          <HintIcon :content="t('network.networksHint')" />
+        </template>
         <dsh-textarea v-model="networks" placeholder="192.168.1.0/24&#10;fd00::/64" />
       </dsh-form-item>
       <template v-if="mode === 'proxy'">
-        <dsh-form-item :label="t('network.publicUrl')"><dsh-input v-model="publicUrl" placeholder="https://dsh.example/ui/" /></dsh-form-item>
-        <dsh-alert>
-          {{ t('network.proxyGuide') }}
-          <dsh-link href="#" @click.prevent="openGuide">{{ t('network.guide') }}</dsh-link>
-        </dsh-alert>
+        <dsh-form-item>
+          <template #label>
+            {{ t('network.publicUrl') }}
+            <HintIcon :content="t('network.proxyGuide')" />
+          </template>
+          <dsh-input v-model="publicUrl" placeholder="https://dsh.example/ui/" />
+        </dsh-form-item>
+        <dsh-link href="#" @click.prevent="openGuide">{{ t('network.guide') }}</dsh-link>
       </template>
-      <dsh-form-item v-if="mode !== 'local'" :label="t('network.hosts')" :extra="t('network.hostsHint')">
+      <dsh-form-item v-if="mode !== 'local'">
+        <template #label>
+          {{ t('network.hosts') }}
+          <HintIcon :content="t('network.hostsHint')" />
+        </template>
         <dsh-textarea v-model="hosts" placeholder="dsh.example:8443" />
       </dsh-form-item>
-      <dsh-form-item :label="t('network.tls')" :extra="t('network.tlsHint')"><dsh-switch v-model="tls" /></dsh-form-item>
+      <dsh-form-item>
+        <template #label>
+          {{ t('network.tls') }}
+          <HintIcon :content="t('network.tlsHint')" />
+        </template>
+        <dsh-switch v-model="tls" />
+      </dsh-form-item>
       <template v-if="tls">
         <dsh-form-item :label="t('network.cert')"><dsh-input-group><dsh-input v-model="cert" /><dsh-button variant="secondary" @click="pickFile('cert')">{{ t('network.browse') }}</dsh-button></dsh-input-group></dsh-form-item>
         <dsh-form-item :label="t('network.key')"><dsh-input-group><dsh-input v-model="key" /><dsh-button variant="secondary" @click="pickFile('key')">{{ t('network.browse') }}</dsh-button></dsh-input-group></dsh-form-item>

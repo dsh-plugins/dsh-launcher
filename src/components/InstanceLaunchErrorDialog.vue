@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { useFeedback } from '@dsh-plugin/dsh-ui-components-vue'
+import { HintIcon, useFeedback } from '@dsh-plugin/dsh-ui-components-vue'
 import { api } from '@/api'
 import { useLauncherStore } from '@/stores/launcher'
 
@@ -131,10 +131,10 @@ function close() {
     </template>
 
     <div class="err-body">
-      <dsh-alert type="error" :message="summary" />
+      <dsh-alert type="error">{{ summary }}</dsh-alert>
       <dsh-alert v-if="suspect" type="warning">
-        <div>{{ t('launchError.suspect', { name: suspect }) }}</div>
-        <div class="err-suspect-hint">{{ t('launchError.suspectHint') }}</div>
+        {{ t('launchError.suspect', { name: suspect }) }}
+        <HintIcon :content="t('launchError.suspectHint')" />
       </dsh-alert>
       <div class="err-tail-title">{{ t('launchError.tailTitle') }}</div>
       <dsh-spin :loading="tailLoading" style="width: 100%">
@@ -156,12 +156,6 @@ function close() {
   font-size: 13px;
   font-weight: 600;
   color: var(--color-text-1);
-}
-
-.err-suspect-hint {
-  font-size: 12px;
-  color: var(--color-text-2);
-  margin-top: 4px;
 }
 
 .err-tail {

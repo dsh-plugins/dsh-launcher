@@ -6,7 +6,7 @@
 // instances. Idempotent: already-known entries are skipped and reported.
 import { computed, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { useFeedback } from '@dsh-plugin/dsh-ui-components-vue'
+import { HintIcon, useFeedback } from '@dsh-plugin/dsh-ui-components-vue'
 import { api } from '@/api'
 import type { ImportItem, ImportReport, ScanReport, ScannedVersion } from '@/api/types'
 import { useLauncherStore } from '@/stores/launcher'
@@ -108,12 +108,6 @@ function profileKey(homePath: string, profile: string): string {
   return `${homePath}::${profile}`
 }
 
-/** A version alone is not an instance — the row says so explicitly instead of
- * letting the user wonder why nothing appeared in the instance list. */
-function isVersionOnlyRow(item: ImportItem): boolean {
-  return item.kind === 'version' && item.status === 'added'
-}
-
 async function doImport() {
   if (!report.value || !hasSelection.value) return
   importing.value = true
@@ -159,16 +153,17 @@ function close() {
 <template>
   <dsh-modal
     :visible="props.visible"
-    :title="t('importScan.title')"
     :width="640"
     :footer="false"
     unmount-on-close
     @cancel="close"
   >
+    <template #title>
+      {{ t('importScan.title') }}
+      <HintIcon :content="t('importScan.hint')" />
+    </template>
     <dsh-spin :loading="scanning" style="width: 100%">
       <div v-if="report" class="scan-body">
-        <p class="scan-hint">{{ t('importScan.hint') }}</p>
-
         <div v-if="report.homes.length === 0" class="scan-empty">
           {{ t('importScan.nothingFound') }}
         </div>
@@ -195,7 +190,10 @@ function close() {
         </div>
 
         <div class="versions-block">
-          <div class="block-title">{{ t('importScan.versions') }}</div>
+          <div class="block-title">
+            {{ t('importScan.versions') }}
+            <HintIcon :content="t('importScan.versionDirHint')" />
+          </div>
           <dsh-input-search
             v-model="newVersionDir"
             :placeholder="t('importScan.versionDirPlaceholder')"
@@ -233,9 +231,7 @@ function close() {
               </dsh-tag>
               <span class="import-item-name">{{ item.name }}</span>
               <span v-if="item.reason" class="import-item-reason">{{ item.reason }}</span>
-              <span v-else-if="isVersionOnlyRow(item)" class="import-item-reason">
-                {{ t('importScan.versionNotInstance') }}
-              </span>
+              <HintIcon v-else-if="item.kind === 'version' && item.status === 'added'" :content="t('importScan.versionNotInstance')" />
             </li>
           </ul>
         </div>
@@ -260,12 +256,6 @@ function close() {
   display: flex;
   flex-direction: column;
   gap: 12px;
-}
-
-.scan-hint {
-  margin: 0;
-  color: var(--color-text-3);
-  font-size: 12px;
 }
 
 .scan-empty {

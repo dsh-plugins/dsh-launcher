@@ -2,10 +2,9 @@
 import { computed, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
-import { useFeedback } from '@dsh-plugin/dsh-ui-components-vue'
+import { HintIcon, useFeedback } from '@dsh-plugin/dsh-ui-components-vue'
 import { api } from '@/api'
 import { useLauncherStore } from '@/stores/launcher'
-import HintIcon from '@/components/HintIcon.vue'
 
 const { message: Message } = useFeedback()
 
@@ -94,8 +93,10 @@ async function recheck() {
   <div class="setup-page">
     <div class="dl-card setup-card">
       <div class="setup-icon">🛠️</div>
-      <h2>{{ t('setup.title') }}</h2>
-      <p class="setup-desc">{{ t('setup.desc') }}</p>
+      <h2>
+        {{ t('setup.title') }}
+        <HintIcon :content="t('setup.desc')" />
+      </h2>
 
       <!-- Node status -->
       <div class="tool-row">
@@ -160,8 +161,7 @@ async function recheck() {
         <p v-if="installing && nodeTask?.message" class="one-click-message">
           {{ nodeTask.message }}
         </p>
-        <p class="manual-hint">
-          {{ t('setup.nodeManualHint') }}
+        <p class="manual-install">
           <dsh-link href="#" @click.prevent="api.openExternal('https://nodejs.org/zh-cn/download')">
             {{ t('setup.openNodeSite') }}
           </dsh-link>
@@ -169,8 +169,10 @@ async function recheck() {
       </div>
 
       <div v-if="nodeOk && !pnpmOk" class="guide-block">
-        <h4>{{ t('setup.installPnpm') }}</h4>
-        <p>{{ t('setup.pnpmAuto') }}</p>
+        <h4>
+          {{ t('setup.installPnpm') }}
+          <HintIcon :content="t('setup.pnpmAuto')" />
+        </h4>
       </div>
 
       <div v-if="allOk" class="guide-block">
@@ -210,12 +212,7 @@ async function recheck() {
 }
 
 h2 {
-  margin: 12px 0 4px;
-}
-
-.setup-desc {
-  color: var(--color-text-3);
-  margin-bottom: 24px;
+  margin: 12px 0 24px;
 }
 
 .tool-row {
@@ -258,10 +255,8 @@ h2 {
   color: var(--color-text-3);
 }
 
-.manual-hint {
+.manual-install {
   margin: 12px 0 0;
-  font-size: 12px;
-  color: var(--color-text-3);
 }
 
 .code-block {

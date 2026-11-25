@@ -2,7 +2,7 @@
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
-import { useFeedback } from '@dsh-plugin/dsh-ui-components-vue'
+import { HintIcon, useFeedback } from '@dsh-plugin/dsh-ui-components-vue'
 import { api } from '@/api'
 import type {
   DshInstance, MarketModpack, PackforgeArchive, PackforgeInstallation, PackforgeInstallDecision,
@@ -487,8 +487,12 @@ function close() {
             </dsh-form-item>
             <dsh-alert v-if="marketError" class="packforge-section" type="warning">{{ marketError }}</dsh-alert>
           </template>
-          <dsh-form-item :label="t('modpack.source')" required>
-            <dsh-input v-model="source" :placeholder="t('modpack.sourceHint')" allow-clear @press-enter="loadManifest">
+          <dsh-form-item required>
+            <template #label>
+              {{ t('modpack.source') }}
+              <HintIcon :content="t('modpack.sourceHint')" />
+            </template>
+            <dsh-input v-model="source" allow-clear @press-enter="loadManifest">
               <template #append>
                 <dsh-button variant="secondary" :disabled="loading" @click="pickFile()">{{ t('modpack.pickFile') }}</dsh-button>
               </template>
@@ -508,14 +512,12 @@ function close() {
             <template v-if="manifest.dshVersions?.length"> · DSH {{ manifest.dshVersions.join(', ') }}</template>
             <template v-else-if="manifest.dshVersion"> · DSH {{ manifest.dshVersion }}</template>
             <template v-if="manifest.files?.length"> · {{ t('modpack.filesCount', { count: manifest.files.length }) }}</template>
+            <HintIcon v-if="isDshhome" :content="t('modpack.dshhomeHint', { count: Object.keys(manifest.profiles ?? {}).length, default: manifest.defaultProfile })" />
           </dsh-alert>
           <dsh-alert v-for="warning in archive?.warnings ?? []" :key="warning" class="packforge-section" type="warning">
             {{ warning }}
           </dsh-alert>
           <PackforgePluginList v-if="isV6" :manifest="manifest" :icons="archive?.icons" />
-          <dsh-alert v-if="isDshhome" type="info" class="packforge-section">
-            {{ t('modpack.dshhomeHint', { count: Object.keys(manifest.profiles ?? {}).length, default: manifest.defaultProfile }) }}
-          </dsh-alert>
           <template v-if="updateInstance">
             <dsh-alert v-if="!isV6" type="warning" class="packforge-section">{{ t('modpack.updateNeedsV6') }}</dsh-alert>
             <dsh-form-item v-if="!isDshhome && !selectedInstallation?.profile_name" :label="t('modpack.profileName')" required>
@@ -531,8 +533,12 @@ function close() {
                 </dsh-radio>
               </dsh-radio-group>
             </dsh-form-item>
-            <dsh-form-item v-if="importMode === 'existing'" :label="t('modpack.existingInstance')" required>
-              <dsh-select v-model="existingInstanceId" :placeholder="t(isV6 ? 'modpack.compatibleInstanceHint' : 'modpack.existingInstanceHint')">
+            <dsh-form-item v-if="importMode === 'existing'" required>
+              <template #label>
+                {{ t('modpack.existingInstance') }}
+                <HintIcon :content="t(isV6 ? 'modpack.compatibleInstanceHint' : 'modpack.existingInstanceHint')" />
+              </template>
+              <dsh-select v-model="existingInstanceId" :placeholder="t('modpack.existingInstance')">
                 <dsh-option v-for="inst in eligibleInstances" :key="inst.id" :value="inst.id">
                   {{ inst.name }}（{{ store.versionById(inst.version_id)?.version }}）
                 </dsh-option>
@@ -541,14 +547,15 @@ function close() {
             <dsh-form-item v-else :label="t('modpack.instanceName')" required>
               <dsh-input v-model="instanceName" />
             </dsh-form-item>
-            <dsh-form-item v-if="allowWsl && distros.length" :label="t('modpack.wslTarget')">
-              <dsh-select v-model="wslDistro" allow-clear :placeholder="t('modpack.wslTargetHint')">
+            <dsh-form-item v-if="allowWsl && distros.length">
+              <template #label>
+                {{ t('modpack.wslTarget') }}
+                <HintIcon :content="wslDistro ? t('modpack.wslInstallHint', { distro: wslDistro }) : t('modpack.wslTargetHint')" />
+              </template>
+              <dsh-select v-model="wslDistro" allow-clear :placeholder="t('download.runtimeWindows')">
                 <dsh-option v-for="distro in distros" :key="distro" :value="distro">{{ distro }}</dsh-option>
               </dsh-select>
             </dsh-form-item>
-            <dsh-alert v-if="allowWsl && wslDistro" type="info" class="packforge-section">
-              {{ t('modpack.wslInstallHint', { distro: wslDistro }) }}
-            </dsh-alert>
             <dsh-form-item v-if="!isDshhome" :label="t('modpack.profileName')">
               <dsh-input v-model="profileName" placeholder="pack" />
             </dsh-form-item>
@@ -592,18 +599,25 @@ function close() {
                 <dsh-checkbox v-if="item.availableCredentials?.length" v-model="reuse[item.key]">
                   {{ t('modpack.reuseCredentials') }}
                 </dsh-checkbox>
-                <dsh-form-item v-for="reference in item.credentialRefs" :key="reference" :label="reference">
+                <dsh-form-item v-for="reference in item.credentialRefs" :key="reference">
+                  <template #label>
+                    {{ reference }}
+                    <HintIcon v-if="missing(item, reference)" :content="t('modpack.missingSkip')" />
+                  </template>
                   <dsh-input-password v-model="credentials[item.key][reference]"
                     autocomplete="new-password" :placeholder="t(missing(item, reference) ? 'modpack.missingCredential' : 'modpack.credentialInput')" />
                 </dsh-form-item>
-                <p v-if="item.credentialRefs.some(reference => missing(item, reference))">{{ t('modpack.missingSkip') }}</p>
               </template>
             </section>
           </template>
           <dsh-alert v-else type="info" class="packforge-section">{{ t('modpack.noResources') }}</dsh-alert>
           <details v-if="updateInstance" :open="!!previousSource">
             <summary>{{ t('modpack.previousPackage') }}</summary>
-            <dsh-form-item :label="t('modpack.source')">
+            <dsh-form-item>
+              <template #label>
+                {{ t('modpack.source') }}
+                <HintIcon :content="t('modpack.sourceHint')" />
+              </template>
               <dsh-input v-model="previousSource" allow-clear>
                 <template #append>
                   <dsh-button variant="secondary" @click="pickFile(true)">{{ t('modpack.pickFile') }}</dsh-button>
@@ -627,11 +641,13 @@ function close() {
             </li>
           </ul>
           <template v-if="plan.conflicts.length">
-            <h3>{{ t('modpack.conflicts') }}</h3>
-            <p>{{ t('modpack.defaultKeep') }}</p>
+            <h3>
+              {{ t('modpack.conflicts') }}
+              <HintIcon :content="t('modpack.defaultKeep')" />
+            </h3>
             <section v-for="conflict in plan.conflicts" :key="conflict.path" class="resource-card">
               <strong>{{ conflict.path }}</strong>
-              <p v-if="conflict.shared">{{ t('modpack.sharedConflict') }}</p>
+              <HintIcon v-if="conflict.shared" :content="t('modpack.sharedConflict')" />
               <dsh-checkbox v-for="field in conflict.fields?.length ? conflict.fields : [{ key: conflict.path, label: '' }]"
                 :key="field.key" v-model="resolutions[field.key]" :disabled="conflict.shared">
                 {{ t('modpack.useIncoming') }}<template v-if="field.label"> · {{ field.label }}</template>

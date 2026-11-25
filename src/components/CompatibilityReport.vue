@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { HintIcon } from '@dsh-plugin/dsh-ui-components-vue'
 import type { CompatibilityReport } from '@/api/types'
 import { useI18n } from 'vue-i18n'
 
@@ -17,7 +18,10 @@ const { t } = useI18n()
     </div>
     <div v-if="report.actions.length">
       <strong>{{ t('compat.actions') }}</strong>
-      <p v-for="a in report.actions" :key="a.entry">{{ a.package }} ({{ a.entry }}): {{ a.reason }}. {{ t(`compat.action.${a.status}`) }} {{ a.status === 'applied' ? t('compat.reenable') : '' }}</p>
+      <p v-for="a in report.actions" :key="a.entry">
+        {{ a.package }} ({{ a.entry }}): {{ a.reason }}. {{ t(`compat.action.${a.status}`) }}
+        <HintIcon v-if="a.status === 'applied'" :content="t('compat.reenable')" />
+      </p>
     </div>
     <div v-if="report.findings.length">
       <strong>{{ t('compat.after') }}</strong>

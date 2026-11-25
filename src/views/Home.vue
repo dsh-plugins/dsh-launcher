@@ -2,7 +2,7 @@
 import { computed, h, nextTick, onBeforeUnmount, onMounted, ref, render, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
-import { useFeedback } from '@dsh-plugin/dsh-ui-components-vue'
+import { HintIcon, useFeedback } from '@dsh-plugin/dsh-ui-components-vue'
 import { Marked } from 'marked'
 import markedAlert from 'marked-alert'
 import markedFootnote from 'marked-footnote'
@@ -582,9 +582,10 @@ function goEditSelected() {
           centered
           @opened="onDshWindowOpened"
         />
-        <dsh-tooltip v-if="sharedHome" :content="t('home.sharedHomeWarning')">
-          <dsh-tag color="orangered" size="small">{{ t('home.sharedHome') }}</dsh-tag>
-        </dsh-tooltip>
+        <dsh-tag v-if="sharedHome" color="orangered" size="small">
+          {{ t('home.sharedHome') }}
+          <HintIcon :content="t('home.sharedHomeWarning')" />
+        </dsh-tag>
       </div>
 
       <div class="selector-block">

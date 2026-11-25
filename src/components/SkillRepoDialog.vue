@@ -5,7 +5,7 @@
 // which skills to install instead of installing everything.
 import { computed, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { useFeedback } from '@dsh-plugin/dsh-ui-components-vue'
+import { HintIcon, useFeedback } from '@dsh-plugin/dsh-ui-components-vue'
 import { api } from '@/api'
 import type { RepoSkillInfo } from '@/api/types'
 import { useLauncherStore } from '@/stores/launcher'
@@ -209,7 +209,10 @@ const columns = computed(() => [
         </dsh-tooltip>
       </template>
       <template #empty>
-        <dsh-empty :description="t('instanceEdit.skillRepoEmpty')" />
+        <dsh-empty>
+          {{ t('instanceEdit.skillRepoEmpty') }}
+          <HintIcon v-if="!store.settings.skill_repos.length" :content="t('instanceEdit.skillRepoEmptyHint')" />
+        </dsh-empty>
       </template>
     </dsh-table>
   </dsh-modal>

@@ -6,6 +6,7 @@
 import { computed, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import type { CatalogModel } from '@/api/types'
+import { HintIcon } from '@dsh-plugin/dsh-ui-components-vue'
 
 const props = defineProps<{
   visible: boolean
@@ -67,12 +68,14 @@ function confirm() {
 <template>
   <dsh-modal
     :visible="props.visible"
-    :title="t('instanceEdit.modelsFetchTitle')"
     :width="640"
     unmount-on-close
     @cancel="close"
   >
-    <p class="picker-desc">{{ t('instanceEdit.modelsFetchDescription') }}</p>
+    <template #title>
+      {{ t('instanceEdit.modelsFetchTitle') }}
+      <HintIcon :content="t('instanceEdit.modelsFetchDescription')" />
+    </template>
     <dsh-input-search
       v-model="query"
       :placeholder="t('instanceEdit.modelsFetchSearch')"
@@ -113,11 +116,6 @@ function confirm() {
 </template>
 
 <style scoped lang="scss">
-.picker-desc {
-  margin: 0 0 12px;
-  color: var(--color-text-3);
-}
-
 .picker-search {
   margin-bottom: 8px;
 }

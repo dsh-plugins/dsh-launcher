@@ -2,6 +2,7 @@
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
+import { HintIcon } from '@dsh-plugin/dsh-ui-components-vue'
 import { api } from '@/api'
 import { indexedVersions, localizedText, pluginName } from '@/utils/market'
 import { useLauncherStore } from '@/stores/launcher'
@@ -209,9 +210,7 @@ function displayVersion(v: PluginVersionInfo): string {
       <div class="dl-card-title">
         <h3>
           {{ t('plugins.chooseVersion') }}
-          <dsh-tag v-if="hasMore.alpha" size="small" color="arcoblue" class="lazy-tag">
-            {{ t('plugins.lazyLoad') }}
-          </dsh-tag>
+          <HintIcon v-if="hasMore.alpha" :content="t('plugins.lazyLoad')" />
         </h3>
         <dsh-button variant="ghost"
           size="sm"
@@ -255,7 +254,6 @@ function displayVersion(v: PluginVersionInfo): string {
           class="load-more-sentinel"
         >
           <dsh-spin v-if="loadingMore.alpha" :size="14" />
-          <span v-else class="load-more-hint">{{ t('plugins.scrollMore') }}</span>
         </div>
       </template>
       <div v-else class="card-empty">
@@ -287,11 +285,6 @@ function displayVersion(v: PluginVersionInfo): string {
 
 .pick-empty {
   padding: 40px 0;
-}
-
-.lazy-tag {
-  margin-left: 8px;
-  vertical-align: 2px;
 }
 
 .version-row {
@@ -361,8 +354,4 @@ function displayVersion(v: PluginVersionInfo): string {
   min-height: 36px;
 }
 
-.load-more-hint {
-  font-size: 12px;
-  color: var(--color-text-4);
-}
 </style>

@@ -2,11 +2,10 @@
 import { computed, onMounted, reactive, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
-import { useFeedback } from '@dsh-plugin/dsh-ui-components-vue'
+import { HintIcon, useFeedback } from '@dsh-plugin/dsh-ui-components-vue'
 import { api } from '@/api'
 import type { ExportContents, ExportProfileSpec } from '@/api/types'
 import { useLauncherStore } from '@/stores/launcher'
-import HintIcon from '@/components/HintIcon.vue'
 import PackforgeExportOptions from '@/components/PackforgeExportOptions.vue'
 
 const { message: Message } = useFeedback()

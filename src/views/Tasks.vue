@@ -2,7 +2,7 @@
 import { computed, nextTick, onMounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
-import { useFeedback } from '@dsh-plugin/dsh-ui-components-vue'
+import { HintIcon, useFeedback } from '@dsh-plugin/dsh-ui-components-vue'
 import { api } from '@/api'
 import { useLauncherStore } from '@/stores/launcher'
 import type { TaskInfo, TaskState } from '@/api/types'
@@ -124,7 +124,6 @@ const sortedTasks = computed(() => store.taskList)
             </div>
             <div class="task-meta">
               {{ formatTime(task.created_at) }}
-              <template v-if="task.state === 'queued'"> · {{ t('tasks.queuedHint') }}</template>
               <template v-if="task.state === 'done' && task.kind !== 'install-plugin' && instanceName(task)">
                 · {{ t('tasks.createdInstance', { name: instanceName(task) }) }}
               </template>
@@ -133,7 +132,10 @@ const sortedTasks = computed(() => store.taskList)
               </template>
             </div>
           </div>
-          <dsh-tag class="task-state" :color="stateColor(task.state)" size="small">{{ t(`tasks.state.${task.state}`) }}</dsh-tag>
+          <dsh-tag class="task-state" :color="stateColor(task.state)" size="small">
+            {{ t(`tasks.state.${task.state}`) }}
+            <HintIcon v-if="task.state === 'queued'" :content="t('tasks.queuedHint')" />
+          </dsh-tag>
           <div class="task-progress">
             <dsh-progress
               v-if="task.state === 'running'"

@@ -8,6 +8,7 @@ import type {
   PackforgePluginInfo, PackforgePluginOverride, PackforgeResourceGroup, PackforgeResourceSelection,
   PackforgeSelection, PackforgeSkillMode, PackforgeText,
 } from '@/api/types'
+import { HintIcon } from '@dsh-plugin/dsh-ui-components-vue'
 import { packforgeText } from '@/utils/packforge'
 
 const props = defineProps<{ input: InspectPackforgeExportInput }>()
@@ -260,7 +261,11 @@ defineExpose({ getOptions })
     </dsh-alert>
     <template v-else-if="inspection">
       <dsh-form :model="{}" layout="vertical">
-        <dsh-form-item :label="t('modpack.compatibleVersions')" :extra="t('modpack.compatibleVersionsHint')">
+        <dsh-form-item>
+          <template #label>
+            {{ t('modpack.compatibleVersions') }}
+            <HintIcon :content="t('modpack.compatibleVersionsHint')" />
+          </template>
           <dsh-select v-model="selectedVersions" multiple allow-create allow-search>
             <dsh-option v-for="version in availableVersions" :key="version" :value="version">{{ version }}</dsh-option>
           </dsh-select>
@@ -277,9 +282,9 @@ defineExpose({ getOptions })
               <dsh-checkbox v-model="checked[item.key]" :disabled="item.unsupported">
                 {{ packforgeText(item.name, locale) || item.id }} · {{ item.scope }}
               </dsh-checkbox>
+              <HintIcon v-if="item.unsupported" :content="t('modpack.unsupportedResource')" />
               <p v-if="item.desc">{{ packforgeText(item.desc, locale) }}</p>
               <p v-if="item.notice">{{ item.notice }}</p>
-              <p v-if="item.unsupported">{{ t('modpack.unsupportedResource') }}</p>
               <template v-if="group.key === 'skills' && checked[item.key]">
                 <dsh-form-item :label="t('modpack.skillMode')">
                   <dsh-select :model-value="skills[item.key].mode" @change="value => setSkillMode(skills[item.key], value, item)">
@@ -319,8 +324,20 @@ defineExpose({ getOptions })
           <summary>{{ t('modpack.plugins') }}</summary>
           <details v-for="row in plugins" :key="row.profile + '/' + row.id" class="packforge-entry">
             <summary>{{ row.profile }} · {{ row.id }}<template v-if="row.version"> · {{ row.version }}</template></summary>
-            <dsh-form-item :label="t('modpack.displayLabel')" :extra="t('modpack.localeMapHint', { example: localeExample })"><dsh-input v-model="row.name" /></dsh-form-item>
-            <dsh-form-item :label="t('modpack.descriptionLabel')" :extra="t('modpack.localeMapHint', { example: localeExample })"><dsh-input v-model="row.desc" /></dsh-form-item>
+            <dsh-form-item>
+              <template #label>
+                {{ t('modpack.displayLabel') }}
+                <HintIcon :content="t('modpack.localeMapHint', { example: localeExample })" />
+              </template>
+              <dsh-input v-model="row.name" />
+            </dsh-form-item>
+            <dsh-form-item>
+              <template #label>
+                {{ t('modpack.descriptionLabel') }}
+                <HintIcon :content="t('modpack.localeMapHint', { example: localeExample })" />
+              </template>
+              <dsh-input v-model="row.desc" />
+            </dsh-form-item>
             <dsh-form-item :label="t('modpack.pluginIcon')"><dsh-input v-model="row.icon" /></dsh-form-item>
             <dsh-form-item v-if="row.version && exactVersion(row.version)" :label="t('modpack.registry')">
               <dsh-input v-model="row.registry" :placeholder="t('modpack.defaultRegistry')" />

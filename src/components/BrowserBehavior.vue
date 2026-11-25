@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { useFeedback } from '@dsh-plugin/dsh-ui-components-vue'
+import { HintIcon, useFeedback } from '@dsh-plugin/dsh-ui-components-vue'
 import { api } from '@/api'
 import { defaultBrowserSettings } from '@/api/types'
 import type { BrowserOverrides, BrowserProxyMode, BrowserStorage, DshInstance, ProxyEndpoint } from '@/api/types'
@@ -59,6 +59,14 @@ const proxyDescription = computed(() => {
   }
 })
 
+const proxyHint = computed(() => {
+  const applyHint = t('browser.applyProxy')
+  if (shared.value) {
+    return t('browser.sharedProxy', { value: proxyDescription.value }) + ' ' + applyHint
+  }
+  return proxyMode.value === 'custom' ? applyHint : proxyDescription.value + ' ' + applyHint
+})
+
 async function save() {
   if (uaMode.value === 'custom' && (!userAgent.value.trim() || /[\r\n]/u.test(userAgent.value))) {
     message.error(t('browser.invalidUa'))
@@ -101,16 +109,23 @@ async function save() {
 
 <template>
   <div class="dl-card edit-card">
-    <div class="dl-card-title"><h3>{{ t('browser.title') }}</h3></div>
-    <p>{{ t('browser.scope') }}</p>
+    <div class="dl-card-title"><h3>{{ t('browser.title') }}<HintIcon :content="t('browser.scope')" /></h3></div>
     <dsh-form layout="vertical" :model="{ storage, userAgent, proxyMode }" class="browser-form">
-      <dsh-form-item :label="t('browser.storage')" :extra="t('browser.storageHints.' + effectiveStorage)">
+      <dsh-form-item>
+        <template #label>
+          {{ t('browser.storage') }}
+          <HintIcon :content="t('browser.storageHints.' + effectiveStorage)" />
+        </template>
         <dsh-select v-model="storage" :disabled="busy">
           <dsh-option v-if="instance" value="inherit">{{ t('browser.inheritValue', { value: t('browser.storageModes.' + globalSettings.storage) }) }}</dsh-option>
           <dsh-option v-for="mode in scopes" :key="mode" :value="mode">{{ t('browser.storageModes.' + mode) }}</dsh-option>
         </dsh-select>
       </dsh-form-item>
-      <dsh-form-item :label="t('browser.ua')" :extra="uaMode === 'inherit' ? globalSettings.user_agent || t('browser.platformUa') : undefined">
+      <dsh-form-item>
+        <template #label>
+          {{ t('browser.ua') }}
+          <HintIcon v-if="uaMode === 'inherit'" :content="globalSettings.user_agent || t('browser.platformUa')" />
+        </template>
         <dsh-select v-model="uaMode" :disabled="busy">
           <dsh-option v-if="instance" value="inherit">{{ t('browser.inherit') }}</dsh-option>
           <dsh-option value="platform">{{ t('browser.platformUa') }}</dsh-option>
@@ -120,7 +135,11 @@ async function save() {
       <dsh-form-item v-if="uaMode === 'custom'" :label="t('browser.uaValue')">
         <dsh-input v-model="userAgent" :disabled="busy" placeholder="Mozilla/5.0 …" />
       </dsh-form-item>
-      <dsh-form-item :label="t('browser.proxy')" :extra="shared ? t('browser.sharedProxy', { value: proxyDescription }) : proxyMode === 'custom' ? undefined : proxyDescription">
+      <dsh-form-item>
+        <template #label>
+          {{ t('browser.proxy') }}
+          <HintIcon :content="proxyHint" />
+        </template>
         <dsh-select :model-value="displayedMode" :disabled="shared || busy" @change="value => proxyMode = value as typeof proxyMode">
           <dsh-option v-if="instance" value="inherit">{{ t('browser.inherit') }}</dsh-option>
           <dsh-option v-for="mode in modes" :key="mode" :value="mode">{{ t('browser.proxyModes.' + mode) }}</dsh-option>
@@ -128,7 +147,6 @@ async function save() {
       </dsh-form-item>
       <ProxyFields v-if="!shared && proxyMode === 'custom'" :key="revision" v-model="proxy" v-model:password="password"
         :scope="instance ? 'instance' : 'browser'" :instance-id="instance?.id" :disabled="busy" />
-      <p class="browser-hint">{{ t('browser.applyProxy') }}</p>
       <dsh-button variant="primary" :loading="busy" @click="save">{{ t('common.save') }}</dsh-button>
     </dsh-form>
   </div>
@@ -136,5 +154,4 @@ async function save() {
 
 <style scoped>
 .browser-form { max-width: 620px; margin-top: 16px; }
-.browser-hint { color: var(--color-text-2); margin: 8px 0 16px; }
 </style>

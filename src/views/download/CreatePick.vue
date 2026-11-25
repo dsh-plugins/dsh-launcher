@@ -2,7 +2,7 @@
 import { computed, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
-import { useFeedback, useDialog } from '@dsh-plugin/dsh-ui-components-vue'
+import { HintIcon, useFeedback, useDialog } from '@dsh-plugin/dsh-ui-components-vue'
 import { api } from '@/api'
 import { useLauncherStore } from '@/stores/launcher'
 import type { RemoteVersion } from '@/api/types'
@@ -227,16 +227,18 @@ function confirmRemove(id: string, version: string) {
           <div class="version-sub">{{ v.dir }}</div>
         </div>
         <span class="used-by">{{ t('download.usedBy', { count: usedByCount(v.id) }) }}</span>
-        <dsh-button
-          variant="secondary"
-          size="sm"
-          :title="t('download.repairVersionHint')"
-          :loading="repairBusy(v.id)"
-          :disabled="removingId === v.id || repairBusy(v.id) || versionInUse(v.id)"
-          @click="onRepair(v.id)"
-        >
-          {{ t('download.repairVersion') }}
-        </dsh-button>
+        <span class="repair-action">
+          <dsh-button
+            variant="secondary"
+            size="sm"
+            :loading="repairBusy(v.id)"
+            :disabled="removingId === v.id || repairBusy(v.id) || versionInUse(v.id)"
+            @click="onRepair(v.id)"
+          >
+            {{ t('download.repairVersion') }}
+          </dsh-button>
+          <HintIcon :content="t('download.repairVersionHint')" />
+        </span>
         <dsh-button variant="danger"
           size="sm"
           :loading="removingId === v.id"
@@ -322,6 +324,11 @@ function confirmRemove(id: string, version: string) {
   &:hover {
     background: var(--color-fill-2);
   }
+}
+
+.repair-action {
+  display: inline-flex;
+  align-items: center;
 }
 
 .used-by {

@@ -2,10 +2,9 @@
 import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
-import { ToggleButtonGroup, useFeedback } from '@dsh-plugin/dsh-ui-components-vue'
+import { HintIcon, ToggleButtonGroup, useFeedback } from '@dsh-plugin/dsh-ui-components-vue'
 import { api } from '@/api'
 import { useLauncherStore } from '@/stores/launcher'
-import HintIcon from '@/components/HintIcon.vue'
 
 const { message: Message } = useFeedback()
 
@@ -175,6 +174,7 @@ async function onConfirm() {
         <h3>
           {{ t('download.runtimeEnv') }}
           <HintIcon v-if="wslDistro" :content="t('download.wslHomeHint', { distro: wslDistro })" />
+          <HintIcon v-else-if="!installedVersion && isSourceBuild" :content="t('download.sourceBuildHint')" />
         </h3>
       </div>
       <ToggleButtonGroup
@@ -205,10 +205,12 @@ async function onConfirm() {
         </dsh-option>
       </dsh-select>
       <div v-if="dedicated" class="dedicated-name-row">
-        <span class="dedicated-name-label">{{ t('download.dedicatedHomeName') }}</span>
+        <span class="dedicated-name-label">
+          {{ t('download.dedicatedHomeName') }}
+          <HintIcon :content="t('download.dedicatedHomeNameHint')" />
+        </span>
         <dsh-input
           :model-value="dedicatedName"
-          :placeholder="t('download.dedicatedHomeNamePlaceholder')"
           style="max-width: 320px"
           @update:model-value="onDedicatedNameInput"
         />
@@ -217,39 +219,31 @@ async function onConfirm() {
 
     <!-- Action -->
     <div class="confirm-area">
-      <dsh-alert v-if="!wslDistro && !installedVersion && isSourceBuild" type="warning" class="confirm-hint">
-        {{ t('download.sourceBuildHint') }}
-      </dsh-alert>
       <dsh-alert v-if="downloadOnly && installedVersion" type="info" class="confirm-hint">
         {{ t('download.downloadOnlyInstalled') }}
       </dsh-alert>
       <dsh-alert v-else-if="downloadOnly && versionDownloading" type="info" class="confirm-hint">
         {{ t('download.downloadInProgress', { version }) }}
       </dsh-alert>
-      <dsh-alert v-else-if="downloadOnly" type="info" class="confirm-hint">
-        {{ t('download.willDownloadOnly', { version }) }}
-      </dsh-alert>
-      <dsh-alert v-else-if="windowsSelected && installedVersion" type="info" class="confirm-hint">
-        {{ t('download.alreadyInstalled') }}
-      </dsh-alert>
-      <dsh-alert v-else-if="windowsSelected" type="info" class="confirm-hint">
-        {{ t('download.willInstall', { version }) }}
-      </dsh-alert>
-      <dsh-button variant="primary"
-        size="lg"
-        class="confirm-button"
-        :disabled="!canConfirm"
-        :loading="busy"
-        @click="onConfirm"
-      >
-        {{
-          wslDistro
-            ? t('download.createWslInstance')
-            : windowsSelected && installedVersion
-              ? t('download.createOnly')
-              : t('download.startDownload')
-        }}
-      </dsh-button>
+      <div class="confirm-action">
+        <dsh-button variant="primary"
+          size="lg"
+          class="confirm-button"
+          :disabled="!canConfirm"
+          :loading="busy"
+          @click="onConfirm"
+        >
+          {{
+            wslDistro
+              ? t('download.createWslInstance')
+              : windowsSelected && installedVersion
+                ? t('download.createOnly')
+                : t('download.startDownload')
+          }}
+        </dsh-button>
+        <HintIcon v-if="downloadOnly && !installedVersion && !versionDownloading" :content="t('download.willDownloadOnly', { version })" />
+        <HintIcon v-else-if="windowsSelected" :content="installedVersion ? t('download.alreadyInstalled') : t('download.willInstall', { version })" />
+      </div>
     </div>
   </div>
 </template>
@@ -329,6 +323,11 @@ async function onConfirm() {
 .dedicated-name-label {
   flex-shrink: 0;
   color: var(--color-text-2);
+}
+
+.confirm-action {
+  display: flex;
+  align-items: center;
 }
 
 .confirm-button {

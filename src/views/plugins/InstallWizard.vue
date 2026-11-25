@@ -2,11 +2,10 @@
 import { computed, onMounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
-import { useFeedback } from '@dsh-plugin/dsh-ui-components-vue'
+import { HintIcon, useFeedback } from '@dsh-plugin/dsh-ui-components-vue'
 import { api } from '@/api'
 import { compatibility, pluginName, rangeParts, useCompatibilityAck } from '@/utils/market'
 import { useLauncherStore } from '@/stores/launcher'
-import HintIcon from '@/components/HintIcon.vue'
 
 const { message: Message } = useFeedback()
 
@@ -147,7 +146,6 @@ async function startInstall() {
       repo: s.plugin.repo ?? s.plugin.urls?.repository ?? null,
     })
     Message.success(t('plugins.installTaskAdded'))
-    Message.info(t('plugins.installRestartHint'))
     await store.refreshTasks()
     // Stay in the plugin flow: return to the marketplace (kept alive, so the
     // search/scroll position is exactly where the user left it) and play the
@@ -178,7 +176,9 @@ async function startInstall() {
     <div v-else class="wizard-body">
       <!-- Summary -->
       <div class="dl-card">
-        <div class="dl-card-title"><h3>{{ t('plugins.installTitle') }}</h3></div>
+        <div class="dl-card-title">
+          <h3>{{ t('plugins.installTitle') }}<HintIcon :content="t('plugins.installRestartHint')" /></h3>
+        </div>
         <div class="summary-row">
           <span class="summary-label">{{ t('plugins.chooseVersion') }}</span>
           <span v-if="state.version" class="summary-value">
@@ -212,7 +212,12 @@ async function startInstall() {
 
       <!-- Instance + profile -->
       <div class="dl-card">
-        <div class="dl-card-title"><h3>{{ t('plugins.chooseInstance') }}</h3></div>
+        <div class="dl-card-title">
+          <h3>
+            {{ t('plugins.chooseInstance') }}
+            <HintIcon v-if="selectedDistro" :content="t('plugins.wslInstallHint', { distro: selectedDistro })" />
+          </h3>
+        </div>
         <div v-if="instances.length === 0" class="no-instance">
           <dsh-empty :description="t('plugins.noInstance')">
             <template #actions>
@@ -242,14 +247,6 @@ async function startInstall() {
               </span>
             </dsh-option>
           </dsh-select>
-
-          <!-- WSL (issue #49): dependencies are installed inside the distro,
-               so native modules resolve to Linux binaries. Say so up front —
-               the resulting node_modules is not interchangeable with a
-               Windows instance's. -->
-          <dsh-alert v-if="selectedDistro" type="info" class="wsl-install-hint">
-            {{ t('plugins.wslInstallHint', { distro: selectedDistro }) }}
-          </dsh-alert>
 
           <div v-if="selectedInstance" class="compatibility-block">
             <dsh-tag v-for="part in rangeParts(supportedVersions)" :key="part" size="small">{{ part }}</dsh-tag>
@@ -380,10 +377,6 @@ async function startInstall() {
 
 .no-instance {
   padding: 8px 0;
-}
-
-.wsl-install-hint {
-  margin: 12px 0;
 }
 
 .compatibility-block {

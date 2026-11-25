@@ -2,7 +2,7 @@
 import { computed, onBeforeUnmount, onMounted, ref, watch, type Ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
-import { useFeedback, useDialog } from '@dsh-plugin/dsh-ui-components-vue'
+import { HintIcon, useFeedback, useDialog } from '@dsh-plugin/dsh-ui-components-vue'
 import { api } from '@/api'
 import type { CompatibilityReport as CompatibilityReportType } from '@/api/types'
 import CompatibilityReport from '@/components/CompatibilityReport.vue'
@@ -34,7 +34,6 @@ import BrowserBehavior from '@/components/BrowserBehavior.vue'
 import SkillRepoDialog from '@/components/SkillRepoDialog.vue'
 import MigratePluginsDialog from '@/components/MigratePluginsDialog.vue'
 import ModelPickerDialog from '@/components/ModelPickerDialog.vue'
-import HintIcon from '@/components/HintIcon.vue'
 import PageScrollbar from '@/components/PageScrollbar.vue'
 import { shortRepoName } from '@/utils/repo'
 import { pluginName } from '@/utils/market'
@@ -2448,7 +2447,7 @@ const terminalRunning = ref(false)
               <dsh-form-item v-if="editingId">
                 <template #label>
                   {{ t('instanceEdit.icon') }}
-                  <HintIcon :content="t('instanceEdit.iconHint')" />
+                  <HintIcon :content="t('instanceEdit.iconHint') + ' ' + t('instanceEdit.iconUrlHint')" />
                 </template>
                 <div class="icon-editor">
                   <img v-if="iconUrl" :src="iconUrl" class="icon-preview" alt="" />
@@ -2456,7 +2455,7 @@ const terminalRunning = ref(false)
                   <div class="icon-actions">
                     <dsh-input
                       v-model="iconInput"
-                      :placeholder="t('instanceEdit.iconUrlHint')"
+                      placeholder="https://…"
                       allow-clear
                       style="max-width: 300px"
                     />
@@ -2518,7 +2517,6 @@ const terminalRunning = ref(false)
                 <dsh-space>
                   <dsh-input
                     v-model="tuiCwdInput"
-                    :placeholder="t('instanceEdit.tuiCwdPlaceholder')"
                     allow-clear
                     style="width: 400px"
                     @press-enter="applyTuiCwd"
@@ -2579,7 +2577,6 @@ const terminalRunning = ref(false)
               </dsh-button>
               <div v-if="envKeyError(row)" class="env-error">{{ envKeyError(row) }}</div>
             </div>
-            <dsh-empty v-if="envRows.length === 0" :description="t('instanceEdit.envAdd')" />
             <dsh-button variant="secondary" size="sm" class="env-add-btn" @click="addEnvRow">{{ t('instanceEdit.envAdd') }}</dsh-button>
 
             <div class="footer-actions">
@@ -3037,15 +3034,15 @@ const terminalRunning = ref(false)
                     {{ t('instanceEdit.mcpScopeProfile') }} · {{ p }}
                   </dsh-option>
                 </dsh-select>
+                <HintIcon :content="t('instanceEdit.mcpScopePath', { path: mcpScopePath })" />
                 <dsh-button variant="primary" @click="openMcpCreate">
                   {{ t('instanceEdit.mcpAdd') }}
                 </dsh-button>
+                <HintIcon :content="t('instanceEdit.mcpPasteTip')" />
                 <dsh-button variant="ghost" :loading="mcpLoading" @click="loadMcpServers">
                   ⟳
                 </dsh-button>
               </div>
-              <p class="mcp-path">{{ t('instanceEdit.mcpScopePath', { path: mcpScopePath }) }}</p>
-              <p class="mcp-path">{{ t('instanceEdit.mcpPasteTip') }}</p>
 
               <dsh-table
                 :columns="mcpColumns"
@@ -3122,24 +3119,23 @@ const terminalRunning = ref(false)
                     {{ t('instanceEdit.modelsScopeProfile') }} · {{ p }}
                   </dsh-option>
                 </dsh-select>
+                <HintIcon :content="t('instanceEdit.modelsScopePath', { path: modelsScopePath })" />
                 <dsh-button variant="primary" @click="addModeVisible = true">
                   {{ t('instanceEdit.modelsAdd') }}
                 </dsh-button>
                 <dsh-button variant="ghost" :loading="modelsLoading" @click="loadModels">⟳</dsh-button>
               </div>
-              <p class="models-path">{{ t('instanceEdit.modelsScopePath', { path: modelsScopePath }) }}</p>
 
               <dsh-spin :loading="modelsLoading" class="models-body">
                 <!-- DeepSeek official card: credential-only -->
                 <div v-if="officialCard" class="model-card model-card-official">
                   <div class="model-card-head">
-                    <span class="model-card-id">DeepSeek</span>
+                    <span class="model-card-id">DeepSeek<HintIcon :content="t('instanceEdit.modelsDeepSeekHint')" /></span>
                     <dsh-tag v-if="officialCard.credential?.configured" color="green">
                       {{ t('instanceEdit.modelsConfigured') }}
                     </dsh-tag>
                     <dsh-tag v-else color="gray">{{ t('instanceEdit.modelsNotConfigured') }}</dsh-tag>
                   </div>
-                  <p class="model-card-sub">{{ t('instanceEdit.modelsDeepSeekHint') }}</p>
                   <div class="model-card-actions">
                     <dsh-button variant="secondary" size="sm" @click="openEditProvider(officialCard)">
                       {{ t('instanceEdit.modelsConfigure') }}
@@ -3200,7 +3196,9 @@ const terminalRunning = ref(false)
           <div v-else-if="activeTab === 'storage'" class="dl-card edit-card">
             <h4 class="env-title">
               {{ t('instanceEdit.tabs.storage') }}
-              <HintIcon :content="t('instanceEdit.storageDesc')" />
+              <HintIcon :content="homeId && homeId !== DEDICATED && !isWsl
+                ? t('instanceEdit.storageDesc') + ' ' + t('instanceEdit.storageCaveat')
+                : t('instanceEdit.storageDesc')" />
             </h4>
 
             <!-- WSL (issue #49 G4): storage redirection is not implemented for
@@ -3212,9 +3210,6 @@ const terminalRunning = ref(false)
             </dsh-alert>
 
             <template v-if="homeId && homeId !== DEDICATED && !isWsl">
-              <dsh-alert type="warning" class="storage-caveat">
-                {{ t('instanceEdit.storageCaveat') }}
-              </dsh-alert>
               <!-- Issue #91: check a set of entries and redirect them all into
                    one directory, keeping each entry's current name. -->
               <div class="storage-toolbar">
@@ -3323,11 +3318,14 @@ const terminalRunning = ref(false)
         <dsh-form-item :label="t('instanceEdit.skillDescription')">
           <dsh-input v-model="skillCreateForm.description" />
         </dsh-form-item>
-        <dsh-form-item :label="t('instanceEdit.skillContent')" required>
+        <dsh-form-item required>
+          <template #label>
+            {{ t('instanceEdit.skillContent') }}
+            <HintIcon :content="t('instanceEdit.skillContentHint')" />
+          </template>
           <dsh-textarea
             v-model="skillCreateForm.content"
             :auto-size="{ minRows: 6, maxRows: 14 }"
-            :placeholder="t('instanceEdit.skillContentHint')"
           />
         </dsh-form-item>
       </dsh-form>
@@ -3336,23 +3334,25 @@ const terminalRunning = ref(false)
     <!-- MCP server create / edit -->
     <dsh-modal
       v-model:visible="mcpEditVisible"
-      :title="
-        mcpOriginalId
-          ? t('instanceEdit.mcpEditTitle', { name: mcpForm.serverName })
-          : t('instanceEdit.mcpCreateTitle')
-      "
       :width="680"
       :ok-loading="mcpSaving"
       :ok-button-props="{ disabled: !mcpFormValid }"
       @ok="onSaveMcpServer"
     >
+      <template #title>
+        {{ mcpOriginalId ? t('instanceEdit.mcpEditTitle', { name: mcpForm.serverName }) : t('instanceEdit.mcpCreateTitle') }}
+        <HintIcon v-if="mcpExtraKeys.length" :content="t('instanceEdit.mcpExtraKept', { keys: mcpExtraKeys.join(', ') })" />
+      </template>
       <dsh-form :model="mcpForm" layout="vertical" @paste="onMcpDialogPaste">
         <dsh-form-item
-          :label="t('instanceEdit.mcpServerName')"
           required
           :validate-status="mcpNameError ? 'error' : undefined"
-          :help="mcpNameError || t('instanceEdit.mcpServerNameHint')"
+          :help="mcpNameError || undefined"
         >
+          <template #label>
+            {{ t('instanceEdit.mcpServerName') }}
+            <HintIcon :content="t('instanceEdit.mcpServerNameHint')" />
+          </template>
           <dsh-input v-model="mcpForm.serverName" placeholder="codegraph" />
         </dsh-form-item>
 
@@ -3409,7 +3409,11 @@ const terminalRunning = ref(false)
           >
             <dsh-input v-model="mcpForm.command" :placeholder="t('instanceEdit.mcpCommandPlaceholder')" />
           </dsh-form-item>
-          <dsh-form-item :label="t('instanceEdit.mcpArgs')" :extra="t('instanceEdit.mcpArgPlaceholder')">
+          <dsh-form-item>
+            <template #label>
+              {{ t('instanceEdit.mcpArgs') }}
+              <HintIcon :content="t('instanceEdit.mcpArgPlaceholder')" />
+            </template>
             <div class="mcp-rows">
               <div v-for="(_arg, idx) in mcpForm.args" :key="idx" class="env-row">
                 <dsh-input v-model="mcpForm.args[idx]" class="env-value" />
@@ -3442,8 +3446,12 @@ const terminalRunning = ref(false)
               </dsh-button>
             </div>
           </dsh-form-item>
-          <dsh-form-item :label="t('instanceEdit.mcpCwd')">
-            <dsh-input v-model="mcpForm.cwd" :placeholder="t('instanceEdit.mcpCwdPlaceholder')" />
+          <dsh-form-item>
+            <template #label>
+              {{ t('instanceEdit.mcpCwd') }}
+              <HintIcon :content="t('instanceEdit.mcpCwdPlaceholder')" />
+            </template>
+            <dsh-input v-model="mcpForm.cwd" />
           </dsh-form-item>
         </template>
 
@@ -3451,10 +3459,6 @@ const terminalRunning = ref(false)
           <dsh-switch v-model="mcpForm.enabled" />
           <span class="switch-label">{{ t('instanceEdit.mcpEnabledLabel') }}</span>
         </dsh-form-item>
-
-        <dsh-alert v-if="mcpExtraKeys.length" type="info">
-          {{ t('instanceEdit.mcpExtraKept', { keys: mcpExtraKeys.join(', ') }) }}
-        </dsh-alert>
       </dsh-form>
     </dsh-modal>
 
@@ -3462,59 +3466,56 @@ const terminalRunning = ref(false)
     <dsh-modal
       v-model:visible="providerEditVisible"
       modalClass="model-provider-modal"
-      :title="providerTitle"
       :width="680"
       :ok-loading="providerSaving"
       :ok-button-props="{ disabled: !providerFormValid }"
       @ok="onSaveProvider"
     >
+      <template #title>
+        {{ providerTitle }}
+        <HintIcon v-if="providerForm.official" :content="t('instanceEdit.modelsDeepSeekFormNote')" />
+        <HintIcon v-else-if="providerForm.catalogProviderId" :content="t('instanceEdit.modelsCatalogInherited', { api: providerForm.api, baseUrl: providerForm.baseUrl })" />
+        <HintIcon v-else :content="t('instanceEdit.modelsAddCustomSub')" />
+      </template>
       <dsh-form :model="providerForm" layout="vertical">
         <!-- API key: write-only, never read back -->
         <dsh-form-item
-          :label="t('instanceEdit.modelsApiKey')"
           :required="!!providerApiKeyError"
           :validate-status="providerApiKeyError ? 'error' : providerEditTarget?.credential?.overriddenByInstance ? 'warning' : undefined"
-          :help="
-            providerApiKeyError ||
-            (providerEditTarget?.credential?.overriddenByInstance
-              ? t('instanceEdit.modelsKeyOverridden')
-              : providerEditTarget?.credential?.configured
-                ? t('instanceEdit.modelsKeyConfigured')
-                : t('instanceEdit.modelsApiKeyHint'))
-          "
+          :help="providerApiKeyError || (providerEditTarget?.credential?.overriddenByInstance
+            ? t('instanceEdit.modelsKeyOverridden')
+            : providerEditTarget?.credential?.configured ? t('instanceEdit.modelsKeyConfigured') : undefined)"
         >
-          <dsh-input-password
-            v-model="providerForm.apiKey"
-            :placeholder="providerEditTarget?.credential?.configured ? t('instanceEdit.modelsApiKeyKeep') : t('instanceEdit.modelsApiKeyPlaceholder')"
-          />
+          <template #label>
+            {{ t('instanceEdit.modelsApiKey') }}
+            <HintIcon :content="providerEditTarget?.credential?.configured
+              ? t('instanceEdit.modelsApiKeyHint') + ' ' + t('instanceEdit.modelsApiKeyKeep')
+              : t('instanceEdit.modelsApiKeyHint')" />
+          </template>
+          <dsh-input-password v-model="providerForm.apiKey" />
         </dsh-form-item>
 
-        <!-- Official DeepSeek card: only the key above is shown -->
-        <template v-if="providerForm.official">
-          <p class="model-form-note">{{ t('instanceEdit.modelsDeepSeekFormNote') }}</p>
-        </template>
-
         <!-- Built-in provider: id/endpoint/models come from the catalogue -->
-        <template v-else-if="providerForm.catalogProviderId">
+        <template v-if="providerForm.catalogProviderId && !providerForm.official">
           <dsh-form-item :label="t('instanceEdit.modelsProviderId')">
             <dsh-input :model-value="providerForm.id" disabled />
           </dsh-form-item>
           <dsh-form-item :label="t('instanceEdit.modelsDisplayName')">
             <dsh-input v-model="providerForm.displayName" :placeholder="catalogEntry?.name ?? ''" />
           </dsh-form-item>
-          <dsh-alert type="info">
-            {{ t('instanceEdit.modelsCatalogInherited', { api: providerForm.api, baseUrl: providerForm.baseUrl }) }}
-          </dsh-alert>
         </template>
 
         <!-- Custom provider: every field is user-owned -->
-        <template v-else>
+        <template v-else-if="!providerForm.official">
           <dsh-form-item
-            :label="t('instanceEdit.modelsProviderId')"
             required
             :validate-status="providerIdError ? 'error' : undefined"
-            :help="providerIdError || t('instanceEdit.modelsProviderIdHint')"
+            :help="providerIdError || undefined"
           >
+            <template #label>
+              {{ t('instanceEdit.modelsProviderId') }}
+              <HintIcon :content="t('instanceEdit.modelsProviderIdHint')" />
+            </template>
             <dsh-input v-model="providerForm.id" :disabled="!!providerOriginalId" placeholder="my-gateway" />
           </dsh-form-item>
           <dsh-form-item :label="t('instanceEdit.modelsDisplayName')">
@@ -3544,10 +3545,13 @@ const terminalRunning = ref(false)
           </dsh-form-item>
 
           <dsh-form-item
-            :label="t('instanceEdit.modelsModels')"
             :validate-status="providerModelsError ? 'error' : undefined"
-            :help="providerModelsError || t('instanceEdit.modelsModelsHint')"
+            :help="providerModelsError || undefined"
           >
+            <template #label>
+              {{ t('instanceEdit.modelsModels') }}
+              <HintIcon :content="t('instanceEdit.modelsModelsHint')" />
+            </template>
             <div class="model-rows">
               <div v-for="model in providerForm.models" :key="model.id" class="model-row">
                 <span class="model-id">{{ model.id }}</span>
@@ -3621,7 +3625,6 @@ const terminalRunning = ref(false)
         <div class="add-mode-grid">
           <button class="add-mode-card" type="button" @click="openAddCustom">
             <span class="add-mode-title">{{ t('instanceEdit.modelsAddCustom') }}</span>
-            <span class="add-mode-sub">{{ t('instanceEdit.modelsAddCustomSub') }}</span>
           </button>
           <button
             v-for="p in catalogProviders"
@@ -3691,10 +3694,11 @@ const terminalRunning = ref(false)
             </dsh-option>
           </dsh-select>
         </dsh-form-item>
-        <dsh-alert v-if="!linkIsDir" type="info" class="storage-file-hint">
-          {{ t('instanceEdit.storageFileEntryHint') }}
-        </dsh-alert>
-        <dsh-form-item :label="t('instanceEdit.storageTargetDir')">
+        <dsh-form-item>
+          <template #label>
+            {{ t('instanceEdit.storageTargetDir') }}
+            <HintIcon :content="linkIsDir ? t('instanceEdit.storageSetHint') : t('instanceEdit.storageSetHint') + ' ' + t('instanceEdit.storageFileEntryHint')" />
+          </template>
           <dsh-input-group>
             <dsh-input
               v-model="linkDir"
@@ -3713,9 +3717,6 @@ const terminalRunning = ref(false)
         >
           <dsh-input v-model="linkAlias" :placeholder="linkEntry" allow-clear />
         </dsh-form-item>
-        <dsh-alert type="info">
-          {{ t('instanceEdit.storageSetHint') }}
-        </dsh-alert>
       </dsh-form>
     </dsh-modal>
 
@@ -3752,7 +3753,11 @@ const terminalRunning = ref(false)
             </dsh-option>
           </dsh-select>
         </dsh-form-item>
-        <dsh-form-item :label="t('instanceEdit.storageTargetDir')">
+        <dsh-form-item>
+          <template #label>
+            {{ t('instanceEdit.storageTargetDir') }}
+            <HintIcon :content="t('instanceEdit.storageBatchHint')" />
+          </template>
           <dsh-input-group>
             <dsh-input
               v-model="batchDir"
@@ -3764,9 +3769,6 @@ const terminalRunning = ref(false)
             </dsh-button>
           </dsh-input-group>
         </dsh-form-item>
-        <dsh-alert type="info">
-          {{ t('instanceEdit.storageBatchHint') }}
-        </dsh-alert>
       </dsh-form>
     </dsh-modal>
 
@@ -3796,13 +3798,6 @@ const terminalRunning = ref(false)
   gap: 8px;
   align-items: center;
   margin-bottom: 8px;
-}
-
-.mcp-path {
-  margin: 0 0 12px;
-  font-size: 12px;
-  color: var(--color-text-3);
-  word-break: break-all;
 }
 
 .mcp-target {
@@ -3992,11 +3987,6 @@ const terminalRunning = ref(false)
   margin-left: 8px;
   color: var(--color-text-3);
   font-size: 12px;
-}
-
-/* File entries get guidance instead of the (root-based) preset dropdown. */
-.storage-file-hint {
-  margin-bottom: 16px;
 }
 
 .env-title {
@@ -4224,14 +4214,6 @@ const terminalRunning = ref(false)
   margin-bottom: 8px;
 }
 
-.models-path {
-  font-family: var(--font-family-code, monospace);
-  font-size: 12px;
-  color: var(--color-text-3);
-  margin: 0 0 16px;
-  word-break: break-all;
-}
-
 .models-body {
   width: 100%;
   display: flex;
@@ -4280,11 +4262,6 @@ const terminalRunning = ref(false)
 .model-card-actions {
   display: flex;
   gap: 8px;
-}
-
-.model-form-note {
-  color: var(--color-text-3);
-  font-size: 13px;
 }
 
 .model-rows {

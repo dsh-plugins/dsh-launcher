@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { useFeedback, useDialog } from '@dsh-plugin/dsh-ui-components-vue'
+import { HintIcon, useFeedback, useDialog } from '@dsh-plugin/dsh-ui-components-vue'
 import { IconArrowUp, IconArrowDown } from '@dsh-plugin/dsh-ui-components-vue/icons'
 import { api } from '@/api'
 import type {
@@ -15,7 +15,6 @@ import type {
 import { SUPPORTED_LOCALES } from '@/i18n'
 import { useLauncherStore } from '@/stores/launcher'
 import ImportScanDialog from '@/components/ImportScanDialog.vue'
-import HintIcon from '@/components/HintIcon.vue'
 import PageScrollbar from '@/components/PageScrollbar.vue'
 import BrowserBehavior from '@/components/BrowserBehavior.vue'
 import CuaSettingsPanel from '@/components/CuaSettingsPanel.vue'
@@ -640,8 +639,7 @@ const pluginSourceColumns = computed(() => [
 
     <template v-else-if="section === 'notifications'">
       <div class="dl-card">
-        <div class="dl-card-title"><h3>{{ t('settings.notifications.title') }}</h3></div>
-        <p>{{ t('settings.notifications.hint') }}</p>
+        <div class="dl-card-title"><h3>{{ t('settings.notifications.title') }}<HintIcon :content="t('settings.notifications.hint')" /></h3></div>
         <dsh-space direction="vertical" size="large">
           <dsh-checkbox :model-value="store.settings.notification_system" @change="(value) => patchSettings({ notification_system: Boolean(value) })">
             {{ t('settings.notifications.system') }}
@@ -702,19 +700,15 @@ const pluginSourceColumns = computed(() => [
       </dsh-form>
     </div>
 
-    <!-- Silent autostart + instance auto-launch (issue #100). Only meaningful
-         together with the OS autostart entry; shown regardless so the intent
-         is discoverable, with a nudge when autostart itself is off. -->
     <div class="dl-card">
       <div class="dl-card-title">
         <h3>
           {{ t('settings.silentAutostart.title') }}
-          <HintIcon :content="t('settings.silentAutostart.hint')" />
+          <HintIcon :content="store.settings.autostart
+            ? t('settings.silentAutostart.hint')
+            : t('settings.silentAutostart.hint') + ' ' + t('settings.silentAutostart.needsAutostart')" />
         </h3>
       </div>
-      <dsh-alert v-if="!store.settings.autostart" type="info" class="autostart-note">
-        {{ t('settings.silentAutostart.needsAutostart') }}
-      </dsh-alert>
       <dsh-form :model="store.settings" layout="vertical" class="settings-form">
         <dsh-form-item>
           <dsh-switch
@@ -741,8 +735,7 @@ const pluginSourceColumns = computed(() => [
       </dsh-form>
 
       <div class="autostart-instances">
-        <h4>{{ t('settings.silentAutostart.instances') }}</h4>
-        <p class="autostart-desc">{{ t('settings.silentAutostart.instancesHint') }}</p>
+        <h4>{{ t('settings.silentAutostart.instances') }}<HintIcon :content="t('settings.silentAutostart.instancesHint')" /></h4>
         <div v-if="autostartInstances.length === 0" class="autostart-empty">
           {{ t('settings.silentAutostart.empty') }}
         </div>
@@ -790,22 +783,21 @@ const pluginSourceColumns = computed(() => [
       </div>
       <div class="update-row">
         <span class="data-dir-path" :title="dataDir">{{ dataDir || t('settings.dataDir.unknown') }}</span>
+        <HintIcon :content="dataDirSourceTip" />
         <dsh-button variant="secondary" size="sm" @click="onOpenDataDir">{{ t('settings.dataDir.open') }}</dsh-button>
         <dsh-button variant="primary" size="sm" @click="onMoveDataDir">{{ t('settings.dataDir.moveTo') }}</dsh-button>
       </div>
-      <div class="data-dir-source" :class="`source-${dataDirSource}`">
-        {{ dataDirSourceTip }}
-      </div>
       <dsh-modal
         v-model:visible="moveModalVisible"
-        :title="t('settings.dataDir.moveTo')"
-        :ok-text="t('common.confirm')"
+        :ok-text="t('settings.dataDir.confirmMove')"
         :cancel-text="t('common.cancel')"
         :confirm-loading="moveBusy"
         @ok="onConfirmMove"
       >
+        <template #title>
+          {{ t('settings.dataDir.moveTo') }}<HintIcon :content="t('settings.dataDir.restartHint')" />
+        </template>
         <p class="move-target">{{ moveTarget }}</p>
-        <p class="move-hint">{{ t('settings.dataDir.restartHint') }}</p>
       </dsh-modal>
     </div>
 
@@ -834,9 +826,8 @@ const pluginSourceColumns = computed(() => [
 
     <div class="dl-card">
       <div class="dl-card-title">
-        <h3>{{ t('settings.importScan.title') }}</h3>
+        <h3>{{ t('settings.importScan.title') }}<HintIcon :content="t('settings.importScan.hint')" /></h3>
       </div>
-      <p class="news-source-hint">{{ t('settings.importScan.hint') }}</p>
       <dsh-button variant="primary" @click="importScanVisible = true">
         {{ t('settings.importScan.open') }}
       </dsh-button>
@@ -1022,12 +1013,10 @@ const pluginSourceColumns = computed(() => [
             {{ o.label }}
           </dsh-option>
         </dsh-select>
+        <HintIcon :content="t('settings.update.channelHint')" />
         <dsh-button variant="secondary" size="sm" :loading="checkingUpdate" @click="onCheckUpdate">
           {{ t('settings.update.check') }}
         </dsh-button>
-      </div>
-      <div class="update-result">
-        <span class="about-channel-hint">{{ t('settings.update.channelHint') }}</span>
       </div>
       <div v-if="updateInfo && !updateInfo.up_to_date" class="update-result">
         <dsh-alert type="info" :show-icon="true">
@@ -1169,23 +1158,12 @@ const pluginSourceColumns = computed(() => [
   white-space: nowrap;
 }
 
-.data-dir-source {
-  font-size: 12px;
-  color: var(--color-text-3);
-  margin-top: 4px;
-}
-
 .move-target {
   font-family: monospace;
   word-break: break-all;
   background: var(--color-fill-2);
   padding: 8px;
   border-radius: 4px;
-}
-
-.move-hint {
-  color: var(--color-text-3);
-  font-size: 13px;
 }
 
 .update-current {
@@ -1201,7 +1179,6 @@ const pluginSourceColumns = computed(() => [
   margin-top: 4px;
 }
 
-.about-channel-hint,
 .about-meta {
   color: var(--color-text-3);
   font-size: 13px;
@@ -1233,18 +1210,8 @@ const pluginSourceColumns = computed(() => [
 }
 
 /* Silent autostart / instance auto-launch (issue #100) */
-.autostart-note {
-  margin-bottom: 12px;
-}
-
 .autostart-instances {
   margin-top: 4px;
-}
-
-.autostart-desc {
-  color: var(--color-text-3);
-  font-size: 13px;
-  margin: 4px 0 12px;
 }
 
 .autostart-empty {
