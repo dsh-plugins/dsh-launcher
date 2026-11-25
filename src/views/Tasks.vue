@@ -119,6 +119,7 @@ const sortedTasks = computed(() => store.taskList)
             <div class="task-label">
               <template v-if="task.kind === 'download-version'">{{ t('tasks.downloadVersion', { version: task.version }) }}</template>
               <template v-else-if="task.kind === 'repair-version'">{{ t('tasks.repairVersion', { version: task.version }) }}</template>
+              <template v-else-if="task.kind === 'download-cua'">{{ t('tasks.downloadCua', { version: task.version }) }}</template>
               <template v-else>{{ task.label }}</template>
             </div>
             <div class="task-meta">
@@ -127,7 +128,7 @@ const sortedTasks = computed(() => store.taskList)
               <template v-if="task.state === 'done' && task.kind !== 'install-plugin' && instanceName(task)">
                 · {{ t('tasks.createdInstance', { name: instanceName(task) }) }}
               </template>
-              <template v-if="task.message && (task.state === 'error' || (task.state === 'done' && ['download-version', 'repair-version'].includes(task.kind)))">
+              <template v-if="task.message && (task.kind === 'download-cua' || task.state === 'error' || (task.state === 'done' && ['download-version', 'repair-version'].includes(task.kind)))">
                 · {{ task.message }}
               </template>
             </div>
@@ -153,7 +154,7 @@ const sortedTasks = computed(() => store.taskList)
               :status="task.state === 'error' ? 'danger' : 'normal'"
             />
           </div>
-          <div v-if="task.state === 'running' && task.percent >= 90" class="installing-hint">
+          <div v-if="task.kind !== 'download-cua' && task.state === 'running' && task.percent >= 90" class="installing-hint">
             {{ t('tasks.installingHint') }}
           </div>
           <div class="task-actions" @click.stop>

@@ -163,7 +163,7 @@
     "installedTag": "已安装",
     "installedTitle": "已安装版本",
     "repairVersion": "补全文件",
-    "repairVersionHint": "先补全 pnpm 依赖，再尝试下载匹配的 Computer Use 助手。请先停止使用此版本的实例。",
+    "repairVersionHint": "请先停止使用此版本的实例。补全会恢复 pnpm 依赖，并在启用自动补全时检查匹配的 Computer Use 助手。",
     "emptyInstalled": "尚未安装任何 DSH 版本",
     "back": "返回",
     "instanceName": "实例名称",
@@ -283,6 +283,24 @@
     "scopeRegistryAck": "确认在此 profile 中为整个作用域使用该 npm 源",
     "unverifiedConfirm": "该插件来自未经审核的来源，代码由第三方提供，可能包含危险行为。请确认你信任该来源后再安装。",
     "unverifiedAck": "我已了解风险，仍要安装"
+  },
+  "cua": {
+    "title": "Computer Use",
+    "auto": "自动补全 Computer Use 助手",
+    "autoHint": "下载或补全 DSH 0.2.3-alpha.2 及更新版本时，检查原生 Windows 或 macOS 实例所需的助手。下载失败会在版本任务中提示。",
+    "root": "助手根目录",
+    "rootHint": "所有 DSH 版本共用此目录。更改目录时，启动器会复制并校验已有助手，保留原目录中的文件。",
+    "resetRoot": "恢复默认目录",
+    "changeRoot": "更改助手根目录",
+    "confirmRoot": "将已有助手复制到「{path}」并校验。校验成功后切换到此目录。",
+    "rootFailed": "未能切换助手目录，仍使用原目录。{error}",
+    "manual": "手动下载助手",
+    "platform": "可提前下载适用于 {target} 的正式版或预览版助手。选择已安装的助手会直接复用。",
+    "unsupported": "当前平台没有可下载的 Computer Use 助手。支持 Windows 和 macOS 的 x64、arm64 架构。",
+    "wsl": "这里下载 Windows 主机的助手。WSL 实例只补全 pnpm 依赖。",
+    "empty": "暂无包含当前平台安装包和校验文件的助手版本。",
+    "version": "选择助手版本",
+    "download": "下载助手"
   },
   "settings": {
     "title": "设置",
@@ -963,6 +981,7 @@
     "remove": "移除",
     "downloadVersion": "仅下载 DSH {version}",
     "repairVersion": "补全 DSH {version} 文件",
+    "downloadCua": "下载 Computer Use 助手 {version}",
     "createdInstance": "已创建实例「{name}」",
     "queuedHint": "同一 Profile 的其他插件操作进行中，排队等待",
     "state": {
@@ -995,6 +1014,7 @@
     "recheck": "重新检测"
   },
   "common": {
+    "retry": "重试",
     "confirm": "确定",
     "cancel": "取消",
     "save": "保存",

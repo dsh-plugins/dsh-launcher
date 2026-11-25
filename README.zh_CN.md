@@ -18,8 +18,10 @@ Tauri 2 + Vue 3 + TypeScript + Sass + vue-router + vue-i18n + Arco Design Vue。
 
 ## 功能
 
-- **多版本安装**：从 npm registry 查询并安装多个 `@deepseek-ai/dsh` 版本到隔离目录，互不干扰。原生 Windows 和 macOS 安装 `0.2.3-alpha.2` 或更新版本时，如果缺少 Computer Use 助手，启动器会尝试从[社区助手 Releases](https://github.com/dsh-plugins/dsh-cua-helper/releases)下载对应版本并校验 SHA-256。助手补全失败只在任务中记录警告。
-- **补全版本文件**：停止使用该版本的实例，在「下载 → 实例创建 → 已安装版本」点击「补全文件」。任务先执行 `pnpm install` 补全依赖，再按相同规则尝试补全助手。Linux 和 WSL 只补全依赖。社区 Windows 助手未签名，macOS 助手采用临时签名且未经公证。启动器信任社区 Release 仓库作为下载来源，校验和用于检查文件完整性。启动器不会修改现有的应用授权。
+- **多版本安装**可从 npm registry 查询并安装多个 `@deepseek-ai/dsh` 版本，每个版本独立存放。补全版本文件前，先停止使用该版本的实例，再到「下载 → 实例创建 → 已安装版本」点击「补全文件」以恢复 pnpm 依赖。
+- **Computer Use 助手**默认保存在 `<启动器数据目录>/cua` 下，按 DSH 版本和平台分别存放。原生 Windows 和 macOS 在下载或补全 DSH `0.2.3-alpha.2` 及更新版本时默认自动补全匹配的助手。助手失败会在版本任务中提示。Linux 和 WSL 只补全依赖。
+- **设置 → Computer Use** 可关闭自动补全、迁移助手根目录，或在安装 DSH 前手动下载对应的正式版或预览版助手。切换目录前会复制并校验已有助手，原文件保留。手动下载会复用已完整安装的助手。启动器从[社区助手 Releases](https://github.com/dsh-plugins/dsh-cua-helper/releases) 获取安装包并校验 SHA-256。Windows 助手未签名，macOS 助手采用临时签名且未经公证。现有应用授权保留。
+- **Computer Use 启动路径**优先使用用户配置的 `helperPath`。对于启用了 Computer Use 的原生实例，启动器可以把旧 pnpm 目录中匹配且完整的助手离线复制到新位置。Windows 若提示可执行文件或运行库路径过长，请选择更短的根目录。切换目录后，重启实例即可使用新路径。
 - **多实例管理**：同一版本可创建多个实例，每个实例拥有独立的名称、Profile 与运行时环境变量。
 - **DSH_HOME 三种模式**：
   - 复用/共用已有的 DSH_HOME；

@@ -313,6 +313,7 @@ pub async fn start_instance_process(
     } else {
         None
     };
+    let patch_index = cli_args.len();
     let web = if is_web {
         let startup = crate::web_launch::startup_script(
             &crate::wsl::version_fs_path(version),
@@ -340,6 +341,7 @@ pub async fn start_instance_process(
     } else {
         None
     };
+    let mut cua_patch = None;
     let mut cmd = if let (Some(distro), Some(root)) = (&wsl_distro, &wsl_root) {
         let bin_linux = format!(
             "{}/node_modules/@deepseek-ai/dsh/lib/bin.js",
@@ -372,6 +374,24 @@ pub async fn start_instance_process(
         hide_console(&mut cmd);
         let mut env = env;
         crate::runtime::apply_instance_pnpm_env(&state.data_dir, &mut env)?;
+        let overlays: Vec<_> = bridge.iter().map(|bridge| bridge.patch.as_path()).collect();
+        cua_patch = crate::cua_launch::prepare(
+            state,
+            &version.dir,
+            &version.version,
+            profile,
+            &env,
+            &overlays,
+            None,
+        )
+        .await;
+        if let Some(patch) = &cua_patch {
+            // Web 参数可能已包含分隔符，启动器的 CLI 参数须排在它们之前。
+            cli_args.splice(
+                patch_index..patch_index,
+                ["--patch".into(), patch.path().to_string_lossy().into_owned()],
+            );
+        }
         cmd.arg(bin).args(cli_args).envs(env);
         cmd
     };
@@ -437,6 +457,7 @@ pub async fn start_instance_process(
         let waiter_wsl = wsl_distro.clone();
         let mut child = child;
         tauri::async_runtime::spawn(async move {
+            let _cua_patch = cua_patch;
             let state = waiter_app.state::<AppState>();
             let (code, stopped) = tokio::select! {
                 status = child.wait() => (status.ok().and_then(|s| s.code()), false),

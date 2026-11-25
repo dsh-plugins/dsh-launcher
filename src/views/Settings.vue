@@ -18,6 +18,7 @@ import ImportScanDialog from '@/components/ImportScanDialog.vue'
 import HintIcon from '@/components/HintIcon.vue'
 import PageScrollbar from '@/components/PageScrollbar.vue'
 import BrowserBehavior from '@/components/BrowserBehavior.vue'
+import CuaSettingsPanel from '@/components/CuaSettingsPanel.vue'
 import LauncherProxySettings from '@/components/LauncherProxySettings.vue'
 
 const { message: Message } = useFeedback()
@@ -26,7 +27,7 @@ const { modal: Modal } = useDialog()
 const { t } = useI18n()
 const store = useLauncherStore()
 
-type SettingsSection = 'launch' | 'notifications' | 'personal' | 'network' | 'browser' | 'resources' | 'about'
+type SettingsSection = 'launch' | 'notifications' | 'personal' | 'network' | 'browser' | 'cua' | 'resources' | 'about'
 const section = ref<SettingsSection>('launch')
 
 /** Project links shown on the About section (issue #72). */
@@ -547,6 +548,7 @@ const pluginSourceColumns = computed(() => [
         <dsh-menu-item key="notifications">{{ t('settings.notifications.title') }}</dsh-menu-item>
         <dsh-menu-item key="personal">{{ t('settings.sections.personal') }}</dsh-menu-item>
         <dsh-menu-item key="browser">{{ t('browser.title') }}</dsh-menu-item>
+        <dsh-menu-item key="cua">{{ t('cua.title') }}</dsh-menu-item>
         <dsh-menu-item key="network">{{ t('settings.sections.network') }}</dsh-menu-item>
         <dsh-menu-item key="resources">{{ t('settings.sections.resources') }}</dsh-menu-item>
         <dsh-menu-item key="about">{{ t('settings.sections.about') }}</dsh-menu-item>
@@ -864,6 +866,7 @@ const pluginSourceColumns = computed(() => [
     </template>
 
     <BrowserBehavior v-else-if="section === 'browser'" />
+    <CuaSettingsPanel v-else-if="section === 'cua'" />
     <LauncherProxySettings v-else-if="section === 'network'" />
 
     <template v-else-if="section === 'resources'">

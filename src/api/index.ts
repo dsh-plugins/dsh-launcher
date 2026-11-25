@@ -12,6 +12,8 @@ import type {
   BrowserSettings,
   ProxyPasswordScope,
   CopyInstanceInput,
+  CuaRelease,
+  CuaSettings,
   WebAccess,
   WebInterface,
   DoctorReport,
@@ -81,6 +83,8 @@ const isTauri = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window
 // ---------------------------------------------------------------------------
 
 const MOCK_KEY = 'dsh-launcher.mock.v1'
+const MOCK_CUA_ROOT = 'C:\\Users\\Administrator\\AppData\\Roaming\\in.dsh-plug.dsh-launcher\\cua'
+const MOCK_CUA_VERSIONS = ['0.2.4-beta.1', '0.2.3', '0.2.3-alpha.2']
 
 /** Issue #51 whitelist (mirrors src-tauri/src/links.rs REDIRECTABLE). */
 const MOCK_LINK_KINDS: Record<string, boolean> = {
@@ -95,6 +99,7 @@ const MOCK_LINK_KINDS: Record<string, boolean> = {
 }
 
 interface MockDb {
+  cua: { settings: CuaSettings; installed: string[] }
   homes: DshHome[]
   versions: DshVersion[]
   instances: DshInstance[]
@@ -110,6 +115,10 @@ interface MockDb {
 
 function seedDb(): MockDb {
   return {
+    cua: {
+      settings: { auto_complete: true, root: MOCK_CUA_ROOT, default_root: MOCK_CUA_ROOT, target: 'win-x64' },
+      installed: [],
+    },
     homes: [
       { id: 'h-default', name: '默认 DSH_HOME', path: 'C:\\Users\\Administrator\\.dsh' },
       { id: 'h-lab', name: '实验室环境', path: 'D:\\dsh-homes\\lab' },
@@ -186,6 +195,7 @@ function loadDb(): MockDb {
     const raw = localStorage.getItem(MOCK_KEY)
     if (raw) {
       const db = JSON.parse(raw) as MockDb
+      db.cua ??= seedDb().cua
       // Backfill fields added after the mock db was persisted.
       db.settings.log_level = db.settings.log_level ?? 'info'
       db.settings.proxy_enabled = db.settings.proxy_enabled ?? false
@@ -223,6 +233,21 @@ function loadDb(): MockDb {
 
 function saveDb(db: MockDb) {
   localStorage.setItem(MOCK_KEY, JSON.stringify(db))
+}
+
+function mockCompleteCua(db: MockDb, task: TaskInfo) {
+  if (!db.cua.settings.auto_complete || !db.cua.settings.target || !semver.valid(task.version)
+    || semver.lt(task.version, '0.2.3-alpha.2') || db.cua.installed.includes(task.version)) {
+    return
+  }
+  if (MOCK_CUA_VERSIONS.includes(task.version)) {
+    db.cua.installed.push(task.version)
+  } else {
+    task.message = `DSH ${task.version} 的 CUA 助手未补全：没有匹配的发布包`
+    const line = `警告：${task.message}`
+    task.logs.push(line)
+    emitTaskLog({ id: task.id, line })
+  }
 }
 
 function uuid(): string {
@@ -530,6 +555,7 @@ async function mockCall<T>(cmd: string, args?: Record<string, unknown>): Promise
       } as T
     case 'fetch_available_versions':
       return [
+        { version: '0.2.3', released_at: '2026-11-24T00:00:00Z' },
         { version: '0.1.2-alpha.1', released_at: '2026-10-01T08:00:00Z', source: 'github' },
         { version: '0.1.0-rc.6', released_at: '2026-08-01T12:00:00Z' },
         { version: '0.1.0-rc.5', released_at: '2026-07-15T09:30:00Z' },
@@ -589,11 +615,12 @@ async function mockCall<T>(cmd: string, args?: Record<string, unknown>): Promise
             dir: `C:\\Users\\Administrator\\AppData\\Roaming\\in.dsh-plug.dsh-launcher\\versions\\${version}`,
             wsl: null,
           })
+          mockCompleteCua(current, task)
           saveDb(current)
         }
         task.state = 'done'
         task.percent = 100
-        emitTaskProgress({ id: task.id, state: 'done', percent: 100, message: null, instance_id: null })
+        emitTaskProgress({ id: task.id, state: 'done', percent: 100, message: task.message, instance_id: null })
       }, 600)
       return task.id as T
     }
@@ -616,9 +643,14 @@ async function mockCall<T>(cmd: string, args?: Record<string, unknown>): Promise
         const line = 'pnpm install: done'
         task.logs.push(line)
         emitTaskLog({ id: task.id, line })
+        if (!version.wsl) {
+          const current = loadDb()
+          mockCompleteCua(current, task)
+          saveDb(current)
+        }
         task.state = 'done'
         task.percent = 100
-        emitTaskProgress({ id: task.id, state: 'done', percent: 100, message: null, instance_id: null })
+        emitTaskProgress({ id: task.id, state: 'done', percent: 100, message: task.message, instance_id: null })
       }, 1400)
       return task.id as T
     }
@@ -710,6 +742,7 @@ async function mockCall<T>(cmd: string, args?: Record<string, unknown>): Promise
             dir: `C:\\Users\\Administrator\\AppData\\Roaming\\in.dsh-plug.dsh-launcher\\versions\\${version}`,
           }
           cur.versions.push(ver)
+          mockCompleteCua(cur, task)
         }
         const inst: DshInstance = {
           id: mockNewId('i'),
@@ -1354,6 +1387,62 @@ async function mockCall<T>(cmd: string, args?: Record<string, unknown>): Promise
       return { instance_id: String(args?.instance_id ?? ''), profile: String(args?.profile ?? ''),
         version: '', runtime: 'windows', status: 'complete', checked_at: new Date().toISOString(),
         findings: [], initial_findings: [], actions: [], unresolved: [], started: false, handoff_pending: false } as T
+    case 'get_cua_settings':
+      return db.cua.settings as T
+    case 'update_cua_settings': {
+      const settings = db.cua.settings
+      if (args && 'root' in args) {
+        const root = String(args.root ?? '').trim() || settings.default_root
+        if (!/^(?:[a-z]:[\\/]|\\\\[^\\]+\\[^\\]+|\/)/i.test(root)) {
+          fail('助手根目录必须是绝对路径')
+        }
+        settings.root = root
+      }
+      if (typeof args?.autoComplete === 'boolean') {
+        settings.auto_complete = args.autoComplete
+      }
+      saveDb(db)
+      return settings as T
+    }
+    case 'list_cua_releases':
+      return (db.cua.settings.target ? MOCK_CUA_VERSIONS.map(version => ({
+        version, prerelease: Boolean(semver.prerelease(version)), installed: db.cua.installed.includes(version),
+      })) : []) as T
+    case 'start_download_cua_task': {
+      const version = String(args?.version ?? '')
+      if (!db.cua.settings.target || !MOCK_CUA_VERSIONS.includes(version)) {
+        fail('没有适用于当前平台的助手发布包')
+      }
+      if ([...mockTasks.values()].some(task => task.kind === 'download-cua' && task.version === version
+        && (task.state === 'queued' || task.state === 'running'))) {
+        fail('此版本的助手正在下载')
+      }
+      const task: TaskInfo = {
+        id: mockNewId('t'), kind: 'download-cua', label: `下载 Computer Use 助手 ${version}`,
+        version, state: 'running', percent: 0, created_at: Date.now(), message: null,
+        instance_id: null, instance_name: null, logs: [],
+      }
+      mockTasks.set(task.id, task)
+      emitTaskProgress({ id: task.id, state: task.state, percent: 0, message: null, instance_id: null })
+      setTimeout(() => {
+        if (task.state !== 'running') {
+          return
+        }
+        const current = loadDb()
+        const installed = current.cua.installed.includes(version)
+        if (!installed) {
+          current.cua.installed.push(version)
+          saveDb(current)
+        }
+        const line = installed ? '已复用完整助手' : '助手已下载并通过 SHA-256 校验'
+        task.logs.push(line)
+        emitTaskLog({ id: task.id, line })
+        task.state = 'done'
+        task.percent = 100
+        emitTaskProgress({ id: task.id, state: 'done', percent: 100, message: null, instance_id: null })
+      }, 900)
+      return task.id as T
+    }
     case 'get_settings':
       return db.settings as T
     case 'get_proxy_password_status': {
@@ -1996,6 +2085,11 @@ export const api = {
   listInstanceStatus: () => call<InstanceStatus[]>('list_instance_status'),
 
   getSettings: () => call<LauncherSettings>('get_settings'),
+  getCuaSettings: () => call<CuaSettings>('get_cua_settings'),
+  updateCuaSettings: (patch: { autoComplete?: boolean; root?: string | null }) =>
+    call<CuaSettings>('update_cua_settings', patch),
+  listCuaReleases: () => call<CuaRelease[]>('list_cua_releases'),
+  startDownloadCuaTask: (version: string) => call<string>('start_download_cua_task', { version }),
   updateSettings: (settings: Partial<LauncherSettings> & { proxy_password?: string }) => call<LauncherSettings>('update_settings', { settings }),
   saveBrowserSettings: (instanceId: string | null, browser: BrowserOverrides, password?: string) =>
     call<void>('save_browser_settings', { instanceId, browser, password }),

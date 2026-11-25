@@ -7,6 +7,10 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 use tokio::io::AsyncWriteExt;
 
+mod store;
+
+pub(crate) use store::{copy_root, resolve_for_launch, root};
+
 const RELEASES: &str = "https://github.com/dsh-plugins/dsh-cua-helper/releases/download";
 const MAX_ZIP_BYTES: u64 = 192 * 1024 * 1024;
 const MAX_UNPACKED_BYTES: u64 = 512 * 1024 * 1024;
@@ -25,6 +29,10 @@ const MAC_APP: &str = "DSH Computer Use.app";
 const MAC_DEV_APP: &str = "DSH Computer Use Dev.app";
 const MAC_EXE: &str = "Contents/MacOS/dsh-cua-native";
 
+pub(crate) fn release_version(version: &str) -> bool {
+    Version::parse(version).is_ok_and(|v| v.build.is_empty())
+}
+
 pub(crate) fn supported_version(version: &str) -> bool {
     Version::parse(version).is_ok_and(|v| {
         v.build.is_empty()
@@ -33,8 +41,8 @@ pub(crate) fn supported_version(version: &str) -> bool {
     })
 }
 
-#[derive(Clone, Copy)]
-struct Target {
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct Target {
     os: &'static str,
     arch: &'static str,
 }
@@ -54,8 +62,13 @@ impl Target {
         Some(Self { os, arch })
     }
 
-    fn name(self) -> String {
+    pub(crate) fn name(self) -> String {
         format!("{}-{}", self.os, self.arch)
+    }
+
+    pub(crate) fn from_name(name: &str) -> Option<Self> {
+        let (platform, arch) = name.split_once('-')?;
+        Self::for_node(if platform == "win" { "win32" } else { platform }, arch)
     }
 
     fn is_mac(self) -> bool {
@@ -71,12 +84,56 @@ impl Target {
     }
 }
 
-fn release_asset(version: &str, target: Target) -> (String, String) {
+pub(crate) fn release_asset(version: &str, target: Target) -> (String, String) {
     let tag = format!("dsh-v{version}");
     (
         format!("{RELEASES}/{tag}"),
         format!("cua-helper-{tag}-{}.zip", target.name()),
     )
+}
+
+/// 同一 Node 可执行程序的架构决定助手资产。尚未安装 Node 时使用启动器平台。
+pub(crate) async fn target_for_node() -> Result<Option<Target>, String> {
+    if !cfg!(any(windows, target_os = "macos")) {
+        return Ok(None);
+    }
+
+    let mut command = tokio::process::Command::new(crate::process::node());
+    crate::process::hide_console(&mut command);
+    let output = tokio::time::timeout(
+        Duration::from_secs(5),
+        command
+            .args(["-e", "console.log(process.platform + ' ' + process.arch)"])
+            .env_remove("NODE_OPTIONS")
+            .env_remove("NODE_PATH")
+            .kill_on_drop(true)
+            .output(),
+    )
+    .await
+    .map_err(|_| "检测 CUA 平台超时".to_string())?;
+    let target = match output {
+        Ok(output) if output.status.success() => {
+            let text = String::from_utf8_lossy(&output.stdout);
+            text.trim()
+                .split_once(' ')
+                .and_then(|(os, arch)| Target::for_node(os, arch))
+        }
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Target::for_node(
+            if cfg!(windows) { "win32" } else { "darwin" },
+            match std::env::consts::ARCH {
+                "x86_64" => "x64",
+                "aarch64" => "arm64",
+                _ => "",
+            },
+        ),
+        Ok(_) => return Err("Node 无法报告 CUA 所需的平台和架构".into()),
+        Err(error) => return Err(format!("启动 Node 检测 CUA 平台失败：{error}")),
+    };
+    Ok(target)
+}
+
+pub(crate) fn installed(root: &Path, version: &str, target: Target) -> bool {
+    store::installed(root, version, target)
 }
 
 const RESOLVE_PROVIDER: &str = r#"
@@ -94,7 +151,7 @@ const entry = fs.existsSync(source)
   : createRequire(from.resolve('@deepseek-ai/dsh-cua-bundle/package.json')).resolve(name + '/package.json');
 const manifest = fs.realpathSync(entry);
 const data = JSON.parse(fs.readFileSync(manifest, 'utf8'));
-console.log(JSON.stringify({ os: process.platform, arch: process.arch, manifest, name: data.name, version: data.version, source: cli === source }));
+console.log(JSON.stringify({ os: process.platform, arch: process.arch, manifest, name: data.name, version: data.version }));
 "#;
 
 #[derive(serde::Deserialize)]
@@ -104,13 +161,11 @@ struct ResolvedProvider {
     manifest: PathBuf,
     name: String,
     version: String,
-    source: bool,
 }
 
 pub(crate) struct HelperLocation {
     target: Target,
     provider: PathBuf,
-    source: bool,
 }
 
 /// Resolve from the CLI dependency graph rather than guessing pnpm store paths.
@@ -158,11 +213,7 @@ pub(crate) async fn locate(dir: &Path, version: &str) -> Result<Option<HelperLoc
         return Err("CUA 后端的位置或版本与当前 DSH 安装不一致".into());
     }
     let provider = manifest.parent().ok_or("CUA 后端没有包目录")?.to_path_buf();
-    Ok(Some(HelperLocation {
-        target,
-        provider,
-        source: resolved.source,
-    }))
+    Ok(Some(HelperLocation { target, provider }))
 }
 
 fn checksum(bytes: &[u8], filename: &str) -> Result<String, String> {
@@ -336,19 +387,6 @@ struct Receipt {
     bundle: String,
 }
 
-fn mac_complete(dir: &Path) -> bool {
-    let receipt = File::open(dir.join("current.json"))
-        .ok()
-        .and_then(|file| serde_json::from_reader::<_, Receipt>(file.take(4096)).ok());
-    receipt.is_some_and(|r| {
-        r.bundle.len() == 64
-            && r.bundle
-                .bytes()
-                .all(|b| b.is_ascii_digit() || matches!(b, b'a'..=b'f'))
-            && mac_app_complete(&dir.join(r.bundle).join(MAC_APP))
-    })
-}
-
 fn direct_dir(base: &Path, names: &[&str]) -> Result<PathBuf, String> {
     let mut dir = base.to_path_buf();
     for name in names {
@@ -382,108 +420,108 @@ impl Drop for Staging {
 pub(crate) struct PreparedHelper {
     staging: Staging,
     destination: PathBuf,
-    mac: bool,
+    target: Target,
 }
 
-impl HelperLocation {
-    pub(crate) fn target(&self) -> String {
-        self.target.name()
+pub(crate) async fn prepare(
+    root: &Path,
+    version: &str,
+    target: Target,
+) -> Result<Option<PreparedHelper>, String> {
+    if !release_version(version) {
+        return Err("CUA 发布版本号无效".into());
     }
-
-    pub(crate) async fn prepare(self, version: &str) -> Result<Option<PreparedHelper>, String> {
-        let target_name = self.target.name();
-        let bin = direct_dir(&self.provider, &["native", "bin"])?;
-        let destination = bin.join(&target_name);
-        if destination.exists() {
-            direct_dir(&bin, &[&target_name])?;
-            if (self.target.is_mac() && mac_complete(&destination))
-                || (!self.target.is_mac() && windows_complete(&destination))
-            {
-                return Ok(None);
-            }
+    let target_name = target.name();
+    let root = store::canonical_root(root)?;
+    let base = direct_dir(&root, &[version])?;
+    let destination = base.join(&target_name);
+    if destination.try_exists().map_err(|e| e.to_string())? {
+        direct_dir(&base, &[&target_name])?;
+        if store::verify_installed(&destination, target).is_ok() {
+            return Ok(None);
         }
-        let client = crate::proxy::apply(reqwest::Client::builder())?
-            .connect_timeout(Duration::from_secs(12))
-            .timeout(Duration::from_secs(150))
-            .redirect(reqwest::redirect::Policy::custom(|attempt| {
-                let url = attempt.url();
-                let valid = url.scheme() == "https"
-                    && matches!(
-                        url.host_str(),
-                        Some(
-                            "github.com"
-                                | "release-assets.githubusercontent.com"
-                                | "objects.githubusercontent.com"
-                        )
-                    );
-                if !valid || attempt.previous().len() >= 5 {
-                    attempt.error("CUA 下载重定向超出允许范围")
-                } else {
-                    attempt.follow()
-                }
-            }))
-            .user_agent("dsh-launcher")
-            .build()
-            .map_err(|e| e.to_string())?;
-        let (base, name) = release_asset(version, self.target);
-        let mut response = request(&client, &format!("{base}/SHA256SUMS"), MAX_SUM_BYTES).await?;
-        let mut sums = Vec::new();
-        while let Some(chunk) = response
-            .chunk()
-            .await
-            .map_err(|e| e.without_url().to_string())?
-        {
-            if sums.len() as u64 + chunk.len() as u64 > MAX_SUM_BYTES {
-                return Err("CUA 校验清单大小超出限制".into());
+        store::verify_replacement(&destination)?;
+    }
+    let client = crate::proxy::apply(reqwest::Client::builder())?
+        .connect_timeout(Duration::from_secs(12))
+        .timeout(Duration::from_secs(150))
+        .redirect(reqwest::redirect::Policy::custom(|attempt| {
+            let url = attempt.url();
+            let valid = url.scheme() == "https"
+                && matches!(
+                    url.host_str(),
+                    Some(
+                        "github.com"
+                            | "release-assets.githubusercontent.com"
+                            | "objects.githubusercontent.com"
+                    )
+                );
+            if !valid || attempt.previous().len() >= 5 {
+                attempt.error("CUA 下载重定向超出允许范围")
+            } else {
+                attempt.follow()
             }
-            sums.extend_from_slice(&chunk);
-        }
-        let expected = checksum(&sums, &name)?;
-        let staging = Staging(bin.join(format!(".cua-install-{}", uuid::Uuid::new_v4())));
-        fs::create_dir(&staging.0).map_err(|e| e.to_string())?;
-        let archive = staging.0.join("helper.zip");
-        let mut file = tokio::fs::File::create(&archive)
-            .await
-            .map_err(|e| e.to_string())?;
-        let mut response = request(&client, &format!("{base}/{name}"), MAX_ZIP_BYTES).await?;
-        let mut bytes = 0u64;
-        let mut sha = Sha256::new();
-        while let Some(chunk) = response
-            .chunk()
-            .await
-            .map_err(|e| e.without_url().to_string())?
-        {
-            bytes += chunk.len() as u64;
-            if bytes > MAX_ZIP_BYTES {
-                return Err("CUA ZIP 大小超出限制".into());
-            }
-            sha.update(&chunk);
-            file.write_all(&chunk).await.map_err(|e| e.to_string())?;
-        }
-        file.flush().await.map_err(|e| e.to_string())?;
-        drop(file);
-        if format!("{:x}", sha.finalize()) != expected {
-            return Err(format!("{name} 的 SHA-256 校验失败"));
-        }
-        tokio::task::spawn_blocking(move || {
-            let payload = staging.0.join("payload");
-            fs::create_dir(&payload).map_err(|e| e.to_string())?;
-            unpack(&archive, &payload)?;
-            let mac = self.target.is_mac();
-            if mac {
-                prepare_mac(&payload, &expected, self.source)?;
-            } else if !windows_complete(&payload) {
-                return Err("CUA ZIP 缺少 Windows 助手或其运行库".into());
-            }
-            Ok(Some(PreparedHelper {
-                staging,
-                destination,
-                mac,
-            }))
-        })
+        }))
+        .user_agent("dsh-launcher")
+        .build()
+        .map_err(|e| e.to_string())?;
+    let (release_url, name) = release_asset(version, target);
+    let mut response =
+        request(&client, &format!("{release_url}/SHA256SUMS"), MAX_SUM_BYTES).await?;
+    let mut sums = Vec::new();
+    while let Some(chunk) = response
+        .chunk()
         .await
-        .map_err(|e| e.to_string())?
+        .map_err(|e| e.without_url().to_string())?
+    {
+        if sums.len() as u64 + chunk.len() as u64 > MAX_SUM_BYTES {
+            return Err("CUA 校验清单大小超出限制".into());
+        }
+        sums.extend_from_slice(&chunk);
     }
+    let expected = checksum(&sums, &name)?;
+    let staging = Staging(base.join(format!(".cua-{}", uuid::Uuid::new_v4().simple())));
+    fs::create_dir(&staging.0).map_err(|e| e.to_string())?;
+    let archive = staging.0.join("helper.zip");
+    let mut file = tokio::fs::File::create(&archive)
+        .await
+        .map_err(|e| e.to_string())?;
+    let mut response = request(&client, &format!("{release_url}/{name}"), MAX_ZIP_BYTES).await?;
+    let mut bytes = 0u64;
+    let mut sha = Sha256::new();
+    while let Some(chunk) = response
+        .chunk()
+        .await
+        .map_err(|e| e.without_url().to_string())?
+    {
+        bytes += chunk.len() as u64;
+        if bytes > MAX_ZIP_BYTES {
+            return Err("CUA ZIP 大小超出限制".into());
+        }
+        sha.update(&chunk);
+        file.write_all(&chunk).await.map_err(|e| e.to_string())?;
+    }
+    file.flush().await.map_err(|e| e.to_string())?;
+    drop(file);
+    if format!("{:x}", sha.finalize()) != expected {
+        return Err(format!("{name} 的 SHA-256 校验失败"));
+    }
+    tokio::task::spawn_blocking(move || {
+        let payload = staging.0.join("payload");
+        fs::create_dir(&payload).map_err(|e| e.to_string())?;
+        unpack(&archive, &payload)?;
+        if target.is_mac() {
+            prepare_mac(&payload, &expected)?;
+        }
+        store::register_payload(&payload, &destination, target)?;
+        Ok(Some(PreparedHelper {
+            staging,
+            destination,
+            target,
+        }))
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 async fn request(
@@ -508,7 +546,7 @@ async fn request(
     Ok(response)
 }
 
-fn prepare_mac(payload: &Path, generation: &str, source: bool) -> Result<(), String> {
+fn prepare_mac(payload: &Path, generation: &str) -> Result<(), String> {
     let normal = payload.join(MAC_APP);
     let dev = payload.join(MAC_DEV_APP);
     let bundle = if normal.is_dir() { normal } else { dev };
@@ -519,9 +557,18 @@ fn prepare_mac(payload: &Path, generation: &str, source: bool) -> Result<(), Str
     fs::create_dir(&subdir).map_err(|e| e.to_string())?;
     let application = subdir.join(MAC_APP);
     fs::rename(&bundle, &application).map_err(|e| e.to_string())?;
+    verify_mac_signature(&application)?;
+    fs::write(
+        payload.join("current.json"),
+        format!("{{\"bundle\":\"{generation}\"}}\n"),
+    )
+    .map_err(|e| e.to_string())
+}
+
+fn verify_mac_signature(application: &Path) -> Result<(), String> {
     let output = std::process::Command::new("/usr/bin/codesign")
         .args(["--verify", "--deep", "--strict"])
-        .arg(&application)
+        .arg(application)
         .output()
         .map_err(|e| format!("无法校验 macOS 助手签名：{e}"))?;
     if !output.status.success() {
@@ -530,30 +577,19 @@ fn prepare_mac(payload: &Path, generation: &str, source: bool) -> Result<(), Str
             String::from_utf8_lossy(&output.stderr).trim()
         ));
     }
-    if source {
-        crate::log_info!("已准备源码版本的 CUA 文件，源码运行时仍使用自身的构建机制");
-    }
-    fs::write(
-        payload.join("current.json"),
-        format!("{{\"bundle\":\"{generation}\"}}\n"),
-    )
-    .map_err(|e| e.to_string())
+    Ok(())
 }
 
 impl PreparedHelper {
     pub(crate) fn commit(self) -> Result<PathBuf, String> {
         let payload = self.staging.0.join("payload");
-        let complete = if self.mac {
-            mac_complete(&self.destination)
-        } else {
-            windows_complete(&self.destination)
-        };
-        if complete {
+        if store::verify_installed(&self.destination, self.target).is_ok() {
             return Ok(self.destination.clone());
         }
         let backup = self.staging.0.join("previous");
-        let replaced = self.destination.exists();
+        let replaced = self.destination.try_exists().map_err(|e| e.to_string())?;
         if replaced {
+            store::verify_replacement(&self.destination)?;
             fs::rename(&self.destination, &backup)
                 .map_err(|e| format!("无法暂存不完整的旧助手：{e}"))?;
         }

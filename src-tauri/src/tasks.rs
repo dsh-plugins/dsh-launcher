@@ -13,6 +13,7 @@ pub const TASK_LOG_EVENT: &str = "task://log";
 const MAX_LOG_LINES: usize = 1000;
 const DOWNLOAD_VERSION: &str = "download-version";
 const REPAIR_VERSION: &str = "repair-version";
+const DOWNLOAD_CUA: &str = "download-cua";
 
 #[derive(Clone, Debug, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
@@ -284,68 +285,127 @@ pub async fn start_repair_version_task(
     version_id: String,
 ) -> Result<String, String> {
     let version = installed_version(&state, &version_id)?;
-    let task_id = new_id("t");
-    {
-        let mut tasks = state.tasks.lock().await;
-        if tasks.values().any(|task| {
-            task.kind == REPAIR_VERSION
-                && task.version_id.as_deref() == Some(version_id.as_str())
-                && matches!(task.state, TaskState::Running | TaskState::Queued)
-        }) {
-            return Err(format!("DSH {} 的补全任务已在进行中", version.version));
-        }
-        tasks.insert(
-            task_id.clone(),
-            TaskInfo {
-                id: task_id.clone(),
-                kind: REPAIR_VERSION.into(),
-                label: format!("补全 DSH {} 文件", version.version),
-                version: version.version.clone(),
-                state: TaskState::Running,
-                percent: 0,
-                created_at: now_millis(),
-                message: None,
-                instance_id: None,
-                instance_name: None,
-                version_id: Some(version_id),
-                reserved_home_path: None,
-                dedicated_home_name: None,
-                logs: Vec::new(),
-                child: None,
-            },
-        );
-        emit_progress(&app, &task_id, TaskState::Running, 0, None, None);
-    }
+    let task_id = register_version_task(
+        &app,
+        &state,
+        REPAIR_VERSION,
+        &version.version,
+        Some(version_id),
+        format!("补全 DSH {} 文件", version.version),
+    )
+    .await?;
     let worker_id = task_id.clone();
     tauri::async_runtime::spawn(async move {
         let state = app.state::<AppState>();
         let result = repair_version(&app, &state, &worker_id, &version).await;
         let mut tasks = state.tasks.lock().await;
-        let Ok(task) = running_task(&mut tasks, &worker_id) else {
-            return;
-        };
-        match result {
-            Ok(warning) => {
-                task.state = TaskState::Done;
-                task.percent = 100;
-                task.message = warning;
-            }
-            Err(error) => {
-                task.state = TaskState::Error;
-                push_log_locked(task, &format!("error: {error}"));
-                task.message = Some(error);
-            }
+        if let Ok(task) = running_task(&mut tasks, &worker_id) {
+            finish_version_task(&app, task, result);
         }
-        emit_progress(
-            &app,
-            &worker_id,
-            task.state.clone(),
-            task.percent,
-            task.message.clone(),
-            None,
-        );
     });
     Ok(task_id)
+}
+
+#[tauri::command(rename_all = "snake_case")]
+pub async fn start_download_cua_task(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    version: String,
+) -> Result<String, String> {
+    let version = version.trim().to_owned();
+    if !crate::cua_helper::release_version(&version) {
+        return Err("请输入有效的 CUA 发布版本号".into());
+    }
+    let task_id = register_version_task(
+        &app,
+        &state,
+        DOWNLOAD_CUA,
+        &version,
+        None,
+        format!("下载 CUA {version}"),
+    )
+    .await?;
+    let worker_id = task_id.clone();
+    tauri::async_runtime::spawn(async move {
+        let state = app.state::<AppState>();
+        if let Err(error) = install_cua_helper(&app, &state, &worker_id, &version).await {
+            let mut tasks = state.tasks.lock().await;
+            if let Ok(task) = running_task(&mut tasks, &worker_id) {
+                finish_version_task(&app, task, Err(error));
+            }
+        }
+    });
+    Ok(task_id)
+}
+
+async fn register_version_task(
+    app: &AppHandle,
+    state: &AppState,
+    kind: &str,
+    version: &str,
+    version_id: Option<String>,
+    label: String,
+) -> Result<String, String> {
+    let task_id = new_id("t");
+    let mut tasks = state.tasks.lock().await;
+    if tasks.values().any(|task| {
+        task.kind == kind
+            && task.version == version
+            && task.version_id == version_id
+            && matches!(task.state, TaskState::Running | TaskState::Queued)
+    }) {
+        return Err(format!("「{label}」任务已在进行中"));
+    }
+    tasks.insert(
+        task_id.clone(),
+        TaskInfo {
+            id: task_id.clone(),
+            kind: kind.to_string(),
+            label,
+            version: version.to_string(),
+            state: TaskState::Running,
+            percent: 0,
+            created_at: now_millis(),
+            message: None,
+            instance_id: None,
+            instance_name: None,
+            version_id,
+            reserved_home_path: None,
+            dedicated_home_name: None,
+            logs: Vec::new(),
+            child: None,
+        },
+    );
+    emit_progress(app, &task_id, TaskState::Running, 0, None, None);
+    Ok(task_id)
+}
+
+fn finish_version_task(
+    app: &AppHandle,
+    task: &mut TaskInfo,
+    result: Result<Option<String>, String>,
+) {
+    match result {
+        Ok(warning) => {
+            task.state = TaskState::Done;
+            task.percent = 100;
+            task.message = warning;
+        }
+        Err(error) => {
+            task.state = TaskState::Error;
+            push_log_locked(task, &error);
+            emit_log(app, &task.id, &error);
+            task.message = Some(error);
+        }
+    }
+    emit_progress(
+        app,
+        &task.id,
+        task.state.clone(),
+        task.percent,
+        task.message.clone(),
+        None,
+    );
 }
 
 #[tauri::command]
@@ -1224,70 +1284,115 @@ async fn repair_version(
             crate::process::version_bin(dir).display()
         ));
     }
-    complete_cua_helper(app, state, task_id, dir, &version.version).await
+    complete_cua_helper(app, state, task_id, &version.version).await
 }
 
 async fn complete_cua_helper(
     app: &AppHandle,
     state: &State<'_, AppState>,
     task_id: &str,
-    dir: &std::path::Path,
     version: &str,
 ) -> Result<Option<String>, String> {
-    require_running_task(state, task_id).await?;
-    let work = async {
-        let Some(location) = crate::cua_helper::locate(dir, version).await? else {
-            return Ok(None);
-        };
-        push_task_log(
-            app,
-            state,
-            task_id,
-            &format!(
-                "正在检查 DSH {version} 的 CUA 助手（{}）…",
-                location.target()
-            ),
-        )
-        .await;
-        location.prepare(version).await
-    };
-    let mut cancellation = tokio::time::interval(std::time::Duration::from_millis(200));
-    tokio::pin!(work);
-    let prepared = loop {
-        tokio::select! {
-            result = &mut work => break result,
-            _ = cancellation.tick() => require_running_task(state, task_id).await?,
-        }
-    };
-    let result = {
-        let mut tasks = state.tasks.lock().await;
-        running_task(&mut tasks, task_id)?;
-        // 提交目录与取消使用同一任务锁；解包与签名校验均已完成。
-        prepared.and_then(|helper| {
-            helper
-                .map(crate::cua_helper::PreparedHelper::commit)
-                .transpose()
-        })
-    };
-    match result {
-        Ok(Some(path)) => {
-            push_task_log(
-                app,
-                state,
-                task_id,
-                &format!("已补全 CUA 助手：{}", path.display()),
-            )
-            .await;
-            Ok(None)
-        }
-        Ok(None) => Ok(None),
+    if !crate::cua_helper::supported_version(version)
+        || !state.config.lock().unwrap().settings.cua_auto_complete
+    {
+        return Ok(None);
+    }
+    match install_cua_helper(app, state, task_id, version).await {
+        Ok(()) => Ok(None),
         Err(error) => {
+            require_running_task(state, task_id).await?;
             let warning = format!("DSH {version} 的 CUA 助手未补全：{error}");
             crate::log_warn!("{warning}");
             push_task_log(app, state, task_id, &format!("警告：{warning}")).await;
             Ok(Some(warning))
         }
     }
+}
+
+async fn install_cua_helper(
+    app: &AppHandle,
+    state: &State<'_, AppState>,
+    task_id: &str,
+    version: &str,
+) -> Result<(), String> {
+    let manual = {
+        let mut tasks = state.tasks.lock().await;
+        running_task(&mut tasks, task_id)?.kind == DOWNLOAD_CUA
+    };
+    let work = async {
+        if manual {
+            report_cua_phase(app, state, task_id, 5, "正在等待使用 CUA 存储目录").await?;
+        }
+        let _operation = state.cua_operation.lock().await;
+        require_running_task(state, task_id).await?;
+        let root = {
+            let cfg = state.config.lock().unwrap();
+            if !manual && !cfg.settings.cua_auto_complete {
+                return Ok(());
+            }
+            crate::cua_helper::root(&state.data_dir, &cfg.settings)
+        };
+        let Some(target) = crate::cua_helper::target_for_node().await? else {
+            if manual {
+                return Err("当前平台或 Node.js 架构没有匹配的 CUA 助手".into());
+            }
+            return Ok(());
+        };
+        let phase = format!(
+            "正在检查 CUA {version}（{}），缺失时会下载并校验",
+            target.name()
+        );
+        report_cua_phase(app, state, task_id, 25, &phase).await?;
+        let prepared = crate::cua_helper::prepare(&root, version, target).await?;
+        let mut tasks = state.tasks.lock().await;
+        let task = running_task(&mut tasks, task_id)?;
+        // 提交目录与标记下载完成共用任务锁，取消与提交互斥。
+        let message = match prepared {
+            Some(helper) => format!("已补全 CUA 助手：{}", helper.commit()?.display()),
+            None => format!("CUA {version} 已完整安装"),
+        };
+        push_log_locked(task, &message);
+        emit_log(app, task_id, &message);
+        if manual {
+            finish_version_task(app, task, Ok(None));
+        }
+        Ok(())
+    };
+    let mut cancellation = tokio::time::interval(std::time::Duration::from_millis(200));
+    tokio::pin!(work);
+    loop {
+        tokio::select! {
+            result = &mut work => return result,
+            _ = cancellation.tick() => require_running_task(state, task_id).await?,
+        }
+    }
+}
+
+async fn report_cua_phase(
+    app: &AppHandle,
+    state: &AppState,
+    task_id: &str,
+    percent: u32,
+    message: &str,
+) -> Result<(), String> {
+    let mut tasks = state.tasks.lock().await;
+    let task = running_task(&mut tasks, task_id)?;
+    push_log_locked(task, message);
+    emit_log(app, task_id, message);
+    if task.kind == DOWNLOAD_CUA {
+        task.percent = percent;
+        task.message = Some(message.into());
+        emit_progress(
+            app,
+            task_id,
+            TaskState::Running,
+            percent,
+            task.message.clone(),
+            None,
+        );
+    }
+    Ok(())
 }
 
 // pnpm 的虚拟仓库锁表示依赖已物化。只清除启动器管理目录内的这份派生状态，保留项目锁。
@@ -1376,7 +1481,7 @@ async fn install_version_streamed(
     }
 
     let dir = download_local_version(app, state, task_id, version).await?;
-    let warning = complete_cua_helper(app, state, task_id, &dir, version).await?;
+    let warning = complete_cua_helper(app, state, task_id, version).await?;
     let mut tasks = state.tasks.lock().await;
     let task = running_task(&mut tasks, task_id)?;
     let record = register_version(state, version, dir, None)?;
@@ -2196,6 +2301,26 @@ async fn run_command(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(windows)]
+    #[tokio::test]
+    #[ignore = "需要访问 GitHub Release，以及通过 DSH_CUA_TEST_ROOT 指定的临时空目录"]
+    async fn windows_cua_release_installs_and_reuses_verified_payload() {
+        let root = std::path::PathBuf::from(std::env::var_os("DSH_CUA_TEST_ROOT").unwrap());
+        let version = "0.2.3-alpha.2";
+        assert!(root.is_dir() && !root.join(version).try_exists().unwrap());
+        let target = crate::cua_helper::target_for_node().await.unwrap().unwrap();
+        let prepared = crate::cua_helper::prepare(&root, version, target)
+            .await
+            .unwrap()
+            .expect("首次下载需要使用空的临时目录");
+        let installed = prepared.commit().unwrap();
+        assert!(installed.join("dsh-cua-windows.exe").is_file());
+        assert!(crate::cua_helper::prepare(&root, version, target)
+            .await
+            .unwrap()
+            .is_none());
+    }
 
     #[test]
     fn pnpm_major_parses_version_output() {

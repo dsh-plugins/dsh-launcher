@@ -307,6 +307,7 @@ async fn start_tui_session_inner(
         })
         .map_err(|e| format!("创建 PTY 失败: {e}"))?;
 
+    let mut cua_patch = None;
     let mut cmd = CommandBuilder::new(if wsl_distro.is_some() {
         "wsl.exe"
     } else {
@@ -353,6 +354,20 @@ async fn start_tui_session_inner(
         cmd.arg(crate::process::version_bin(&version_dir));
         cmd.arg("--profile");
         cmd.arg(&profile);
+        cua_patch = crate::cua_launch::prepare(
+            state,
+            &version_dir,
+            &version_label,
+            &profile,
+            &env,
+            &[],
+            Some(&target_cwd_path),
+        )
+        .await;
+        if let Some(patch) = &cua_patch {
+            cmd.arg("--patch");
+            cmd.arg(patch.path());
+        }
         if custom_cwd.is_some() {
             cmd.arg(target_cwd_path.as_os_str());
         }
@@ -375,6 +390,7 @@ async fn start_tui_session_inner(
     // oneshot against the kill signal.
     let (wait_tx, child_waiter) = tokio::sync::oneshot::channel::<Option<i32>>();
     std::thread::spawn(move || {
+        let _cua_patch = cua_patch;
         let code = child.wait().ok().map(|st| st.exit_code() as i32);
         let _ = wait_tx.send(code);
     });

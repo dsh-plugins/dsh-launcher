@@ -112,6 +112,21 @@ export interface DshInstance {
   tui_cwd?: string | null
 }
 
+/** 当前主机的 Computer Use 助手目录与自动补全设置。 */
+export interface CuaSettings {
+  auto_complete: boolean
+  root: string
+  default_root: string
+  target: string | null
+}
+
+/** 已发布当前平台安装包和校验清单的 DSH 版本。 */
+export interface CuaRelease {
+  version: string
+  prerelease: boolean
+  installed: boolean
+}
+
 export interface LauncherSettings {
   locale: string
   minimize_to_tray: boolean

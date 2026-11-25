@@ -217,6 +217,10 @@ pub fn sanitize_plugin_sources(list: Vec<PluginSourceConfig>) -> Vec<PluginSourc
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct LauncherSettings {
+    #[serde(default = "default_true")]
+    pub cua_auto_complete: bool,
+    #[serde(default)]
+    pub cua_root: Option<PathBuf>,
     #[serde(default)]
     pub browser: crate::browser_settings::BrowserSettings,
     #[serde(default)]
@@ -381,6 +385,8 @@ fn default_plugin_update_channel() -> String {
 impl Default for LauncherSettings {
     fn default() -> Self {
         Self {
+            cua_auto_complete: true,
+            cua_root: None,
             browser: Default::default(),
             proxy_username: String::new(),
             locale: default_locale(),

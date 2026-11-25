@@ -163,7 +163,7 @@
     "installedTag": "Installed",
     "installedTitle": "Installed versions",
     "repairVersion": "Repair files",
-    "repairVersionHint": "Restore pnpm dependencies, then try to download the matching Computer Use helper. Stop any instances using this version first.",
+    "repairVersionHint": "Stop instances using this version before restoring pnpm dependencies. If automatic helper downloads are enabled, the launcher also checks for a matching Computer Use helper.",
     "emptyInstalled": "No DSH version installed yet",
     "back": "Back",
     "instanceName": "Instance name",
@@ -283,6 +283,24 @@
     "scopeRegistryAck": "Use this npm registry for the entire scope in this profile",
     "unverifiedConfirm": "This plugin comes from an unreviewed source and its code is provided by a third party; it may contain harmful behavior. Only install it if you trust the source.",
     "unverifiedAck": "I understand the risk and want to install anyway"
+  },
+  "cua": {
+    "title": "Computer Use",
+    "auto": "Automatically download Computer Use helpers",
+    "autoHint": "When downloading or repairing DSH 0.2.3-alpha.2 or later, check for the helper used by native Windows or macOS instances. The version task reports any download failure.",
+    "root": "Helper directory",
+    "rootHint": "All DSH versions share this directory. Changing it copies and verifies existing helpers and preserves the files in the original directory.",
+    "resetRoot": "Restore default directory",
+    "changeRoot": "Change helper directory",
+    "confirmRoot": "Copy existing helpers to “{path}” and verify them. The launcher switches to this directory after verification succeeds.",
+    "rootFailed": "The launcher kept the original helper directory. {error}",
+    "manual": "Download a helper",
+    "platform": "Download a release or pre-release for {target} before installing its DSH version. Selecting an installed helper reuses it.",
+    "unsupported": "No Computer Use helper is available for this platform. Helpers support Windows and macOS on x64 and arm64.",
+    "wsl": "These downloads are for the Windows host. WSL instances only restore pnpm dependencies.",
+    "empty": "No releases include both a helper for this platform and its checksum file.",
+    "version": "Select a helper version",
+    "download": "Download helper"
   },
   "settings": {
     "title": "Settings",
@@ -963,6 +981,7 @@
     "remove": "Remove",
     "downloadVersion": "Download DSH {version} only",
     "repairVersion": "Repair DSH {version} files",
+    "downloadCua": "Download Computer Use helper {version}",
     "createdInstance": "Instance \"{name}\" created",
     "queuedHint": "Waiting for another plugin operation on the same profile",
     "state": {
@@ -995,6 +1014,7 @@
     "recheck": "Re-check"
   },
   "common": {
+    "retry": "Retry",
     "confirm": "OK",
     "cancel": "Cancel",
     "save": "Save",

@@ -5,6 +5,8 @@ mod compatibility;
 mod config;
 mod credentials;
 mod cua_helper;
+mod cua_launch;
+mod cua_settings;
 mod doctor;
 mod early_loading;
 mod icons;
@@ -57,6 +59,7 @@ type VersionFileLock = std::sync::Arc<tokio::sync::RwLock<()>>;
 pub struct AppState {
     pub config_path: std::path::PathBuf,
     pub data_dir: std::path::PathBuf,
+    pub(crate) cua_operation: tokio::sync::Mutex<()>,
     pub config: StdMutex<config::Config>,
     /// Startup notice from the data-dir bootstrap (fallback / failed
     /// migration); the frontend surfaces it as a toast once.
@@ -279,6 +282,7 @@ pub fn run() {
             app.manage(AppState {
                 config_path,
                 data_dir: data_dir.clone(),
+                cua_operation: tokio::sync::Mutex::new(()),
                 data_dir_notice: StdMutex::new(data_dir_notice),
                 data_dir_source,
                 config: StdMutex::new(cfg),
@@ -367,6 +371,10 @@ pub fn run() {
             commands::remove_version,
             tasks::start_download_version_task,
             tasks::start_repair_version_task,
+            tasks::start_download_cua_task,
+            cua_settings::get_cua_settings,
+            cua_settings::update_cua_settings,
+            cua_settings::list_cua_releases,
             tasks::start_create_instance_task,
             tasks::start_create_wsl_instance_task,
             tasks::start_copy_instance_task,
