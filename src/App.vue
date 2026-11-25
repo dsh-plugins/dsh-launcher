@@ -337,7 +337,7 @@ async function resizeWindow(direction: ResizeDirection) {
       @mouseup="onHeaderMouseUp"
     >
       <div v-if="!onInstancePage" class="app-brand">
-        <img src="@/assets/launcher-icon-v3.png" class="app-logo" alt="" />
+        <img src="@/assets/launcher-orca.svg" class="app-logo" alt="" />
         <span class="app-title">{{ t('app.title') }}</span>
         <dsh-tag v-if="!isTauri" size="small" color="orange" class="app-preview-badge" nowrap :title="t('app.mockBadge')">{{ t('app.mockBadge') }}</dsh-tag>
       </div>
@@ -550,7 +550,6 @@ async function resizeWindow(direction: ResizeDirection) {
     flex-shrink: 0;
     width: 24px;
     height: 24px;
-    border-radius: 5px;
     object-fit: cover;
   }
 

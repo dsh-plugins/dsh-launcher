@@ -14,7 +14,7 @@ import type { CompatibilityReport as CompatibilityReportType } from '@/api/types
 import CompatibilityReport from '@/components/CompatibilityReport.vue'
 import { useLauncherStore } from '@/stores/launcher'
 import { markedSpoiler } from '@/utils/marked-spoiler'
-import launcherDefaultIcon from '@/assets/launcher-icon-v3.png'
+import launcherDefaultIcon from '@/assets/launcher-orca.svg'
 import PageScrollbar from '@/components/PageScrollbar.vue'
 import 'katex/dist/katex.min.css'
 

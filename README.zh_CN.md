@@ -54,7 +54,7 @@
 
 浏览器标签页支持后退、前进、刷新，以及 **在系统浏览器中打开**。Windows、Linux 和 macOS 14 及以上版本的桌面端支持内嵌浏览。较早的 macOS 版本可以用系统浏览器打开会话链接。
 
-![在 DSH Web 会话右侧的嵌入式浏览器里打开本地示例网页](docs/embedded-browser.png)
+![在 DSH Web 会话右侧的嵌入式浏览器里打开 DSH Launcher 的 GitHub 仓库](docs/embedded-browser.png)
 
 进入 **设置 → 浏览器行为** 可设定全局默认值，进入 **实例设置 → 浏览器行为** 可为当前实例设置。这里可以配置用户代理（UA）、浏览器代理，以及 Cookie 和网站数据的保存方式。
 

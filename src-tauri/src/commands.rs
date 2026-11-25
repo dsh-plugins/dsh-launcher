@@ -2387,7 +2387,63 @@ fn uri_encode(value: &str) -> String {
 }
 
 /// Default shortcut icon when the instance has none (bundled launcher icon).
-const DEFAULT_ICON_PNG: &[u8] = include_bytes!("../icons/launcher-v3/128x128.png");
+const DEFAULT_ICON_PNG: &[u8] = include_bytes!("../icons/128x128.png");
+
+/// Refresh existing default icons without changing the paths used by .url files.
+#[cfg(windows)]
+pub(crate) fn refresh_default_shortcut_icons(
+    data_dir: &std::path::Path,
+    instances: &[DshInstance],
+) {
+    use std::{fs, io::Write};
+
+    let directory = data_dir.join("icons");
+    if !fs::symlink_metadata(&directory).is_ok_and(|metadata| metadata.is_dir()) {
+        return;
+    }
+    let ico = match crate::icons::png_to_ico_bytes(DEFAULT_ICON_PNG) {
+        Ok(ico) => ico,
+        Err(error) => {
+            crate::log_warn!("生成默认快捷方式图标失败: {error}");
+            return;
+        }
+    };
+
+    for instance in instances.iter().filter(|instance| instance.icon.is_none()) {
+        let id = &instance.id;
+        if id.is_empty()
+            || !id
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+        {
+            continue;
+        }
+        let path = directory.join(format!("shortcut-{id}.ico"));
+        let Ok(metadata) = fs::symlink_metadata(&path) else {
+            continue;
+        };
+        if !metadata.is_file()
+            || (metadata.len() == ico.len() as u64
+                && fs::read(&path).is_ok_and(|cached| cached == ico))
+        {
+            continue;
+        }
+
+        let temporary = directory.join(format!(".dsh-shortcut-{}.tmp", uuid::Uuid::new_v4()));
+        let result = fs::File::create_new(&temporary).and_then(|mut file| {
+            let written = file.write_all(&ico);
+            drop(file);
+            let replaced = written.and_then(|()| fs::rename(&temporary, &path));
+            if replaced.is_err() {
+                let _ = fs::remove_file(&temporary);
+            }
+            replaced
+        });
+        if let Err(error) = result {
+            crate::log_warn!("更新实例 {id} 的快捷方式图标失败: {error}");
+        }
+    }
+}
 
 /// Writes a Windows Internet Shortcut (.url) that launches an instance via
 /// `dsh-launcher://launch?instance=<name>&profile=<profile>`. The shortcut

@@ -15,6 +15,7 @@ import {
   IconWifi,
 } from '@dsh-plugin/dsh-ui-components-vue/icons'
 import { api } from '@/api'
+import launcherIcon from '@/assets/launcher-orca.svg'
 import type {
   Confidence,
   LauncherUpdateInfo,
@@ -616,7 +617,7 @@ const pluginSourceColumns = computed(() => [
             <HintIcon :content="t('settings.launcherIcon.windowHint')" />
           </template>
           <dsh-space>
-            <img v-if="launcherIcons.window" :src="launcherIcons.window" class="launcher-icon-preview" alt="" />
+            <img :src="launcherIcons.window ?? launcherIcon" class="launcher-icon-preview" alt="" />
             <dsh-button variant="secondary" size="sm" :loading="launcherIconBusy === 'window'" @click="onPickLauncherIcon('window')">
               {{ t('settings.launcherIcon.pick') }}
             </dsh-button>
@@ -636,7 +637,7 @@ const pluginSourceColumns = computed(() => [
             <HintIcon :content="t('settings.launcherIcon.trayHint')" />
           </template>
           <dsh-space>
-            <img v-if="launcherIcons.tray" :src="launcherIcons.tray" class="launcher-icon-preview" alt="" />
+            <img :src="launcherIcons.tray ?? launcherIcon" class="launcher-icon-preview" alt="" />
             <dsh-button variant="secondary" size="sm" :loading="launcherIconBusy === 'tray'" @click="onPickLauncherIcon('tray')">
               {{ t('settings.launcherIcon.pick') }}
             </dsh-button>

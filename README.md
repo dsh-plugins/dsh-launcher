@@ -54,7 +54,7 @@ Read documentation or other web pages beside your conversation in a DSH Web wind
 
 Each browser tab has back, forward, reload, and **Open in system browser** controls. The embedded browser is available in the Windows, Linux, and macOS 14 or later desktop app. On earlier macOS versions, you can open conversation links in the system browser.
 
-![Local example page open in the embedded browser beside a DSH Web session](docs/embedded-browser.png)
+![DSH Launcher GitHub repository open in the embedded browser beside a DSH Web session](docs/embedded-browser.png)
 
 Use **Settings → Browser behavior** for defaults or **Instance settings → Browser behavior** for an individual instance. You can configure the user agent and proxy and choose how cookies and site data are stored.
 

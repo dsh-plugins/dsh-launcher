@@ -5,7 +5,7 @@
 import semver from 'semver'
 import { validNetworkRanges } from '@/utils/network-ranges'
 import newsPreview from '@/assets/news-preview.md?raw'
-import launcherIcon from '@/assets/launcher-icon-v3.png'
+import launcherIcon from '@/assets/launcher-orca.svg'
 import { defaultBrowserSettings } from './types'
 import type {
   BrowserOverrides,
