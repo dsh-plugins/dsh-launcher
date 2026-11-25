@@ -148,13 +148,24 @@ onBeforeUnmount(() => {
     <div class="dl-card">
       <div class="dl-card-title">
         <h3>{{ t('plugins.title') }}</h3>
-        <dsh-space>
-          <dsh-select v-model="sourceFilter" class="source-select" size="small">
-            <dsh-option value="">{{ t('plugins.sourceAll') }}</dsh-option>
-            <dsh-option v-for="s in enabledSources" :key="s.id" :value="s.id">
-              {{ sourceLabel(s.id) }}
-            </dsh-option>
-          </dsh-select>
+        <dsh-space wrap>
+          <div class="source-select">
+            <dsh-select
+              v-model="sourceFilter"
+              size="small"
+              :trigger-props="{
+                autoFitPopupWidth: false,
+                autoFitPopupMinWidth: true,
+                contentClass: 'plugin-source-popup',
+                popupStyle: { width: 'max-content', maxWidth: 'min(26rem, calc(100vw - 24px))' },
+              }"
+            >
+              <dsh-option value="">{{ t('plugins.sourceAll') }}</dsh-option>
+              <dsh-option v-for="s in enabledSources" :key="s.id" :value="s.id">
+                {{ sourceLabel(s.id) }}
+              </dsh-option>
+            </dsh-select>
+          </div>
           <dsh-input
             v-model="search"
             :placeholder="t('plugins.searchPlaceholder')"
@@ -258,6 +269,20 @@ onBeforeUnmount(() => {
 
 .source-select {
   width: 190px;
+
+  :deep(.arco-select-view-single) {
+    width: 100%;
+  }
+
+  :deep(.arco-select-view-single > .arco-select-view-suffix) {
+    top: 50%;
+    transform: translateY(-50%);
+  }
+}
+
+:global(.plugin-source-popup .arco-select-option-content) {
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 
 .market-error,

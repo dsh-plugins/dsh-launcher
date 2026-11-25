@@ -12,8 +12,8 @@ importers:
         specifier: ^2.59.0
         version: 2.59.0(vue@3.5.41(typescript@5.9.3))
       '@dsh-plugin/dsh-ui-components-vue':
-        specifier: 0.1.0-dev.45101238362
-        version: 0.1.0-dev.45101238362(vue@3.5.41(typescript@5.9.3))
+        specifier: 0.1.0-dev.45544484387
+        version: 0.1.0-dev.45544484387(vue@3.5.41(typescript@5.9.3))
       '@tauri-apps/api':
         specifier: ^2.9.0
         version: 2.11.1
@@ -195,8 +195,8 @@ packages:
   '@deepseek-ai/cosmokit@1.9.0':
     resolution: {integrity: sha512-5O1S53mZiJyZYcvxxD0Qv1EY7qFPSxbGyD8CbVK6gw7W9FvcXZj2YIX1ZkOqyQQ3Xt2rFkZDHJv0+V3Zmmp8CA==}
 
-  '@dsh-plugin/dsh-ui-components-vue@0.1.0-dev.45101238362':
-    resolution: {integrity: sha512-SJRtG3DoIHGnHgPwxsJIVbsCaBTKCBx2AK4iOgQFZCj9eZp3w0LYmcOK0ibbibTi5Jdqy7wfsdZSb24o2FAmjQ==}
+  '@dsh-plugin/dsh-ui-components-vue@0.1.0-dev.45544484387':
+    resolution: {integrity: sha512-v+pqBUJ5aMRQJxsGRO++gQ8ELabqjYgzZmM9lDflogTuxkoqS2YoR4+GIpWTamVmCav4CAF3fRR0gUYb5kZO5A==}
     engines: {node: '>=24.9.0'}
     peerDependencies:
       vue: ^3.5.0
@@ -2242,7 +2242,7 @@ snapshots:
 
   '@deepseek-ai/cosmokit@1.9.0': {}
 
-  '@dsh-plugin/dsh-ui-components-vue@0.1.0-dev.45101238362(vue@3.5.41(typescript@5.9.3))':
+  '@dsh-plugin/dsh-ui-components-vue@0.1.0-dev.45544484387(vue@3.5.41(typescript@5.9.3))':
     dependencies:
       '@arco-design/web-vue': 2.59.0(vue@3.5.41(typescript@5.9.3))
       dayjs: 1.11.23
