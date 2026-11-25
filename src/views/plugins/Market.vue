@@ -156,7 +156,6 @@ onBeforeUnmount(() => {
               :trigger-props="{
                 autoFitPopupWidth: false,
                 autoFitPopupMinWidth: true,
-                contentClass: 'plugin-source-popup',
                 popupStyle: { width: 'max-content', maxWidth: 'min(26rem, calc(100vw - 24px))' },
               }"
             >
@@ -278,11 +277,6 @@ onBeforeUnmount(() => {
     top: 50%;
     transform: translateY(-50%);
   }
-}
-
-:global(.plugin-source-popup .arco-select-option-content) {
-  white-space: normal;
-  overflow-wrap: anywhere;
 }
 
 .market-error,
