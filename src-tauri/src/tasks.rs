@@ -530,6 +530,7 @@ async fn do_create_instance(
             return Err("该版本已被移除，请重新下载".to_string());
         }
         let inst = DshInstance {
+            browser: Default::default(),
             id: new_id("i"),
             name: name.to_string(),
             version_id: version_record.id.clone(),
@@ -1047,6 +1048,7 @@ async fn do_create_wsl_instance(
     let inst = {
         let mut cfg = state.config.lock().unwrap();
         let inst = DshInstance {
+            browser: Default::default(),
             id: new_id("i"),
             name: name.to_string(),
             version_id: version_record.id.clone(),
@@ -2502,6 +2504,7 @@ async fn do_copy_instance(
         let mut cfg = state.config.lock().unwrap();
         cfg.homes.push(home.clone());
         let inst = crate::config::DshInstance {
+            browser: Default::default(),
             id: new_id("i"),
             name: name.to_string(),
             version_id: source.version_id.clone(),

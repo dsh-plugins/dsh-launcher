@@ -3,10 +3,11 @@
     "target": "ES2022",
     "module": "ESNext",
     "moduleResolution": "Bundler",
-    "lib": ["ES2022", "DOM"],
+    "jsx": "react-jsx",
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
     "strict": true,
     "skipLibCheck": true,
     "noEmit": true
   },
-  "include": ["src-tauri/bridge/client.ts"]
+  "include": ["src-tauri/bridge/**/*.ts", "src-tauri/bridge/**/*.tsx"]
 }

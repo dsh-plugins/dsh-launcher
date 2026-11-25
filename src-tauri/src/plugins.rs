@@ -530,7 +530,8 @@ async fn topic_search_page(page: u32) -> Result<Vec<serde_json::Value>, String> 
 async fn repo_has_dsh_manifest(full_name: &str) -> bool {
     // Probes are best-effort and numerous, so use a much shorter timeout than
     // the catalog fetches: a stalled CDN must not stall the whole refresh.
-    let Ok(client) = crate::proxy::apply(reqwest::Client::builder())
+    let Ok(builder) = crate::proxy::apply(reqwest::Client::builder()) else { return false; };
+    let Ok(client) = builder
         .timeout(std::time::Duration::from_secs(8))
         .user_agent("dsh-launcher")
         .build()
@@ -739,14 +740,14 @@ pub struct SetPluginsEnabledInput {
 // HTTP helpers
 // ---------------------------------------------------------------------------
 
-fn http_client_builder() -> reqwest::ClientBuilder {
-    crate::proxy::apply(reqwest::Client::builder())
+fn http_client_builder() -> Result<reqwest::ClientBuilder,String> {
+    Ok(crate::proxy::apply(reqwest::Client::builder())?
         .timeout(std::time::Duration::from_secs(30))
-        .user_agent("dsh-launcher")
+        .user_agent("dsh-launcher"))
 }
 
 async fn fetch_json(url: &str, cap: usize) -> Result<serde_json::Value, String> {
-    let client = http_client_builder()
+    let client = http_client_builder()?
         .build()
         .map_err(|e| format!("创建 HTTP 客户端失败: {e}"))?;
     fetch_json_request(client.get(url), url, cap).await
@@ -1500,7 +1501,7 @@ async fn private_npm_metadata(
     let npm = crate::market_index::InstallSource::Npm { registry: None };
     npm.install_spec(id, "0.0.0")?;
     let url = format!("{registry}{}", id.replace('/', "%2f"));
-    let client = http_client_builder()
+    let client = http_client_builder()?
         .redirect(reqwest::redirect::Policy::none())
         .build()
         .map_err(|e| format!("创建私有 npm 源客户端失败: {e}"))?;

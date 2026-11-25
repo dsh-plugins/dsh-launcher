@@ -170,6 +170,15 @@ fn removes_launch_credentials_from_both_urls_in_old_and_new_logs() {
     assert!(!redact_tokens("http://foo/?%74o%6Ben=sensitive").contains("sensitive"));
 }
 
+#[test]
+fn removes_proxy_credentials_from_diagnostics() {
+    let message = "http://account:p%40%2F@proxy.local:7890 socks5://foo:bar@localhost";
+    assert_eq!(
+        redact_tokens(message),
+        "http://[redacted]@proxy.local:7890 socks5://[redacted]@localhost"
+    );
+}
+
 async fn headers(stream: &mut BufReader<TcpStream>) -> String {
     let mut text = String::new();
     while !text.ends_with("\r\n\r\n") {

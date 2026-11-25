@@ -6,7 +6,11 @@ import semver from 'semver'
 import { validNetworkRanges } from '@/utils/network-ranges'
 import newsPreview from '@/assets/news-preview.md?raw'
 import launcherIcon from '@/assets/launcher-icon-v3.png'
+import { defaultBrowserSettings } from './types'
 import type {
+  BrowserOverrides,
+  BrowserSettings,
+  ProxyPasswordScope,
   CopyInstanceInput,
   WebAccess,
   WebInterface,
@@ -151,6 +155,8 @@ function seedDb(): MockDb {
       ],
       plugin_update_channel: 'release',
       proxy_enabled: false,
+      proxy_username: '',
+      browser: defaultBrowserSettings(),
       proxy_url: 'http://127.0.0.1',
       proxy_port: 7890,
       no_proxy: '127.0.0.1,localhost,::1',
@@ -183,6 +189,8 @@ function loadDb(): MockDb {
       // Backfill fields added after the mock db was persisted.
       db.settings.log_level = db.settings.log_level ?? 'info'
       db.settings.proxy_enabled = db.settings.proxy_enabled ?? false
+      db.settings.proxy_username ??= ''
+      db.settings.browser ??= defaultBrowserSettings()
       db.settings.proxy_url = db.settings.proxy_url ?? 'http://127.0.0.1'
       db.settings.proxy_port = db.settings.proxy_port ?? 7890
       db.settings.no_proxy = db.settings.no_proxy ?? '127.0.0.1,localhost,::1'
@@ -849,6 +857,7 @@ async function mockCall<T>(cmd: string, args?: Record<string, unknown>): Promise
     case 'delete_instance': {
       const id = String(args?.id)
       delete db.running[id]
+      delete db.credentials['proxy:instance:' + id]
       mockLaunches.delete(id)
       db.instances = db.instances.filter((i) => i.id !== id)
       if (db.settings.last_instance_id === id) db.settings.last_instance_id = null
@@ -1347,11 +1356,41 @@ async function mockCall<T>(cmd: string, args?: Record<string, unknown>): Promise
         findings: [], initial_findings: [], actions: [], unresolved: [], started: false, handoff_pending: false } as T
     case 'get_settings':
       return db.settings as T
+    case 'get_proxy_password_status': {
+      const key = 'proxy:' + args?.scope + ':' + (args?.instanceId ?? '')
+      return Boolean(db.credentials[key]) as T
+    }
+    case 'save_browser_settings': {
+      const instanceId = args?.instanceId
+      let password = args?.password
+      if (instanceId) {
+        const instance = db.instances.find(row => row.id === instanceId)
+        if (!instance) { throw new Error('实例不存在') }
+        const browser = { ...args?.browser as BrowserOverrides }
+        if ((browser.storage ?? db.settings.browser.storage) === 'shared') {
+          browser.proxy = instance.browser?.proxy ?? null
+          password = undefined
+        }
+        instance.browser = browser
+      } else {
+        db.settings.browser = args?.browser as BrowserSettings
+      }
+      if (typeof password === 'string') {
+        const key = instanceId ? 'proxy:instance:' + instanceId : 'proxy:browser:'
+        db.credentials[key] = password.length > 0
+      }
+      saveDb(db)
+      return undefined as T
+    }
     case 'fetch_news': {
       return newsPreview.replaceAll('{{launcher-icon}}', launcherIcon) as T
     }
     case 'update_settings': {
-      db.settings = { ...db.settings, ...(args?.settings as Partial<LauncherSettings>) }
+      const { proxy_password, ...patch } = args?.settings as Partial<LauncherSettings> & { proxy_password?: string }
+      if (typeof proxy_password === 'string') {
+        db.credentials['proxy:launcher:'] = proxy_password.length > 0
+      }
+      db.settings = { ...db.settings, ...patch }
       saveDb(db)
       return db.settings as T
     }
@@ -1957,7 +1996,11 @@ export const api = {
   listInstanceStatus: () => call<InstanceStatus[]>('list_instance_status'),
 
   getSettings: () => call<LauncherSettings>('get_settings'),
-  updateSettings: (settings: Partial<LauncherSettings>) => call<LauncherSettings>('update_settings', { settings }),
+  updateSettings: (settings: Partial<LauncherSettings> & { proxy_password?: string }) => call<LauncherSettings>('update_settings', { settings }),
+  saveBrowserSettings: (instanceId: string | null, browser: BrowserOverrides, password?: string) =>
+    call<void>('save_browser_settings', { instanceId, browser, password }),
+  getProxyPasswordStatus: (scope: ProxyPasswordScope, instanceId: string | null = null) =>
+    call<boolean>('get_proxy_password_status', { scope, instanceId }),
   fetchNews: (source: string) => call<string>('fetch_news', { source }),
 
   /** Starts the one-click Node.js install background task (issue #23). */

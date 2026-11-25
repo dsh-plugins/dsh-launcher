@@ -43,7 +43,7 @@ async fn cached_version_icon(path: PathBuf, url: &str) -> Option<String> {
         return Some(icon);
     }
 
-    let client = crate::proxy::apply(reqwest::Client::builder())
+    let client = crate::proxy::apply(reqwest::Client::builder()).ok()?
         .timeout(std::time::Duration::from_secs(8))
         .user_agent("dsh-launcher")
         .build()
@@ -112,7 +112,7 @@ pub(crate) fn crop_square_png(bytes: &[u8]) -> Result<Vec<u8>, String> {
 
 /// Downloads an icon URL with a size cap.
 async fn fetch_icon(url: &str) -> Result<Vec<u8>, String> {
-    let client = crate::proxy::apply(reqwest::Client::builder())
+    let client = crate::proxy::apply(reqwest::Client::builder())?
         .timeout(std::time::Duration::from_secs(60))
         .user_agent("dsh-launcher")
         .build()

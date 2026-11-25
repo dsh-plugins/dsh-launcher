@@ -177,7 +177,7 @@ pub fn build_env(cfg: &Config, instance_id: &str) -> Result<Vec<(String, String)
     }
     // Launcher proxy applied to dsh: overrides the instance's own proxy vars.
     if cfg.settings.proxy_enabled && cfg.settings.proxy_apply_dsh {
-        crate::proxy::override_env(&mut env, &cfg.settings);
+        crate::proxy::override_env(&mut env, &cfg.settings)?;
     }
     Ok(env)
 }
@@ -351,7 +351,7 @@ pub async fn start_instance_process(
                 version.version
             ));
         }
-        crate::wsl::wsl_bash(
+        let mut cmd = crate::wsl::wsl_bash(
             distro,
             &crate::wsl::launch_script(
                 &home.path.to_string_lossy(),
@@ -360,7 +360,9 @@ pub async fn start_instance_process(
                 &env,
                 &cli_args,
             ),
-        )
+        );
+        cmd.envs(crate::wsl::proxy_forwarding(&env));
+        cmd
     } else {
         let bin = version_bin(&version.dir);
         if !version_bin_ready(&version.dir) {
@@ -483,6 +485,7 @@ pub async fn start_instance_process(
                 },
             );
             crate::windows::close_instance_window(&waiter_app, &waiter_id);
+            crate::browser_settings::end_session(&waiter_app, &waiter_id);
             // A crash during launch must not strand the early-loading window
             // (a normal launch already closed it when the DSH window opened).
             crate::early_loading::close_early_loading(&waiter_app, &waiter_id);
@@ -776,6 +779,7 @@ mod tests {
             links: Default::default(),
         });
         cfg.instances.push(crate::config::DshInstance {
+            browser: Default::default(),
             id: "i1".to_string(),
             name: "demo".to_string(),
             version_id: "v1".to_string(),

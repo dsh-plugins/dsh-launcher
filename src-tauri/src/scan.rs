@@ -557,6 +557,7 @@ fn apply_import(cfg: &mut crate::config::Config, input: &ImportScannedInput) -> 
                         reason: Some("未绑定版本，请在实例编辑器中指定".to_string()),
                     });
                     cfg.instances.push(DshInstance {
+                        browser: Default::default(),
                         id: crate::config::new_id("inst"),
                         name: inst_name.clone(),
                         version_id: String::new(),
@@ -574,6 +575,7 @@ fn apply_import(cfg: &mut crate::config::Config, input: &ImportScannedInput) -> 
                 }
             };
             cfg.instances.push(DshInstance {
+                browser: Default::default(),
                 id: crate::config::new_id("inst"),
                 name: inst_name.clone(),
                 version_id,

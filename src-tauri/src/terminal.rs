@@ -131,7 +131,7 @@ fn terminal_env(
     }
     // Launcher proxy applied to dsh: overrides the instance's own proxy vars.
     if cfg.settings.proxy_enabled && cfg.settings.proxy_apply_dsh {
-        crate::proxy::override_env(&mut env, &cfg.settings);
+        crate::proxy::override_env(&mut env, &cfg.settings)?;
     }
     if home.wsl.is_none() {
         crate::runtime::apply_instance_pnpm_env(&state.data_dir, &mut env)?;
@@ -328,6 +328,7 @@ async fn spawn_session(
         // distro (that needs WSLENV), so DSH_HOME / DSH_LAUNCHER_INSTANCE /
         // overrides / proxy would silently never reach the shell (issue #49 S2).
         let script = format!("{}; exec bash -i", crate::wsl::env_exports(&env));
+        for (key,value) in crate::wsl::proxy_forwarding(&env) { cmd.env(key,value); }
         cmd.args(["-d", d, "--", "bash", "-lc", &script]);
         cmd.cwd(std::env::temp_dir().as_os_str());
     } else {

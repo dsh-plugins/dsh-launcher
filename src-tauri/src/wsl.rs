@@ -434,9 +434,34 @@ pub async fn ensure_pnpm(
 /// inlines env this way; these PTY paths (the embedded terminal and the TUI
 /// session) had been relying on `Command::env`, which only sets the variable on
 /// `wsl.exe` and never reaches bash (issue #49 S2).
+fn private_proxy(key: &str, value: &str) -> bool {
+    (key.eq_ignore_ascii_case("http_proxy") || key.eq_ignore_ascii_case("https_proxy"))
+        && value.contains('@')
+}
+
+/// WSLENV 传递含凭据的代理。Bash 命令行只引用变量名。
+pub fn proxy_forwarding(env: &[(String,String)]) -> Vec<(String,String)> {
+    let mut forwarded = Vec::new();
+    let mut wslenv = std::env::var("WSLENV").unwrap_or_default();
+    for (index, (key, value)) in env.iter().enumerate() {
+        if private_proxy(key, value) {
+            let name = format!("DSH_LAUNCHER_PROXY_{index}");
+            if !wslenv.is_empty() { wslenv.push(':'); }
+            wslenv.push_str(&format!("{name}/u"));
+            forwarded.push((name, value.clone()));
+        }
+    }
+    if !forwarded.is_empty() { forwarded.push(("WSLENV".into(),wslenv)); }
+    forwarded
+}
+
+fn proxy_export(index: usize, key: &str) -> String {
+    format!("export {key}=\"$DSH_LAUNCHER_PROXY_{index}\"; unset DSH_LAUNCHER_PROXY_{index}")
+}
+
 pub fn env_exports(env: &[(String, String)]) -> String {
     env.iter()
-        .map(|(k, v)| format!("export {k}={}", sh_quote(v)))
+        .enumerate().map(|(index, (k,v))| if private_proxy(k,v) { proxy_export(index,k) } else { format!("export {k}={}",sh_quote(v)) })
         .collect::<Vec<_>>()
         .join("; ")
 }
@@ -506,8 +531,13 @@ pub fn launch_script(
     env: &[(String, String)],
     cli_args: &[String],
 ) -> String {
+    let mut private_exports = String::new();
+    for (index, (key,value)) in env.iter().enumerate() {
+        if private_proxy(key,value) { private_exports.push_str(&proxy_export(index,key)); private_exports.push_str("; "); }
+    }
     let env_pairs = env
         .iter()
+        .filter(|(k,v)| !private_proxy(k,v))
         .map(|(k, v)| format!("{}={}", k, sh_quote(v)))
         .collect::<Vec<_>>()
         .join(" ");
@@ -517,7 +547,7 @@ pub fn launch_script(
         cmd.push_str(&sh_quote(a));
     }
     format!(
-        "echo {PID_MARKER}$$; cd {home} && exec env {env_pairs} {cmd}",
+        "echo {PID_MARKER}$$; {private_exports}cd {home} && exec env {env_pairs} {cmd}",
         home = sh_quote(home)
     )
 }
@@ -660,6 +690,23 @@ mod tests {
         );
         // No env at all must not leave a dangling separator.
         assert_eq!(env_exports(&[]), "");
+    }
+
+    #[test]
+    fn authenticated_proxy_values_are_forwarded_outside_bash_arguments() {
+        let url = "http://user:private%40value@localhost:8123".to_owned();
+        let env = vec![("HTTP_PROXY".into(), url.clone()), ("http_proxy".into(),url.clone())];
+        let forwarded = proxy_forwarding(&env);
+        let script = launch_script("/home/test","node","bin.js",&env,&[]);
+        let exports = env_exports(&env);
+        for (name, value) in forwarded.iter().filter(|(key,_)| key!="WSLENV") {
+            assert_eq!(value,&url);
+            assert!(script.contains(name));
+            assert!(exports.contains(name));
+        }
+        assert!(!script.contains(&url));
+        assert!(!exports.contains(&url));
+        assert!(forwarded.iter().any(|(k,v)|k=="WSLENV" && v.contains("DSH_LAUNCHER_PROXY_0/u")));
     }
 
     #[test]

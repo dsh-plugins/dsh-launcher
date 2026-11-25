@@ -1,4 +1,5 @@
 import { defineStore } from 'pinia'
+import { defaultBrowserSettings } from '@/api/types'
 import { api } from '@/api'
 import type {
   DshHome,
@@ -113,6 +114,8 @@ export const useLauncherStore = defineStore('launcher', {
       plugin_sources: [],
       plugin_update_channel: 'release',
       proxy_enabled: false,
+      proxy_username: '',
+      browser: defaultBrowserSettings(),
       proxy_url: 'http://127.0.0.1',
       proxy_port: 7890,
       no_proxy: '127.0.0.1,localhost,::1',

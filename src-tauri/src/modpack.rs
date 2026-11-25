@@ -668,7 +668,7 @@ fn files_target(profile: &Path, rel: &str) -> Result<PathBuf, String> {
 /// and verifying size + sha256. A failed mirror's partial file is removed
 /// before the next one is tried.
 async fn download_file_entry(entry: &ModpackFileEntry, target: &Path) -> Result<(), String> {
-    let client = crate::proxy::apply(reqwest::Client::builder())
+    let client = crate::proxy::apply(reqwest::Client::builder())?
         .timeout(std::time::Duration::from_secs(600))
         .user_agent("dsh-launcher")
         .build()
@@ -2168,6 +2168,7 @@ async fn do_import_modpack(
     } else {
         let mut cfg = state.config.lock().unwrap();
         let inst = crate::config::DshInstance {
+            browser: Default::default(),
             id: new_id("i"),
             name: instance_name.clone(),
             version_id: version_record.id.clone(),
@@ -2434,6 +2435,7 @@ async fn do_import_dshhome(
     let instance_id = {
         let mut cfg = state.config.lock().unwrap();
         let inst = crate::config::DshInstance {
+            browser: Default::default(),
             id: new_id("i"),
             name: instance_name.clone(),
             version_id: version_record.id.clone(),
@@ -2703,7 +2705,7 @@ fn home_id_of_path(cfg: &crate::config::Config, path: &Path) -> Option<String> {
 
 /// Downloads a modpack URL to `target` with a size cap.
 async fn download_modpack(url: &str, target: &Path) -> Result<(), String> {
-    let client = crate::proxy::apply(reqwest::Client::builder())
+    let client = crate::proxy::apply(reqwest::Client::builder())?
         .timeout(std::time::Duration::from_secs(300))
         .user_agent("dsh-launcher")
         .build()

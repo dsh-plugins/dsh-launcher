@@ -1,60 +1,182 @@
-//! Launcher proxy support (settings → network clients and instance env).
-//!
-//! The `proxy_enabled` settings toggle routes the launcher's own HTTP
-//! requests (market, registry, downloads, news, update checks) through the
-//! configured proxy; `proxy_apply_dsh` additionally injects the proxy into
-//! launched dsh instances as HTTP(S)_PROXY / NO_PROXY environment variables,
-//! overriding the instance's own overrides on the next start.
-
 use crate::config::LauncherSettings;
 use std::sync::RwLock;
+use tauri::Url;
 
-#[derive(Clone, Debug)]
-struct ProxyConf {
-    /// `scheme://host:port` passed to `reqwest::Proxy::all`.
-    server: String,
-    /// Comma-separated NO_PROXY list.
-    no_proxy: String,
+/// 上游代理的账号与密码只在构建网络请求时进入内存。
+#[derive(Clone)]
+pub(crate) struct Route {
+    pub endpoint: Url,
+    pub port: u16,
+    pub bypass: String,
+    pub auth: Option<(String, String)>,
 }
 
-fn conf_from_settings(s: &LauncherSettings) -> Option<ProxyConf> {
-    let url = s.proxy_url.trim().trim_end_matches('/');
-    if !s.proxy_enabled || url.is_empty() {
-        return None;
+pub(crate) fn validate_address(address: &str, port: u16) -> Result<Url, String> {
+    let invalid = "请输入有效的代理地址与端口，账号和密码请填在独立字段中";
+    let mut url = Url::parse(address.trim()).map_err(|_| invalid)?;
+    if port == 0
+        || !matches!(url.scheme(), "http" | "https" | "socks5" | "socks5h")
+        || url.host().is_none()
+        || !url.username().is_empty()
+        || url.password().is_some()
+        || !matches!(url.path(), "" | "/")
+        || url.query().is_some()
+        || url.fragment().is_some()
+    {
+        return Err(invalid.into());
     }
-    Some(ProxyConf {
-        server: format!("{url}:{}", s.proxy_port),
-        no_proxy: s.no_proxy.trim().to_string(),
-    })
+    url.set_port(Some(port)).map_err(|_| invalid)?;
+    Ok(url)
 }
 
-/// Snapshot of the active proxy for HTTP client construction sites that have
-/// no access to the config mutex. Synced at startup and on every settings
-/// update.
-static CURRENT: RwLock<Option<ProxyConf>> = RwLock::new(None);
-
-/// Refreshes the global snapshot from (possibly new) settings.
-pub fn sync_from_settings(settings: &LauncherSettings) {
-    *CURRENT.write().unwrap() = conf_from_settings(settings);
+fn entry(scope: &str) -> Result<keyring::Entry, String> {
+    keyring::Entry::new("in.dsh-plug.dsh-launcher.proxy", scope)
+        .map_err(|_| "系统凭据存储不可用".into())
 }
 
-/// Applies the configured proxy (if enabled) to a reqwest client builder.
-/// Invalid proxy configuration is ignored rather than breaking the request.
-pub fn apply(builder: reqwest::ClientBuilder) -> reqwest::ClientBuilder {
-    let guard = CURRENT.read().unwrap();
-    let Some(conf) = guard.as_ref() else {
-        return builder;
+fn read_record(scope: &str) -> Result<Option<String>, String> {
+    match entry(scope)?.get_password() {
+        Ok(value) => Ok(Some(value)),
+        Err(keyring::Error::NoEntry) => Ok(None),
+        Err(_) => Err("读取代理密码失败，请检查系统凭据存储是否已解锁".into()),
+    }
+}
+
+// 代理主机或账号变更后，不向新地址发送旧凭据。
+pub(crate) fn password(
+    scope: &str,
+    endpoint: &Url,
+    username: &str,
+) -> Result<Option<String>, String> {
+    let Some(record) = read_record(scope)? else {
+        return Ok(None);
     };
-    match reqwest::Proxy::all(&conf.server) {
-        Ok(proxy) => builder.proxy(proxy.no_proxy(reqwest::NoProxy::from_string(&conf.no_proxy))),
-        Err(e) => {
-            crate::log_warn!("代理地址无效，忽略代理设置 {}: {e}", conf.server);
-            builder
+    let (address, account, value): (String, String, String) =
+        serde_json::from_str(&record).map_err(|_| "代理凭据格式无效，请重新保存密码")?;
+    Ok((address == endpoint.as_str() && account == username).then_some(value))
+}
+
+pub(crate) fn forget_password(scope: &str) -> Result<(), String> {
+    set_password(scope, None)
+}
+
+fn set_password(scope: &str, value: Option<&str>) -> Result<(), String> {
+    let entry = entry(scope)?;
+    let result = match value {
+        Some(value) if !value.is_empty() => entry.set_password(value),
+        _ => match entry.delete_credential() {
+            Err(keyring::Error::NoEntry) => Ok(()),
+            result => result,
+        },
+    };
+    result.map_err(|_| "写入系统代理凭据失败".into())
+}
+
+pub(crate) fn with_password<R>(
+    scope: &str,
+    address: &str,
+    port: u16,
+    user: &str,
+    update: Option<&str>,
+    commit: impl FnOnce() -> Result<R, String>,
+) -> Result<R, String> {
+    let Some(value) = update else { return commit() };
+    let record = if value.is_empty() {
+        None
+    } else {
+        let url = validate_address(address, port)?;
+        Some(serde_json::to_string(&(url.as_str(), user, value)).map_err(|_| "无法保存代理凭据")?)
+    };
+    let previous = read_record(scope)?;
+    set_password(scope, record.as_deref())?;
+    match commit() {
+        Ok(value) => Ok(value),
+        Err(err) => {
+            set_password(scope, previous.as_deref())
+                .map_err(|e| format!("{err}；恢复代理凭据失败: {e}"))?;
+            Err(err)
         }
     }
 }
 
-/// Proxy environment variable names managed by [`override_env`].
+impl Route {
+    pub(crate) fn load(
+        address: &str,
+        port: u16,
+        bypass: &str,
+        username: &str,
+        scope: &str,
+    ) -> Result<Self, String> {
+        let endpoint = validate_address(address, port)?;
+        if matches!(endpoint.scheme(), "http" | "https") && username.contains(':') {
+            return Err("HTTP 代理用户名不能包含冒号".into());
+        }
+        let auth = if username.is_empty() {
+            None
+        } else {
+            let pass = password(scope, &endpoint, username)?.ok_or("代理密码尚未配置")?;
+            Some((username.into(), pass))
+        };
+        Ok(Self {
+            endpoint,
+            port,
+            bypass: bypass.into(),
+            auth,
+        })
+    }
+
+    pub(crate) fn http_client_proxy(&self) -> Result<reqwest::Proxy, String> {
+        Ok(reqwest::Proxy::all(self.authenticated_url()?)
+            .map_err(|_| "无效的启动器代理配置")?
+            .no_proxy(reqwest::NoProxy::from_string(&self.bypass)))
+    }
+
+    fn authenticated_url(&self) -> Result<Url, String> {
+        let mut url = self.endpoint.clone();
+        if let Some((user, pass)) = &self.auth {
+            let user =
+                percent_encoding::utf8_percent_encode(user, percent_encoding::NON_ALPHANUMERIC)
+                    .to_string();
+            let pass =
+                percent_encoding::utf8_percent_encode(pass, percent_encoding::NON_ALPHANUMERIC)
+                    .to_string();
+            url.set_username(&user).map_err(|_| "无法设置代理用户名")?;
+            url.set_password(Some(&pass))
+                .map_err(|_| "无法设置代理密码")?;
+        }
+        Ok(url)
+    }
+}
+
+pub(crate) fn launcher_route(s: &LauncherSettings) -> Result<Option<Route>, String> {
+    if !s.proxy_enabled {
+        return Ok(None);
+    }
+    Route::load(
+        &s.proxy_url,
+        s.proxy_port,
+        &s.no_proxy,
+        &s.proxy_username,
+        "launcher",
+    )
+    .map(Some)
+}
+
+static CURRENT: RwLock<Result<Option<Route>, String>> = RwLock::new(Ok(None));
+
+pub fn sync_from_settings(settings: &LauncherSettings) {
+    *CURRENT.write().unwrap() = launcher_route(settings);
+}
+
+pub fn apply(builder: reqwest::ClientBuilder) -> Result<reqwest::ClientBuilder, String> {
+    let active = CURRENT.read().unwrap();
+    let Some(route) = active.as_ref().map_err(Clone::clone)? else {
+        return Ok(builder);
+    };
+    let proxy = route.http_client_proxy()?;
+    Ok(builder.proxy(proxy))
+}
+
 const PROXY_KEYS: [&str; 6] = [
     "HTTP_PROXY",
     "HTTPS_PROXY",
@@ -64,17 +186,32 @@ const PROXY_KEYS: [&str; 6] = [
     "no_proxy",
 ];
 
-/// Injects the proxy into an instance environment, replacing any proxy
-/// variables the instance already defines (both cases). Callers check
-/// `proxy_enabled && proxy_apply_dsh` first.
-pub fn override_env(env: &mut Vec<(String, String)>, settings: &LauncherSettings) {
-    let Some(conf) = conf_from_settings(settings) else {
-        return;
+pub fn override_env(
+    env: &mut Vec<(String, String)>,
+    settings: &LauncherSettings,
+) -> Result<(), String> {
+    let Some(route) = launcher_route(settings)? else {
+        return Ok(());
     };
-    env.retain(|(k, _)| !PROXY_KEYS.iter().any(|p| p.eq_ignore_ascii_case(k)));
+    let server = route
+        .authenticated_url()?
+        .as_str()
+        .trim_end_matches('/')
+        .to_owned();
+    env.retain(|(key, _)| !PROXY_KEYS.iter().any(|p| p.eq_ignore_ascii_case(key)));
     for key in ["HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy"] {
-        env.push((key.to_string(), conf.server.clone()));
+        env.push((key.into(), server.clone()));
     }
-    env.push(("NO_PROXY".to_string(), conf.no_proxy.clone()));
-    env.push(("no_proxy".to_string(), conf.no_proxy));
+    for key in ["NO_PROXY", "no_proxy"] {
+        env.push((key.into(), route.bypass.clone()));
+    }
+    Ok(())
+}
+
+/// 子进程的诊断可能直接打印代理 URL。
+pub(crate) fn redact_credentials(line: &str) -> std::borrow::Cow<'_, str> {
+    static URL_CREDENTIALS: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+        regex::Regex::new(r#"(?i)((?:https?|socks5h?)://)[^/@\s"'<>]+:[^/@\s"'<>]+@"#).unwrap()
+    });
+    URL_CREDENTIALS.replace_all(line, "${1}[redacted]@")
 }

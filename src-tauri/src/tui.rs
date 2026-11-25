@@ -342,6 +342,7 @@ async fn start_tui_session_inner(
             workspace_arg,
             env = crate::wsl::env_exports(&env),
         );
+        for (key,value) in crate::wsl::proxy_forwarding(&env) { cmd.env(key,value); }
         cmd.args(["-d", distro, "--", "bash", "-lc", &script]);
         cmd.cwd(std::env::temp_dir().as_os_str());
     } else {

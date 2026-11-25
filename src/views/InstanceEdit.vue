@@ -30,6 +30,7 @@ import type {
 } from '@/api/types'
 import TerminalEmbed from './TerminalEmbed.vue'
 import InstanceNetwork from '@/components/InstanceNetwork.vue'
+import BrowserBehavior from '@/components/BrowserBehavior.vue'
 import SkillRepoDialog from '@/components/SkillRepoDialog.vue'
 import MigratePluginsDialog from '@/components/MigratePluginsDialog.vue'
 import ModelPickerDialog from '@/components/ModelPickerDialog.vue'
@@ -65,7 +66,7 @@ const homeOptions = computed(() =>
 
 // --- Sidebar tabs ---------------------------------------------------------------
 
-type TabKey = 'basic' | 'network' | 'env' | 'profiles' | 'plugins' | 'skills' | 'agents' | 'mcp' | 'models' | 'storage' | 'terminal'
+type TabKey = 'basic' | 'browser' | 'network' | 'env' | 'profiles' | 'plugins' | 'skills' | 'agents' | 'mcp' | 'models' | 'storage' | 'terminal'
 const activeTab = ref<TabKey>('basic')
 
 // --- Form state ---------------------------------------------------------------
@@ -2418,6 +2419,7 @@ const terminalRunning = ref(false)
     <aside class="edit-sidebar dl-sidebar">
       <dsh-menu :selected-keys="[activeTab]" @menu-item-click="(key: string) => (activeTab = key as TabKey)">
         <dsh-menu-item key="basic">{{ t('instanceEdit.tabs.basic') }}</dsh-menu-item>
+        <dsh-menu-item v-if="networkInstance" key="browser">{{ t('browser.title') }}</dsh-menu-item>
         <dsh-menu-item v-if="networkInstance" key="network">{{ t('network.title') }}</dsh-menu-item>
         <dsh-menu-item key="env">{{ t('instanceEdit.tabs.env') }}</dsh-menu-item>
         <dsh-menu-item key="profiles">{{ t('instanceEdit.tabs.profiles') }}</dsh-menu-item>
@@ -2554,6 +2556,7 @@ const terminalRunning = ref(false)
             </div>
           </div>
 
+          <BrowserBehavior v-else-if="activeTab === 'browser' && networkInstance" :key="networkInstance.id" :instance="networkInstance" />
           <InstanceNetwork v-else-if="activeTab === 'network' && networkInstance" :key="networkInstance.id" :instance="networkInstance" />
 
           <!-- Environment overrides -->

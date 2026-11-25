@@ -128,22 +128,41 @@ pub(crate) async fn prepare(data: &Path, distro: Option<&str>) -> Result<Bridge,
     });
     std::fs::write(dir.join("package.json"), metadata.to_string())
         .map_err(|e| format!("写入通知桥接清单失败: {e}"))?;
+    let sidebar = dir.join("sidebar");
+    std::fs::create_dir(&sidebar).map_err(|e| format!("创建侧边栏插件目录失败: {e}"))?;
+    std::fs::write(sidebar.join("index.mjs"), "export function apply() {}\n")
+        .map_err(|e| format!("写入侧边栏宿主入口失败: {e}"))?;
+    std::fs::write(
+        sidebar.join("client.js"),
+        include_str!("../bridge/generated/sidebar.js"),
+    )
+    .map_err(|e| format!("写入侧边栏客户端失败: {e}"))?;
+    let sidebar_metadata = serde_json::json!({
+        "name": "@dsh-launcher/sidebar-browser", "version": "0.0.0", "type": "module",
+        "exports": { ".": "./index.mjs", "./client": "./client.js", "./package.json": "./package.json" },
+        "dsh": { "client": { "platform": "web" } }
+    });
+    std::fs::write(sidebar.join("package.json"), sidebar_metadata.to_string())
+        .map_err(|e| format!("写入侧边栏插件清单失败: {e}"))?;
     let module = match distro {
         Some(distro) => {
             let path = crate::wsl::to_wsl_path(distro, &module.to_string_lossy()).await?;
             let mut url = tauri::Url::parse("file:///").unwrap();
             url.set_path(&path);
-            url.to_string()
+            url
         }
         None => tauri::Url::from_file_path(&module)
-            .map_err(|_| "通知桥接路径无效")?
-            .to_string(),
+            .map_err(|_| "通知桥接路径无效")?,
     };
+    let sidebar_module = module.join("sidebar/index.mjs").map_err(|e| e.to_string())?;
     let content = serde_json::json!([{
         "insert": [{
             "id": "launcher-notifications",
-            "name": module,
+            "name": module.as_str(),
             "config": { "marker": bridge.marker }
+        }, {
+            "id": "launcher-sidebar-browser",
+            "name": sidebar_module.as_str()
         }]
     }]);
     std::fs::write(&bridge.patch, content.to_string())
@@ -152,7 +171,7 @@ pub(crate) async fn prepare(data: &Path, distro: Option<&str>) -> Result<Bridge,
 }
 
 fn foreground(app: &AppHandle, id: &str) -> bool {
-    let Some(win) = app.get_webview_window(&format!("instance-{id}")) else {
+    let Some(win) = app.get_window(&format!("instance-{id}")) else {
         return false;
     };
     let query = || -> tauri::Result<bool> {

@@ -267,6 +267,7 @@ mod tests {
 
     fn instance(id: &str, name: &str, default: Option<&str>, last: Option<&str>) -> DshInstance {
         DshInstance {
+            browser: Default::default(),
             id: id.into(),
             name: name.into(),
             version_id: "v".into(),

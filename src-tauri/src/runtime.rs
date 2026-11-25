@@ -285,7 +285,7 @@ pub(crate) async fn download_node_archive(
     name: &str,
     dest: &Path,
 ) -> Result<(), String> {
-    let client = crate::proxy::apply(reqwest::Client::builder())
+    let client = crate::proxy::apply(reqwest::Client::builder())?
         .timeout(std::time::Duration::from_secs(900))
         .user_agent("dsh-launcher")
         .build()

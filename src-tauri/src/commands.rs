@@ -335,6 +335,7 @@ pub fn create_instance(
         return Err("DSH_HOME 不存在".to_string());
     }
     let inst = DshInstance {
+        browser: Default::default(),
         id: new_id("i"),
         name,
         version_id: input.version_id,
@@ -661,6 +662,12 @@ pub async fn delete_instance(
             .retain(|a| a.instance_id != id);
         save_state(&state, &cfg)?;
     }
+    let cleanup_app = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        if let Err(error) = crate::browser_settings::remove_instance(&cleanup_app, &id) {
+            crate::log_warn!("清理实例 {id} 的浏览数据失败: {error}");
+        }
+    });
     crate::tray::sync_tray_icons(&app).await;
     Ok(())
 }
@@ -769,6 +776,7 @@ pub fn copy_instance(
     }
 
     let mut inst = DshInstance {
+        browser: Default::default(),
         id: new_id("i"),
         name,
         version_id: source.version_id,
@@ -1744,7 +1752,7 @@ pub async fn open_instance_window(
     // A window can outlive the URL record: the registry entry is removed the
     // moment the child process exits. An open window stays authoritative for
     // its own page, so re-navigating it does not need a fresh URL.
-    if url.is_none() && app.get_webview_window(&format!("instance-{id}")).is_none() {
+    if url.is_none() && app.get_window(&format!("instance-{id}")).is_none() {
         return Err("实例未在运行或尚未就绪".to_string());
     }
     let name = state
@@ -1778,10 +1786,15 @@ pub fn get_launcher_directory(state: State<'_, AppState>) -> Result<String, Stri
 #[tauri::command]
 pub fn update_settings(
     app: AppHandle,
+    webview: tauri::Webview,
     state: State<'_, AppState>,
     settings: SettingsPatch,
 ) -> Result<LauncherSettings, String> {
-    let mut cfg = state.config.lock().unwrap();
+    if settings.proxy_password.is_some() && webview.label() != "main" {
+        return Err("仅启动器设置可修改代理凭据".into());
+    }
+    let mut guard = state.config.lock().unwrap();
+    let mut cfg = guard.clone();
     if let Some(v) = settings.locale {
         cfg.settings.locale = v;
     }
@@ -1876,6 +1889,15 @@ pub fn update_settings(
     if let Some(v) = settings.proxy_port {
         cfg.settings.proxy_port = v;
     }
+    if let Some(v) = settings.proxy_username {
+        cfg.settings.proxy_username = v;
+    }
+    if settings.proxy_password.is_some()
+        || cfg.settings.proxy_url != guard.settings.proxy_url
+        || cfg.settings.proxy_port != guard.settings.proxy_port
+    {
+        crate::proxy::validate_address(&cfg.settings.proxy_url, cfg.settings.proxy_port)?;
+    }
     if let Some(v) = settings.no_proxy {
         cfg.settings.no_proxy = v.trim().to_string();
     }
@@ -1911,10 +1933,18 @@ pub fn update_settings(
             })
             .collect();
     }
+    crate::proxy::with_password(
+        "launcher",
+        &cfg.settings.proxy_url,
+        cfg.settings.proxy_port,
+        &cfg.settings.proxy_username,
+        settings.proxy_password.as_deref(),
+        || save_state(&state, &cfg),
+    )?;
     crate::proxy::sync_from_settings(&cfg.settings);
     let out = cfg.settings.clone();
-    save_state(&state, &cfg)?;
-    drop(cfg);
+    *guard = cfg;
+    drop(guard);
     // Turning per-instance trays off must retract the live icons immediately
     // (and turning them on must create them) rather than at the next restart.
     // Spawning the serialized sync rather than removing trays inline also
@@ -2434,7 +2464,7 @@ pub async fn fetch_news(source: String) -> Result<String, String> {
     }
 
     if source.starts_with("http://") || source.starts_with("https://") {
-        let client = crate::proxy::apply(reqwest::Client::builder())
+        let client = crate::proxy::apply(reqwest::Client::builder())?
             .timeout(std::time::Duration::from_secs(15))
             .user_agent("dsh-launcher")
             .build()

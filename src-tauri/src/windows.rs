@@ -145,7 +145,7 @@ pub fn clear_instance_webview_data(state: &AppState, instance_id: &str) {
 
 /// Drops an instance's browser data before the window is sent back to a token
 /// URL. Windows/Linux delete the instance's data directory; macOS clears the
-fn clear_webview_data(win: &tauri::WebviewWindow, app: &AppHandle, instance_id: &str) {
+fn clear_webview_data(win: &tauri::Webview, app: &AppHandle, instance_id: &str) {
     // The window's own store is the only place macOS keeps browser data; the
     // data directory below holds none of it, so wiping the file would leave
     // the cookies that caused the 431 exactly where they were.
@@ -182,7 +182,7 @@ fn should_prune(name: &str, domain: Option<&str>, host: &str) -> bool {
 /// secret minted per process, so after an instance restart every stored cookie
 /// is dead and the leftovers only inflate the request head — which is exactly
 /// what `should_prune` decides, for every authority the instance ever bound.
-fn prune_auth_cookies(win: &tauri::WebviewWindow, origin: &str, instance_id: &str) {
+fn prune_auth_cookies(win: &tauri::Webview, origin: &str, instance_id: &str) {
     let Ok(origin_url) = origin.parse::<tauri::Url>() else {
         return;
     };
@@ -273,7 +273,7 @@ pub(crate) fn refresh_instance_window_icon(app: &AppHandle, instance_id: &str) {
         format!("tui-{instance_id}"),
     ]
     .iter()
-    .filter_map(|label| app.get_webview_window(label))
+    .filter_map(|label| app.get_window(label))
     .collect();
     if windows.is_empty() {
         return;
@@ -292,7 +292,7 @@ pub(crate) fn refresh_instance_window_icon(app: &AppHandle, instance_id: &str) {
 }
 
 fn set_instance_window_icon(
-    win: &tauri::WebviewWindow,
+    win: &tauri::Window,
     icon: tauri::image::Image<'static>,
 ) -> tauri::Result<()> {
     #[cfg(not(windows))]
@@ -349,7 +349,8 @@ pub fn open_instance_window(
     let url = current_instance_url(app, instance_id, url);
     // Loopback origin of this instance's DSH page, when it has one.
     let origin = loopback_origin(&url);
-    if let Some(win) = app.get_webview_window(&label) {
+    if let Some(view) = app.get_webview(&label) {
+        let win = view.window();
         refresh_instance_window_icon(app, instance_id);
         let _ = win.show();
         let _ = win.unminimize();
@@ -368,7 +369,7 @@ pub fn open_instance_window(
             // process's token is gone. Scratch the instance's WebView2 store
             // instead of leaving a window that can never recover.
             crate::log_warn!("实例 {instance_id}：没有可用的会话地址，已清理该实例的浏览器数据");
-            clear_webview_data(&win, app, instance_id);
+            clear_webview_data(&view, app, instance_id);
             return Err("实例未在运行或尚未就绪".to_string());
         }
         // 登录跳转和会话路由会改变页面 URL，只比较加载过的启动地址。
@@ -379,11 +380,12 @@ pub fn open_instance_window(
             .unwrap_or(true);
         if stale {
             if let Some(origin) = origin.as_deref() {
-                prune_auth_cookies(&win, origin, instance_id);
+                prune_auth_cookies(&view, origin, instance_id);
             }
             crate::log_info!("实例 {instance_id}：窗口已打开，重新导航到当前会话地址");
             let parsed = url.parse().map_err(|e| format!("实例启动地址无效: {e}"))?;
-            if let Err(e) = win.navigate(parsed) {
+            crate::native_browser::change_origin(app, &label, &parsed)?;
+            if let Err(e) = view.navigate(parsed) {
                 crate::log_warn!("实例 {instance_id}：重新导航失败: {e}");
                 return Err(format!("重新导航失败: {e}"));
             }
@@ -396,23 +398,28 @@ pub fn open_instance_window(
     if url.is_empty() {
         return Err("实例未在运行或尚未就绪".to_string());
     }
-    let parsed = WebviewUrl::External(url.parse().map_err(|e| format!("实例启动地址无效: {e}"))?);
+    let parsed: tauri::Url = url.parse().map_err(|e| format!("实例启动地址无效: {e}"))?;
     let notification_app = app.clone();
     let notification_id = instance_id.to_string();
-    let builder = WebviewWindowBuilder::new(app, label, parsed)
-        .on_navigation(move |url| {
-            crate::notifications::viewed_navigation(&notification_app, &notification_id, url)
-        })
-        .title(format!("{name} — DSH"))
-        .inner_size(1024.0, 576.0)
-        .min_inner_size(800.0, 500.0)
-        .center();
+    let builder =
+        WebviewWindowBuilder::new(app, label.clone(), WebviewUrl::External(parsed.clone()))
+            .on_navigation(move |url| {
+                crate::notifications::viewed_navigation(&notification_app, &notification_id, url)
+            })
+            .title(format!("{name} — DSH"))
+            .inner_size(1024.0, 576.0)
+            .min_inner_size(800.0, 500.0)
+            .center();
     // Own browser data store: cookies of other instances never reach this
     // window. Earlier ports of *this* instance do share it, which is why
     // prune_auth_cookies drops them on every reopen.
+    let builder = crate::native_browser::configure(app, &label, &parsed, builder)?;
     let win = apply_window_store(builder, app, instance_id)
         .build()
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| {
+            crate::native_browser::forget(app, &label);
+            e.to_string()
+        })?;
     refresh_instance_window_icon(app, instance_id);
     remember_window_url(app, instance_id, &url);
     record_focus(app, instance_id);
@@ -425,6 +432,9 @@ pub fn open_instance_window(
         if let WindowEvent::Focused(true) = event {
             record_focus(&handle, &id);
         }
+        if let WindowEvent::Destroyed = event {
+            crate::native_browser::forget(&handle, &label);
+        }
     });
     Ok(())
 }
@@ -432,7 +442,7 @@ pub fn open_instance_window(
 /// Closes the instance's webview window if it is open.
 pub fn close_instance_window(app: &AppHandle, instance_id: &str) {
     let label = format!("instance-{instance_id}");
-    if let Some(win) = app.get_webview_window(&label) {
+    if let Some(win) = app.get_window(&label) {
         let _ = win.close();
     }
 }

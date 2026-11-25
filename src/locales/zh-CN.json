@@ -1,4 +1,47 @@
 {
+  "browser": {
+    "title": "浏览器行为",
+    "scope": "这些设置用于实例侧边栏打开的网页。",
+    "storage": "浏览数据",
+    "storageModes": {
+      "isolated": "按实例隔离",
+      "session": "单次运行保留",
+      "shared": "共享"
+    },
+    "storageHints": {
+      "isolated": "同一实例的标签共享登录状态，重启后仍可使用。",
+      "session": "本次实例运行期间共享登录状态，停止实例后清除。",
+      "shared": "所有选择共享的实例共用登录状态和网站数据。"
+    },
+    "inherit": "跟随全局设置",
+    "inheritValue": "跟随全局设置（{value}）",
+    "ua": "用户代理字符串（UA）",
+    "platformUa": "使用平台默认值",
+    "customUa": "自定义 UA",
+    "uaValue": "UA 字符串",
+    "invalidUa": "请输入一行有效的 UA 字符串。",
+    "proxy": "浏览器代理",
+    "proxyModes": {
+      "direct": "不使用代理",
+      "launcher": "继承启动器代理",
+      "custom": "自定义"
+    },
+    "sharedProxy": "共享模式统一使用全局浏览器代理。{value}",
+    "directDescription": "网页将直接连接。",
+    "activeEndpoint": "使用代理 {address}",
+    "applyProxy": "代理更改会在使用同一份浏览数据的所有标签关闭后生效。",
+    "username": "代理用户名（可选）",
+    "usernameHint": "代理允许无认证连接时留空。",
+    "password": "代理密码（可选）",
+    "passwordStored": "已保存密码。留空可继续使用。",
+    "passwordEmpty": "尚未保存密码。",
+    "passwordUnknown": "密码保存状态未知。",
+    "passwordClearPending": "保存设置时将清除密码。",
+    "keepPassword": "保留原密码",
+    "clearPassword": "清除密码",
+    "endpointHint": "协议和主机填在地址中，端口单独填写。",
+    "invalidEndpoint": "请输入有效的 HTTP、HTTPS 或 SOCKS5 代理地址和端口。"
+  },
   "importScan": {
     "title": "导入本机 DSH 环境",
     "hint": "扫描本机已有的 DSH 环境（~/.dsh*、DSH_HOME 环境变量与 WSL 发行版），勾选要导入的 profile；也可添加本地已有的 DSH 版本目录。",

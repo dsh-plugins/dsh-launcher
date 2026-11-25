@@ -102,7 +102,7 @@ pub async fn check_launcher_update(channel: Option<String>) -> Result<LauncherUp
     let dev_channel = parse_channel(channel.as_deref())?;
 
     let url = crate::plugins::github_api_url(RELEASES_API);
-    let client = crate::proxy::apply(reqwest::Client::builder())
+    let client = crate::proxy::apply(reqwest::Client::builder())?
         .timeout(std::time::Duration::from_secs(15))
         .user_agent("dsh-launcher")
         .build()

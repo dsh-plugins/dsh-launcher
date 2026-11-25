@@ -402,7 +402,7 @@ impl HelperLocation {
                 return Ok(None);
             }
         }
-        let client = crate::proxy::apply(reqwest::Client::builder())
+        let client = crate::proxy::apply(reqwest::Client::builder())?
             .connect_timeout(Duration::from_secs(12))
             .timeout(Duration::from_secs(150))
             .redirect(reqwest::redirect::Policy::custom(|attempt| {

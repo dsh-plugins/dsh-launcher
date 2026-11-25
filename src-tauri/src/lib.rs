@@ -18,6 +18,8 @@ mod plugins;
 mod process;
 mod providers;
 mod proxy;
+mod browser_proxy;
+mod browser_settings;
 mod runtime;
 mod scan;
 mod sessions;
@@ -32,6 +34,7 @@ mod update_window;
 mod web_access;
 mod web_launch;
 mod windows;
+mod native_browser;
 mod wsl;
 
 use std::collections::HashMap;
@@ -161,6 +164,7 @@ pub fn run() {
         main.background_color = Some(tauri::window::Color(0, 0, 0, 0));
     }
     tauri::Builder::default()
+        .plugin(native_browser::plugin())
         // Single instance first: a second launch (e.g. browser protocol
         // activation) forwards its argv to the running instance and exits.
         .plugin(tauri_plugin_single_instance::init(|app, argv, _cwd| {
@@ -239,6 +243,9 @@ pub fn run() {
             // rest can be moved freely.
             let bootstrap = crate::migrate::bootstrap(app);
             let data_dir = bootstrap.data_dir.clone();
+            let cleanup_app = app.handle().clone();
+            let cleanup_dir = data_dir.clone();
+            tauri::async_runtime::spawn_blocking(move || browser_settings::clean_abandoned_sessions(&cleanup_app, &cleanup_dir));
             std::fs::create_dir_all(&data_dir)?;
             let data_dir_notice = bootstrap.notice;
             let data_dir_source = bootstrap.source;
@@ -403,6 +410,8 @@ pub fn run() {
             early_loading::report_launch_compat,
             early_loading::cancel_instance_launch,
             commands::open_external,
+            browser_settings::save_browser_settings,
+            browser_settings::get_proxy_password_status,
             commands::open_launcher_directory,
             commands::open_launcher_log,
             commands::open_instance_log,

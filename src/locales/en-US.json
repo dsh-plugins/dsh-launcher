@@ -1,4 +1,47 @@
 {
+  "browser": {
+    "title": "Browser behavior",
+    "scope": "These settings apply to pages opened in the instance sidebar.",
+    "storage": "Browsing data",
+    "storageModes": {
+      "isolated": "Per instance",
+      "session": "This run only",
+      "shared": "Shared"
+    },
+    "storageHints": {
+      "isolated": "Tabs in this instance share sign-ins across restarts.",
+      "session": "Tabs share sign-ins for this run. Stopping the instance clears its browsing data.",
+      "shared": "All instances using shared storage share sign-ins and site data."
+    },
+    "inherit": "Use global setting",
+    "inheritValue": "Use global setting ({value})",
+    "ua": "User agent (UA)",
+    "platformUa": "Platform default",
+    "customUa": "Custom user agent",
+    "uaValue": "User agent string",
+    "invalidUa": "Enter a user agent on a single line.",
+    "proxy": "Browser proxy",
+    "proxyModes": {
+      "direct": "No proxy",
+      "launcher": "Use launcher proxy",
+      "custom": "Custom"
+    },
+    "sharedProxy": "Shared storage uses the global browser proxy. {value}",
+    "directDescription": "Pages connect directly.",
+    "activeEndpoint": "Using proxy {address}",
+    "applyProxy": "Proxy changes take effect after all tabs using the same browsing data close.",
+    "username": "Proxy username (optional)",
+    "usernameHint": "Leave blank for a proxy that accepts unauthenticated connections.",
+    "password": "Proxy password (optional)",
+    "passwordStored": "A password is saved. Leave blank to keep it.",
+    "passwordEmpty": "No password saved.",
+    "passwordUnknown": "Password status unknown.",
+    "passwordClearPending": "Saving these settings will clear the password.",
+    "keepPassword": "Keep saved password",
+    "clearPassword": "Clear password",
+    "endpointHint": "Enter the protocol and hostname here and the port separately.",
+    "invalidEndpoint": "Enter a valid HTTP, HTTPS, or SOCKS5 proxy address and port."
+  },
   "importScan": {
     "title": "Import local DSH environments",
     "hint": "Scan the machine for DSH environments the launcher did not install (~/.dsh*, the DSH_HOME env var and WSL distros), pick the profiles to import; local DSH version directories can be imported too.",

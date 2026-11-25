@@ -37,6 +37,8 @@ pub struct DshVersion {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct DshInstance {
+    #[serde(default)]
+    pub browser: crate::browser_settings::BrowserOverrides,
     pub id: String,
     pub name: String,
     pub version_id: String,
@@ -215,6 +217,10 @@ pub fn sanitize_plugin_sources(list: Vec<PluginSourceConfig>) -> Vec<PluginSourc
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct LauncherSettings {
+    #[serde(default)]
+    pub browser: crate::browser_settings::BrowserSettings,
+    #[serde(default)]
+    pub proxy_username: String,
     #[serde(default = "default_locale")]
     pub locale: String,
     #[serde(default = "default_true")]
@@ -375,6 +381,8 @@ fn default_plugin_update_channel() -> String {
 impl Default for LauncherSettings {
     fn default() -> Self {
         Self {
+            browser: Default::default(),
+            proxy_username: String::new(),
             locale: default_locale(),
             minimize_to_tray: default_true(),
             autostart: false,
@@ -450,6 +458,8 @@ pub struct NewInstanceInput {
 #[derive(Clone, Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SettingsPatch {
+    pub proxy_username: Option<String>,
+    pub proxy_password: Option<String>,
     #[serde(default)]
     pub locale: Option<String>,
     #[serde(default)]

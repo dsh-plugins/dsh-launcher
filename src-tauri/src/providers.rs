@@ -1160,7 +1160,7 @@ pub fn parse_listing(body: &serde_json::Value) -> Result<Vec<CatalogModel>, Stri
 }
 
 fn http_client() -> Result<reqwest::Client, String> {
-    crate::proxy::apply(reqwest::Client::builder())
+    crate::proxy::apply(reqwest::Client::builder())?
         .timeout(std::time::Duration::from_secs(30))
         .user_agent("dsh-launcher")
         .build()

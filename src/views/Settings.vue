@@ -17,6 +17,8 @@ import { useLauncherStore } from '@/stores/launcher'
 import ImportScanDialog from '@/components/ImportScanDialog.vue'
 import HintIcon from '@/components/HintIcon.vue'
 import PageScrollbar from '@/components/PageScrollbar.vue'
+import BrowserBehavior from '@/components/BrowserBehavior.vue'
+import LauncherProxySettings from '@/components/LauncherProxySettings.vue'
 
 const { message: Message } = useFeedback()
 const { modal: Modal } = useDialog()
@@ -24,7 +26,7 @@ const { modal: Modal } = useDialog()
 const { t } = useI18n()
 const store = useLauncherStore()
 
-type SettingsSection = 'launch' | 'notifications' | 'personal' | 'network' | 'resources' | 'about'
+type SettingsSection = 'launch' | 'notifications' | 'personal' | 'network' | 'browser' | 'resources' | 'about'
 const section = ref<SettingsSection>('launch')
 
 /** Project links shown on the About section (issue #72). */
@@ -462,42 +464,6 @@ async function onMovePluginSource(index: number, delta: number) {
   await savePluginSources(list)
 }
 
-// --- Proxy settings -----------------------------------------------------------
-
-async function onProxyEnabledChange(value: string | number | boolean | Record<string, unknown> | (string | number | boolean | Record<string, unknown>)[]) {
-  await patchSettings({ proxy_enabled: Boolean(value) })
-}
-
-async function onProxyApplyDshChange(value: string | number | boolean | Record<string, unknown> | (string | number | boolean | Record<string, unknown>)[]) {
-  await patchSettings({ proxy_apply_dsh: Boolean(value) })
-}
-
-// Text fields save on blur / Enter so typing is not interrupted.
-const proxyUrl = ref(store.settings.proxy_url ?? '')
-const proxyPort = ref(store.settings.proxy_port ?? 7890)
-const noProxy = ref(store.settings.no_proxy ?? '')
-watch(
-  () => [store.settings.proxy_url, store.settings.proxy_port, store.settings.no_proxy] as const,
-  ([url, port, np]) => {
-    const u = String(url ?? '')
-    if (u !== proxyUrl.value) proxyUrl.value = u
-    const p = Number(port ?? 7890)
-    if (p !== proxyPort.value) proxyPort.value = p
-    const n = String(np ?? '')
-    if (n !== noProxy.value) noProxy.value = n
-  },
-)
-
-async function onProxyFieldsSave() {
-  const patch: Parameters<typeof api.updateSettings>[0] = {}
-  const url = proxyUrl.value.trim()
-  if (url && url !== store.settings.proxy_url) patch.proxy_url = url
-  if (proxyPort.value && proxyPort.value !== store.settings.proxy_port) patch.proxy_port = proxyPort.value
-  const np = noProxy.value.trim()
-  if (np !== (store.settings.no_proxy ?? '')) patch.no_proxy = np
-  if (Object.keys(patch).length > 0) await patchSettings(patch)
-}
-
 // --- DSH_HOME management ------------------------------------------------------
 
 const newHomeName = ref('')
@@ -580,6 +546,7 @@ const pluginSourceColumns = computed(() => [
         <dsh-menu-item key="launch">{{ t('settings.sections.launch') }}</dsh-menu-item>
         <dsh-menu-item key="notifications">{{ t('settings.notifications.title') }}</dsh-menu-item>
         <dsh-menu-item key="personal">{{ t('settings.sections.personal') }}</dsh-menu-item>
+        <dsh-menu-item key="browser">{{ t('browser.title') }}</dsh-menu-item>
         <dsh-menu-item key="network">{{ t('settings.sections.network') }}</dsh-menu-item>
         <dsh-menu-item key="resources">{{ t('settings.sections.resources') }}</dsh-menu-item>
         <dsh-menu-item key="about">{{ t('settings.sections.about') }}</dsh-menu-item>
@@ -896,55 +863,8 @@ const pluginSourceColumns = computed(() => [
     </div>
     </template>
 
-    <template v-else-if="section === 'network'">
-    <div class="dl-card">
-      <div class="dl-card-title">
-        <h3>{{ t('settings.proxy.title') }}</h3>
-      </div>
-      <dsh-form :model="store.settings" layout="vertical" class="settings-form">
-        <dsh-form-item>
-          <dsh-switch :model-value="store.settings.proxy_enabled" @change="onProxyEnabledChange" />
-          <span class="switch-label">{{ t('settings.proxy.enabled') }}<HintIcon :content="t('settings.proxy.enabledHint')" /></span>
-        </dsh-form-item>
-        <dsh-form-item :label="t('settings.proxy.url')">
-          <dsh-input
-            v-model="proxyUrl"
-            :disabled="!store.settings.proxy_enabled"
-            placeholder="http://127.0.0.1"
-            @blur="onProxyFieldsSave"
-            @press-enter="onProxyFieldsSave"
-          />
-        </dsh-form-item>
-        <dsh-form-item :label="t('settings.proxy.port')">
-          <dsh-input-number
-            v-model="proxyPort"
-            :disabled="!store.settings.proxy_enabled"
-            :min="1"
-            :max="65535"
-            style="width: 220px"
-            @blur="onProxyFieldsSave"
-          />
-        </dsh-form-item>
-        <dsh-form-item><template #label>{{ t('settings.proxy.noProxy') }}<HintIcon :content="t('settings.proxy.noProxyHint')" /></template>
-          <dsh-input
-            v-model="noProxy"
-            :disabled="!store.settings.proxy_enabled"
-            placeholder="127.0.0.1,localhost,::1"
-            @blur="onProxyFieldsSave"
-            @press-enter="onProxyFieldsSave"
-          />
-          </dsh-form-item>
-        <dsh-form-item>
-          <dsh-switch
-            :model-value="store.settings.proxy_apply_dsh"
-            :disabled="!store.settings.proxy_enabled"
-            @change="onProxyApplyDshChange"
-          />
-          <span class="switch-label">{{ t('settings.proxy.applyDsh') }}<HintIcon :content="t('settings.proxy.applyDshHint')" /></span>
-        </dsh-form-item>
-      </dsh-form>
-    </div>
-    </template>
+    <BrowserBehavior v-else-if="section === 'browser'" />
+    <LauncherProxySettings v-else-if="section === 'network'" />
 
     <template v-else-if="section === 'resources'">
     <div class="dl-card">

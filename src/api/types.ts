@@ -60,6 +60,40 @@ export interface WebInterface {
   subnet: string
 }
 
+/** 侧边栏网页使用的存储范围。 */
+export type BrowserStorage = 'isolated' | 'session' | 'shared'
+export type BrowserProxyMode = 'direct' | 'launcher' | 'custom'
+export type ProxyPasswordScope = 'launcher' | 'browser' | 'instance'
+
+/** 代理密码由系统凭据服务保存，不随设置读取。 */
+export interface ProxyEndpoint {
+  url: string
+  port: number
+  no_proxy: string
+  username: string
+}
+
+export interface BrowserProxy extends ProxyEndpoint {
+  mode: BrowserProxyMode
+}
+
+export interface BrowserSettings {
+  storage: BrowserStorage
+  user_agent: string
+  proxy: BrowserProxy
+}
+
+/** 实例未覆盖的字段使用全局设置；空 UA 表示使用平台默认值。 */
+export type BrowserOverrides = { [K in keyof BrowserSettings]?: BrowserSettings[K] | null }
+
+export function defaultBrowserSettings(): BrowserSettings {
+  return {
+    storage: 'isolated',
+    user_agent: '',
+    proxy: { mode: 'launcher', url: 'http://127.0.0.1', port: 7890, no_proxy: '127.0.0.1,localhost,::1', username: '' },
+  }
+}
+
 export interface DshInstance {
   id: string
   name: string
@@ -71,6 +105,7 @@ export interface DshInstance {
   /** http(s) URL, "local" (cropped PNG in the HOME), or null/undefined = launcher default. */
   icon?: string | null
   web_access?: WebAccess
+  browser?: BrowserOverrides
   /** 指定监听端口，留空时由系统分配。 */
   port?: number | null
   /** TUI instance working directory; null/undefined = DSH_HOME (default behavior). */
@@ -95,6 +130,8 @@ export interface LauncherSettings {
   proxy_enabled: boolean
   /** Proxy URL without port (PROXY_URL), e.g. http://127.0.0.1 */
   proxy_url: string
+  proxy_username: string
+  browser: BrowserSettings
   /** PROXY_PORT */
   proxy_port: number
   /** Comma-separated bypass list (NO_PROXY). */
