@@ -83,6 +83,8 @@ jobs:
         run: node --test ci/release-notes.test.mjs
       - name: Bump-version tests
         run: node --test ci/bump-version.test.mjs
+      - name: 通知已读轮次测试
+        run: node --experimental-strip-types --test ci/notification-turn.test.mjs
 
   prepare:
     needs: [quality, integration]

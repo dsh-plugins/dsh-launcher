@@ -24,12 +24,16 @@ export function apply(ctx: Context): void {
     let frame = 0
     let previousEvents: ReturnType<SessionBinding['eventSource']['getSnapshot']> | undefined
     let completedTurn = 0
+    const isViewing = () => document.visibilityState === 'visible' && document.hasFocus()
     const report = () => {
-      if (document.visibilityState !== 'visible' || !document.hasFocus()) {
+      if (!isViewing()) {
         return
       }
       cancelAnimationFrame(frame)
       frame = requestAnimationFrame(() => {
+        if (!isViewing()) {
+          return
+        }
         const selected = Object.values(ctx.sessions.list.getSnapshot().byId)
           .find(row => (row.retainedBy.mainView ?? 0) > 0)
         if (!selected) {
@@ -42,8 +46,15 @@ export function apply(ctx: Context): void {
         const events = binding.eventSource.getSnapshot()
         if (events !== previousEvents) {
           previousEvents = events
-          completedTurn = events.entries.reduce((latest, { event }) => event.type === 'turn/end'
-            ? Math.max(latest, event.data.turn ?? 0) : latest, 0)
+          completedTurn = 0
+          for (const { event } of events.entries) {
+            if (event.type === 'turn/end') {
+              completedTurn = Math.max(completedTurn, event.data.turn ?? 0)
+            } else if (event.type === 'turn/start') {
+              // 历史窗口可能从新一轮开始，前一轮的结束事件已不在窗口内。
+              completedTurn = Math.max(completedTurn, (event.data.turn ?? 0) - 1)
+            }
+          }
         }
         const url = new URL('dsh-launcher-read://session')
         url.searchParams.set('id', selected.id)

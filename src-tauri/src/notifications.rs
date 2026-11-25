@@ -35,6 +35,14 @@ struct Alert {
 struct InstanceAlerts {
     generation: String,
     events: HashMap<(String, String), Alert>,
+    read_turns: HashMap<String, u64>,
+}
+
+fn completion_was_read(event: &str, through_turn: u64) -> bool {
+    event
+        .strip_prefix("turn:")
+        .and_then(|turn| turn.parse::<u64>().ok())
+        .is_some_and(|turn| turn <= through_turn)
 }
 
 impl InstanceAlerts {
@@ -56,6 +64,13 @@ impl InstanceAlerts {
                     return false;
                 }
                 if kind == Kind::Completed {
+                    if self
+                        .read_turns
+                        .get(&key.0)
+                        .is_some_and(|turn| completion_was_read(&key.1, *turn))
+                    {
+                        return false;
+                    }
                     self.events.retain(|(session, _), alert| {
                         session != &key.0 || alert.kind != Kind::Completed
                     });
@@ -67,13 +82,12 @@ impl InstanceAlerts {
     }
 
     fn acknowledge(&mut self, session: &str, through_turn: u64) {
+        // 前台可能先看到回合结束，宿主随后才在子代理空闲时发送完成提醒。
+        let last_read = self.read_turns.entry(session.to_owned()).or_default();
+        *last_read = (*last_read).max(through_turn);
         for ((id, event), alert) in &mut self.events {
             if id == session
-                && (alert.kind != Kind::Completed
-                    || event
-                        .strip_prefix("turn:")
-                        .and_then(|turn| turn.parse::<u64>().ok())
-                        .is_some_and(|turn| turn <= through_turn))
+                && (alert.kind != Kind::Completed || completion_was_read(event, *last_read))
             {
                 alert.unread = false;
             }
@@ -176,7 +190,16 @@ fn foreground(app: &AppHandle, id: &str) -> bool {
         return false;
     };
     let query = || -> tauri::Result<bool> {
-        Ok(win.is_focused()? && win.is_visible()? && !win.is_minimized()?)
+        #[cfg(windows)]
+        let active = {
+            // WebView2 获得键盘焦点后，所属实例仍是系统前台窗口。
+            let hwnd = win.hwnd()?;
+            // SAFETY: GetForegroundWindow 无入参，返回的句柄仅用于比较。
+            hwnd == unsafe { windows::Win32::UI::WindowsAndMessaging::GetForegroundWindow() }
+        };
+        #[cfg(not(windows))]
+        let active = win.is_focused()?;
+        Ok(active && win.is_visible()? && !win.is_minimized()?)
     };
     query().unwrap_or_else(|error| {
         crate::log_debug!("查询实例 {id} 的窗口前台状态失败: {error}");
@@ -433,6 +456,9 @@ pub(crate) fn start(app: &AppHandle) {
                 previous = current;
             }
             for id in &targets {
+                if foreground(&app, id) {
+                    continue;
+                }
                 if let Some(icon) = crate::icons::resolve_instance_icon(&app, id).await {
                     flashing.insert(id.clone(), icon);
                 }
@@ -508,6 +534,34 @@ mod tests {
         assert!(state.pending());
         state.acknowledge("a", 2);
         assert!(state.pending());
+        state.acknowledge("a", 3);
+        assert!(!state.pending());
+    }
+
+    #[test]
+    fn delayed_read_completions_do_not_realert_or_replace_a_newer_completion() {
+        let mut state = InstanceAlerts::default();
+        state.acknowledge("a", 3);
+        state.acknowledge("a", 1);
+        assert!(!state.apply(event("a", "turn:3", Kind::Completed), false));
+        assert!(!state.pending());
+        assert!(state.apply(event("a", "turn:4", Kind::Completed), false));
+        assert!(!state.apply(event("a", "turn:3", Kind::Completed), false));
+        assert!(!state.apply(event("a", "turn:4", Kind::Completed), false));
+        state.acknowledge("a", 3);
+        assert!(state.pending());
+        state.acknowledge("a", 4);
+        assert!(!state.pending());
+    }
+
+    #[test]
+    fn a_read_turn_only_suppresses_completions_for_the_viewed_session() {
+        let mut state = InstanceAlerts::default();
+        state.acknowledge("a", 3);
+        assert!(state.apply(event("b", "turn:3", Kind::Completed), false));
+        state.acknowledge("b", 3);
+        assert!(state.apply(event("a", "question", Kind::Question), false));
+        assert!(state.apply(event("a", "plan", Kind::Plan), false));
         state.acknowledge("a", 3);
         assert!(!state.pending());
     }
