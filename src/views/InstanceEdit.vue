@@ -2474,7 +2474,7 @@ const terminalRunning = ref(false)
                 </template>
                 <div class="icon-editor">
                   <img v-if="iconUrl" :src="iconUrl" class="icon-preview" alt="" />
-                  <img v-else src="@/assets/launcher-icon-v3.png" class="icon-preview" alt="" />
+                  <img v-else src="@/assets/launcher-orca.svg" class="icon-preview" alt="" />
                   <div class="icon-actions">
                     <dsh-input
                       v-model="iconInput"

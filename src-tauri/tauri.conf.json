@@ -43,15 +43,19 @@
     "shortDescription": "DSH multi-version launcher",
     "longDescription": "Install and manage multiple DeepSeek Harness (DSH) versions and instances with independent or shared DSH_HOME roots, profiles and environment overrides.",
     "icon": [
-      "icons/launcher-v3/32x32.png",
-      "icons/launcher-v3/128x128.png",
-      "icons/launcher-v3/128x128@2x.png",
-      "icons/launcher-icon-v3.icns",
-      "icons/launcher-icon-v3.ico"
+      "icons/32x32.png",
+      "icons/64x64.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
     ],
     "windows": {
       "nsis": {
-        "installMode": "both"
+        "installMode": "both",
+        "installerIcon": "icons/icon.ico",
+        "uninstallerIcon": "icons/icon.ico"
       }
     }
   }

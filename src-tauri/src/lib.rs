@@ -282,6 +282,8 @@ pub fn run() {
                 env!("CARGO_PKG_VERSION"),
                 data_dir.display()
             );
+            #[cfg(windows)]
+            commands::refresh_default_shortcut_icons(&data_dir, &cfg.instances);
 
             app.manage(AppState {
                 config_path,
