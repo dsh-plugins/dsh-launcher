@@ -6,7 +6,7 @@ import { HintIcon, useFeedback, useDialog } from '@dsh-plugin/dsh-ui-components-
 import { api } from '@/api'
 import { useLauncherStore } from '@/stores/launcher'
 import type { RemoteVersion } from '@/api/types'
-import MarketIcon from '@/components/MarketIcon.vue'
+import DshVersionIcon from '@/components/DshVersionIcon.vue'
 
 // keep-alive name: the download page caches this view (list state).
 defineOptions({ name: 'CreatePickPage' })
@@ -49,12 +49,6 @@ const latest = computed(() => {
 
 const installedSet = computed(() => new Set(store.versions.map((v) => v.version)))
 const sourceBuilds = computed(() => new Set(remote.value.filter((v) => v.source === 'github').map((v) => v.version)))
-
-function versionIcon(version: string) {
-  return sourceBuilds.value.has(version) || /-alpha(?:[.\d-]|$)/i.test(version)
-    ? store.versionIcons.chat
-    : store.versionIcons.platform
-}
 
 function formatDate(iso: string | null): string {
   if (!iso) return ''
@@ -148,7 +142,7 @@ function confirmRemove(id: string, version: string) {
           class="version-row"
           @click="pick(row.v.version)"
         >
-          <MarketIcon :src="versionIcon(row.v.version)" class="version-icon" :class="{ pre: isPrerelease(row.v.version) }">◆</MarketIcon>
+          <DshVersionIcon :version="row.v.version" :source-build="sourceBuilds.has(row.v.version)" />
           <div class="version-meta">
             <div class="version-name">
               {{ row.v.version }}
@@ -174,7 +168,7 @@ function confirmRemove(id: string, version: string) {
       <dsh-collapse-item key="stable" :header="t('download.stable')">
         <template v-if="stable.length">
           <div v-for="v in stable" :key="v.version" class="version-row" @click="pick(v.version)">
-            <MarketIcon :src="versionIcon(v.version)" class="version-icon">◆</MarketIcon>
+            <DshVersionIcon :version="v.version" :source-build="sourceBuilds.has(v.version)" />
             <div class="version-meta">
               <div class="version-name">
                 {{ v.version }}
@@ -195,7 +189,7 @@ function confirmRemove(id: string, version: string) {
       <dsh-collapse-item key="prerelease" :header="t('download.prerelease')">
         <template v-if="prerelease.length">
           <div v-for="v in prerelease" :key="v.version" class="version-row" @click="pick(v.version)">
-            <MarketIcon :src="versionIcon(v.version)" class="version-icon pre">◆</MarketIcon>
+            <DshVersionIcon :version="v.version" :source-build="sourceBuilds.has(v.version)" />
             <div class="version-meta">
               <div class="version-name">
                 {{ v.version }}
@@ -221,7 +215,7 @@ function confirmRemove(id: string, version: string) {
         <h3>{{ t('download.installedTitle') }}</h3>
       </div>
       <div v-for="v in store.versions" :key="v.id" class="installed-row">
-        <MarketIcon :src="versionIcon(v.version)" class="version-icon">◆</MarketIcon>
+        <DshVersionIcon :version="v.version" :source-build="sourceBuilds.has(v.version)" :highlight-prerelease="false" />
         <div class="version-meta">
           <div class="version-name">{{ v.version }}</div>
           <div class="version-sub">{{ v.dir }}</div>
@@ -273,15 +267,6 @@ function confirmRemove(id: string, version: string) {
 
   &:hover {
     background: var(--color-fill-2);
-  }
-}
-
-.version-icon {
-  color: #fff;
-  font-size: 16px;
-
-  &.pre {
-    --market-icon-fallback: linear-gradient(135deg, #f7ba1e, #f53f3f);
   }
 }
 

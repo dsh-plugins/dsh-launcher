@@ -5,6 +5,7 @@ import { useI18n } from 'vue-i18n'
 import { HintIcon, ToggleButtonGroup, useFeedback } from '@dsh-plugin/dsh-ui-components-vue'
 import { api } from '@/api'
 import { useLauncherStore } from '@/stores/launcher'
+import DshVersionIcon from '@/components/DshVersionIcon.vue'
 
 const { message: Message } = useFeedback()
 
@@ -158,7 +159,7 @@ async function onConfirm() {
       <dsh-button variant="ghost" class="back-button" @click="router.push({ name: 'download-create' })">
         ←
       </dsh-button>
-      <span class="version-icon">◆</span>
+      <DshVersionIcon :version="version" :source-build="isSourceBuild" />
       <strong v-if="downloadOnly">{{ version }}</strong>
       <dsh-input
         v-else
@@ -267,19 +268,6 @@ async function onConfirm() {
 .back-button {
   font-size: 18px;
   padding: 0 8px;
-}
-
-.version-icon {
-  width: 40px;
-  height: 40px;
-  border-radius: 8px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  background: linear-gradient(135deg, #0fc6c2, #165dff);
-  color: #fff;
-  font-size: 16px;
-  flex-shrink: 0;
 }
 
 .name-input {

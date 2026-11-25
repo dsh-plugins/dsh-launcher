@@ -11,6 +11,8 @@ import PluginFileImportDialog from '@/components/PluginFileImportDialog.vue'
 import InstanceLaunchErrorDialog from '@/components/InstanceLaunchErrorDialog.vue'
 import PageScrollbar from '@/components/PageScrollbar.vue'
 
+defineProps<{ windowShadow: boolean }>()
+
 const { message: Message } = useFeedback()
 
 const route = useRoute()
@@ -258,6 +260,12 @@ const appWindow = (() => {
 })()
 
 const windowMaximized = ref(false)
+const isMac = isTauri && /Macintosh/.test(navigator.userAgent)
+const resizeDirections = [
+  'NorthWest', 'North', 'NorthEast', 'West', 'East', 'SouthWest', 'South', 'SouthEast',
+] as const
+type ResizeDirection = (typeof resizeDirections)[number]
+let doubleClickStart: { x: number; y: number } | undefined
 let unlistenWindowResize: (() => void) | undefined
 onMounted(async () => {
   const w = await appWindow
@@ -285,14 +293,36 @@ async function close() {
   await w?.close()
 }
 
-// Manual drag: native data-tauri-drag-region only works on elements carrying
-// the attribute, which leaves the menu area in the middle undraggable.
-async function onHeaderMouseDown(e: MouseEvent) {
-  if (!isTauri || e.button !== 0) return
-  const el = e.target as HTMLElement | null
-  if (el?.closest('.window-controls, .arco-menu-item, a, button, input, [data-no-drag]')) return
+function isHeaderDoubleClick(event: MouseEvent): boolean {
+  return event.button === 0 && event.detail === 2
+    && event.target instanceof Element
+    && !event.target.closest('[data-tauri-drag-region="false"]')
+}
+
+function onHeaderMouseDown(event: MouseEvent) {
+  if (isMac) {
+    doubleClickStart = isHeaderDoubleClick(event) ? { x: event.clientX, y: event.clientY } : undefined
+  }
+}
+
+async function onHeaderMouseUp(event: MouseEvent) {
+  if (!isMac || !doubleClickStart || !isHeaderDoubleClick(event)) {
+    return
+  }
+  const start = doubleClickStart
+  doubleClickStart = undefined
+  if (start.x !== event.clientX || start.y !== event.clientY) {
+    return
+  }
+  // macOS 无边框窗口没有系统缩放按钮，直接调用窗口缩放 API。
+  event.stopPropagation()
   const w = await appWindow
-  w?.startDragging()
+  await w?.toggleMaximize()
+}
+
+async function resizeWindow(direction: ResizeDirection) {
+  const w = await appWindow
+  await w?.startResizeDragging(direction)
 }
 </script>
 
@@ -300,8 +330,12 @@ async function onHeaderMouseDown(e: MouseEvent) {
   <!-- Standalone frameless windows render bare, without the app shell. -->
   <router-view v-if="standaloneWindow" />
   <dsh-layout v-else class="app-shell" :class="{ 'is-maximized': windowMaximized }">
-    <dsh-layout-header class="app-header" @mousedown="onHeaderMouseDown">
-      <!-- Brand; dragging is handled manually via onHeaderMouseDown. -->
+    <dsh-layout-header
+      class="app-header"
+      data-tauri-drag-region="deep"
+      @mousedown="onHeaderMouseDown"
+      @mouseup="onHeaderMouseUp"
+    >
       <div v-if="!onInstancePage" class="app-brand">
         <img src="@/assets/launcher-icon-v3.png" class="app-logo" alt="" />
         <span class="app-title">{{ t('app.title') }}</span>
@@ -309,7 +343,7 @@ async function onHeaderMouseDown(e: MouseEvent) {
       </div>
       <template v-if="onInstancePage">
         <div class="header-back">
-          <button class="header-back-btn" @click="onHeaderBack">←</button>
+          <button class="header-back-btn" data-tauri-drag-region="false" @click="onHeaderBack">←</button>
           <span class="header-back-title">{{ instancePageTitle }}</span>
         </div>
       </template>
@@ -318,6 +352,7 @@ async function onHeaderMouseDown(e: MouseEvent) {
         mode="horizontal"
         :selected-keys="selectedKeys"
         class="app-menu"
+        data-tauri-drag-region="false"
         @menu-item-click="onMenuSelect"
       >
         <dsh-menu-item key="home">
@@ -333,7 +368,7 @@ async function onHeaderMouseDown(e: MouseEvent) {
           {{ t('nav.settings') }}
         </dsh-menu-item>
       </dsh-menu>
-      <div class="window-controls">
+      <div class="window-controls" data-tauri-drag-region="false">
         <button class="wc-btn" title="最小化" @click="minimize">
           <svg viewBox="0 0 12 12" width="12" height="12"><line x1="1" y1="6" x2="11" y2="6" stroke="currentColor" stroke-width="1.4"/></svg>
         </button>
@@ -347,6 +382,19 @@ async function onHeaderMouseDown(e: MouseEvent) {
         <router-view />
       </PageScrollbar>
     </dsh-layout-content>
+
+    <Teleport v-if="isTauri && windowShadow && !windowMaximized" to="body">
+      <div class="window-resize" aria-hidden="true">
+        <div
+          v-for="direction in resizeDirections"
+          :key="direction"
+          class="resize-handle"
+          :data-direction="direction"
+          :style="{ gridArea: direction }"
+          @mousedown.left.prevent.stop="resizeWindow(direction)"
+        />
+      </div>
+    </Teleport>
 
     <!-- Floating task manager entry (bottom-right); becomes a back button on the tasks page. -->
     <div ref="taskFabRef" class="task-fab" @click="onFabClick">
@@ -369,6 +417,55 @@ async function onHeaderMouseDown(e: MouseEvent) {
 <style lang="scss" scoped>
 .app-shell {
   height: 100%;
+}
+
+.window-resize {
+  --resize-handle-width: 8px;
+  --resize-corner-size: 16px;
+  position: fixed;
+  inset: calc(var(--dl-window-inset) - var(--resize-handle-width) / 2);
+  z-index: 101;
+  display: grid;
+  grid-template:
+    'NorthWest North NorthEast' var(--resize-corner-size)
+    'West . East' 1fr
+    'SouthWest South SouthEast' var(--resize-corner-size)
+    / var(--resize-corner-size) 1fr var(--resize-corner-size);
+  pointer-events: none;
+}
+
+.resize-handle {
+  pointer-events: auto;
+
+  &[data-direction='North'],
+  &[data-direction='South'] {
+    height: var(--resize-handle-width);
+    cursor: ns-resize;
+  }
+
+  &[data-direction='West'],
+  &[data-direction='East'] {
+    width: var(--resize-handle-width);
+    cursor: ew-resize;
+  }
+
+  &[data-direction='South'] {
+    align-self: end;
+  }
+
+  &[data-direction='East'] {
+    justify-self: end;
+  }
+
+  &[data-direction='NorthWest'],
+  &[data-direction='SouthEast'] {
+    cursor: nwse-resize;
+  }
+
+  &[data-direction='NorthEast'],
+  &[data-direction='SouthWest'] {
+    cursor: nesw-resize;
+  }
 }
 
 .header-back {
@@ -434,6 +531,7 @@ async function onHeaderMouseDown(e: MouseEvent) {
   -webkit-backdrop-filter: var(--dl-glass-blur);
   backdrop-filter: var(--dl-glass-blur);
   position: relative;
+  user-select: none;
 }
 
 .app-brand {

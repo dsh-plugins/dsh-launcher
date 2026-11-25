@@ -37,6 +37,6 @@ watch(theme, (value) => {
 
 <template>
   <DshProvider :theme="theme" :locale="uiLocale" radius="md" class="launcher-ui" :class="{ 'launcher-window-shadow': useWindowShadow }">
-    <App />
+    <App :window-shadow="useWindowShadow" />
   </DshProvider>
 </template>

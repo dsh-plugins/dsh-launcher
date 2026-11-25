@@ -4,6 +4,8 @@
   --dl-header-height: 52px;
   --dl-content-max: 1080px;
   --dl-window-radius: 20px;
+  // Same as SHADOW_INSET in the Windows window configuration.
+  --dl-window-shadow-inset: 24px;
   --dl-window-inset: 0px;
 }
 
@@ -40,8 +42,7 @@ body:has(.app-shell) {
 }
 
 body:has(.launcher-window-shadow .app-shell:not(.is-maximized)) {
-  // Same as SHADOW_INSET in the Windows window configuration.
-  --dl-window-inset: 24px;
+  --dl-window-inset: var(--dl-window-shadow-inset);
 }
 
 #app:has(.app-shell) {
@@ -67,7 +68,11 @@ body:has(.app-shell) .dsh-ui-portal :is(.arco-modal-mask, .arco-drawer-mask) {
 }
 
 body:has(.app-shell) .dsh-ui-portal .dsh-toast-region[data-position^='top'] {
-  margin-top: var(--dl-window-inset);
+  margin-top: var(--dl-header-height);
+}
+
+body:has(.launcher-window-shadow .app-shell:not(.is-maximized)) .dsh-ui-portal .dsh-toast-region[data-position^='top'] {
+  margin-top: calc(var(--dl-header-height) + var(--dl-window-shadow-inset));
 }
 
 body:has(.app-shell) .dsh-ui-portal .dsh-toast-region[data-position^='bottom'] {
