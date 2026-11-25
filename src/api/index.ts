@@ -26,6 +26,8 @@ import type {
   HomeLinkInfo,
   HomeLinkSuggestion,
   ImportModpackInput,
+  InspectPackforgeArchiveInput,
+  InspectPackforgeExportInput,
   InstallPluginInput,
   InstalledPlugin,
   InstanceStatus,
@@ -36,6 +38,13 @@ import type {
   MarketModpack,
   McpServer,
   ModpackManifest,
+  PackforgeArchive,
+  PackforgeExportChoices,
+  PackforgeInstallation,
+  PackforgeInstallPlan,
+  PackforgeInstallTargetInput,
+  PackforgeResourceList,
+  PreviewPackforgeInstallInput,
   NewInstanceInput,
   RepoSkillInfo,
   SkillInfo,
@@ -1374,6 +1383,74 @@ async function mockCall<T>(cmd: string, args?: Record<string, unknown>): Promise
           },
         ],
       } as T
+    case 'inspect_packforge_archive': {
+      const input = args?.input as InspectPackforgeArchiveInput
+      const version = input.source.endsWith('.tgz') ? 3 : 6
+      const manifest: ModpackManifest = {
+        manifestVersion: version,
+        name: 'example-pack',
+        displayName: { 'en-US': 'Example Pack', 'zh-CN': '示例整合包' },
+        type: 'profile',
+        version: '1.1.0',
+        profileName: 'example',
+        dshVersion: '0.2.3-alpha.2',
+        bundles: [],
+        dependencies: { '@example/plugin': '1.0.0' },
+        plugins: { '@example/plugin': { name: 'Example', source: { type: 'npm', registry: 'https://registry.example/npm/' } } },
+      }
+      return { archive_id: 'example-archive', manifest, size: input.size ?? 256, sha256: input.sha256 ?? 'a'.repeat(64), warnings: [] } as T
+    }
+    case 'list_packforge_resources': {
+      const { target } = args?.input as PackforgeInstallTargetInput
+      const instance = db.instances.find(row => row.id === target.instance_id)
+      const current = db.versions.find(version => version.id === instance?.version_id)?.version
+      const shared = !!instance && db.instances.filter(row => row.home_id === instance.home_id).length > 1
+      return {
+        version: '0.2.3-alpha.2', current_version: current,
+        switch_required: !!target.update && !!current && current !== '0.2.3-alpha.2', shared_home: shared, warnings: [],
+        items: [
+          { key: 'provider:home:example', id: 'example', kind: 'provider', scope: 'home', destination: 'cordis.patch.yml', name: 'Example Models', credentialRefs: ['EXAMPLE_KEY'], missingCredentials: ['EXAMPLE_KEY'] },
+          { key: 'skill:home:example', id: 'example', kind: 'skill', scope: 'home', destination: 'skills/example', name: 'Example Skill' },
+        ],
+      } satisfies PackforgeResourceList as T
+    }
+    case 'preview_packforge_install': {
+      const updating = !!(args?.input as PreviewPackforgeInstallInput).target.update
+      const path = 'profiles/example/package.json'
+      return {
+        plan_id: updating ? 'example-update' : 'example-install',
+        unknown_base: updating,
+        changes: [{ path, action: updating ? 'keep' : 'add', conflict: updating }],
+        conflicts: updating ? [{ path }] : [],
+      } satisfies PackforgeInstallPlan as T
+    }
+    case 'start_packforge_install': {
+      const updating = (args?.input as { plan_id: string }).plan_id === 'example-update'
+      const task: TaskInfo = {
+        id: mockNewId('t'), kind: updating ? 'update-modpack' : 'import-modpack',
+        label: 'Example Pack', version: '1.1.0', state: 'done', percent: 100,
+        created_at: Date.now(), message: null, instance_id: null, instance_name: null, logs: [],
+      }
+      mockTasks.set(task.id, task)
+      return task.id as T
+    }
+    case 'discard_packforge_archive':
+      return undefined as T
+    case 'list_packforge_installations':
+      return [] as T
+    case 'get_packforge_market_detail':
+      return {
+        manifestVersion: 6, type: 'profile', name: 'example-pack', version: '1.1.0', bundles: [], dependencies: {},
+        resources: { 'skill.json': [{ id: 'example', name: 'Example Skill', scope: 'home' }] },
+      } satisfies ModpackManifest as T
+    case 'inspect_packforge_export': {
+      const input = args?.input as InspectPackforgeExportInput
+      return {
+        candidates: { skills: [{ key: 'skill:home:example', id: 'example', scope: 'home', name: 'Example Skill' }] },
+        units: Object.fromEntries(input.profiles.map(profile => [profile, { bundles: [], dependencies: { '@example/plugin': '1.0.0' } }])),
+        dsh_version: '0.2.3-alpha.2', dsh_versions: ['0.2.3-alpha.2'],
+      } satisfies PackforgeExportChoices as T
+    }
     case 'list_instance_status':
       return Object.values(db.running) as T
     case 'check_instance_health':
@@ -2032,9 +2109,24 @@ export const api = {
   discoverProviderModels: (input: DiscoverModelsInput) =>
     call<CatalogModel[]>('discover_provider_models', { input }),
   exportModpack: (input: ExportModpackInput) => call<string>('export_modpack', { input }),
-  /** Multi-profile (manifest v5 dshhome) export. */
   exportDshhomeModpack: (input: ExportDshhomeInput) =>
     call<string>('export_dshhome_modpack', { input }),
+  inspectPackforgeExport: (input: InspectPackforgeExportInput) =>
+    call<PackforgeExportChoices>('inspect_packforge_export', { input }),
+  inspectPackforgeArchive: (input: InspectPackforgeArchiveInput) =>
+    call<PackforgeArchive>('inspect_packforge_archive', { input }),
+  listPackforgeResources: (input: PackforgeInstallTargetInput) =>
+    call<PackforgeResourceList>('list_packforge_resources', { input }),
+  previewPackforgeInstall: (input: PreviewPackforgeInstallInput) =>
+    call<PackforgeInstallPlan>('preview_packforge_install', { input }),
+  startPackforgeInstall: (input: { plan_id: string; resolutions?: Record<string, 'upstream'> }) =>
+    call<string>('start_packforge_install', { input }),
+  discardPackforgeArchive: (archiveId: string) =>
+    call<void>('discard_packforge_archive', { input: { archive_id: archiveId } }),
+  listPackforgeInstallations: (instanceId: string) =>
+    call<PackforgeInstallation[]>('list_packforge_installations', { input: { instance_id: instanceId } }),
+  getPackforgeMarketDetail: (id: string) =>
+    call<ModpackManifest>('get_packforge_market_detail', { input: { id } }),
   /** Pre-reads a modpack's manifest before installing (for the confirm dialog). */
   readModpackManifest: (source: string) => call<ModpackManifest>('read_modpack_manifest', { source }),
   /** Fetches the PackForge modpack market index (issue #17). */

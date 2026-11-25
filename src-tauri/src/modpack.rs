@@ -1,16 +1,7 @@
-//! Modpack (整合包) export/import — issue #5.
-//!
-//! Current format (pack-structure v2 / manifest v4): a `.dspack` is a plain
-//! ZIP with a root `dspack.json` marker (`{"format":"dspack","version":2}`),
-//! a root `manifest.json` (v4: adds `type: "profile"` and an optional
-//! `files[]` download manifest), optional `package.json` / pnpm files, and an
-//! `overrides/` directory whose user files are copied over the profile root
-//! on import. Heavy content stays out of the archive: `files[]` entries carry
-//! `path + sha256 + size + urls[]` and are fetched on demand, each verified
-//! before the import completes.
-//!
-//! Legacy `.tgz` packs (flat layout, manifest v2/v3) are still accepted on
-//! import.
+//! 整合包市场、历史归档导入与 PackForge v6 的启动器接入。
+
+pub(crate) mod export_v6;
+pub(crate) mod v6;
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -21,15 +12,10 @@ use tauri::{AppHandle, Manager, State};
 use crate::config::new_id;
 use crate::AppState;
 
-/// Manifest version the launcher writes.
-pub const MANIFEST_VERSION: u32 = 5;
+/// 历史导入流程支持的最高版本。
+pub const MANIFEST_VERSION: u32 = 6;
 
-/// Exports stay on manifest v4 + pack-structure v2 for now (PackForge
-/// tooling still generates v3/v4 packs); import accepts up to v5 / v3.
-const EXPORT_MANIFEST_VERSION: u32 = 4;
-
-/// `dspack.json` marker at the ZIP root (pack-structure v2). Export keeps
-/// writing v2; import accepts v2 and v3 (see `validate_dspack_marker`).
+#[cfg(test)]
 const DSPACK_MARKER: &str = r#"{"format":"dspack","version":2}"#;
 
 /// A profile unit inside a manifest v5 `type:"dshhome"` pack: the v4
@@ -126,80 +112,10 @@ pub struct ModpackManifest {
     pub instructions: Option<String>,
 }
 
-/// Exportable content selection; `Default` exports the standard set (patch,
-/// lockfile, workspace settings, icon) and skips extra user files.
-#[derive(Clone, Debug, Deserialize)]
-pub struct ExportContents {
-    /// cordis.patch.yml patch layer, carried via `overrides/`.
-    #[serde(default = "default_include")]
-    pub patch: bool,
-    /// pnpm-lock.yaml (frozen install on import).
-    #[serde(default = "default_include")]
-    pub lockfile: bool,
-    /// pnpm-workspace.yaml.
-    #[serde(default = "default_include")]
-    pub workspace: bool,
-    /// Instance icon bundled as icon.png.
-    #[serde(default = "default_include")]
-    pub icon: bool,
-    /// Other user files in the profile, safety-filtered into `overrides/`.
-    #[serde(default)]
-    pub extra_files: bool,
-    /// HOME-level AGENTS.md, shipped under `home/` and applied onto the
-    /// DSH_HOME root on import (pack-structure v3, issue #58).
-    #[serde(default)]
-    pub agents_md: bool,
-    /// Selected on-disk skill entries under `<home>/skills` (directory names
-    /// or `<name>.md`), shipped under `home/skills/` (issue #58). Empty = the
-    /// pack carries no skills.
-    #[serde(default)]
-    pub skills: Vec<String>,
-}
-
-fn default_include() -> bool {
-    true
-}
-
-impl Default for ExportContents {
-    fn default() -> Self {
-        Self {
-            patch: true,
-            lockfile: true,
-            workspace: true,
-            icon: true,
-            extra_files: false,
-            agents_md: false,
-            skills: Vec::new(),
-        }
-    }
-}
-
-/// Export overrides: every field falls back to a sensible default derived
-/// from the profile.
-#[derive(Clone, Debug, Deserialize)]
-pub struct ExportModpackInput {
-    pub home_id: String,
-    pub profile: String,
-    /// Full output file path chosen via a save dialog; a missing or wrong
-    /// extension gets `.dspack` appended.
-    pub out_file: String,
-    #[serde(default)]
-    pub name: Option<String>,
-    #[serde(default)]
-    pub version: Option<String>,
-    #[serde(default, rename = "displayName")]
-    pub display_name: Option<serde_json::Value>,
-    #[serde(default)]
-    pub description: Option<serde_json::Value>,
-    #[serde(default)]
-    pub author: Option<String>,
-    /// Content selection; absent exports the default set.
-    #[serde(default)]
-    pub contents: Option<ExportContents>,
-}
-
 #[derive(Clone, Debug, Deserialize)]
 pub struct ImportModpackInput {
+    #[serde(default)]
+    pub archive_id: Option<String>,
     /// Local `.dspack` / legacy `.tgz` path or an http(s) URL.
     pub source: String,
     /// Replace an existing profile with the same name inside the new HOME.
@@ -235,97 +151,7 @@ const MODPACK_MAX_BYTES: usize = 64 * 1024 * 1024;
 // Helpers
 // ---------------------------------------------------------------------------
 
-fn home_path_of(state: &AppState, home_id: &str) -> Result<PathBuf, String> {
-    state
-        .config
-        .lock()
-        .unwrap()
-        .homes
-        .iter()
-        .find(|h| h.id == home_id)
-        .map(crate::wsl::home_fs_path)
-        .ok_or_else(|| "DSH_HOME 不存在".to_string())
-}
-
-/// The current OS username (`USERNAME` on Windows, `USER` elsewhere), used as
-/// the default modpack author.
-fn os_username() -> Option<String> {
-    std::env::var("USERNAME")
-        .ok()
-        .or_else(|| std::env::var("USER").ok())
-        .map(|u| u.trim().to_string())
-        .filter(|u| !u.is_empty())
-}
-
-/// Whether a pnpm dependency spec points at a git host (GitHub).
-fn is_git_spec(spec: &str) -> bool {
-    spec.starts_with("git+") || spec.starts_with("github:") || spec.contains("github.com")
-}
-
-/// Extracts `owner/repo` from a git-ish spec (`git+https://github.com/o/r.git#ref`,
-/// `github:o/r#ref`, `https://github.com/o/r`).
-fn github_repo_from_spec(spec: &str) -> Option<(String, Option<String>, Option<String>)> {
-    // Returns (repo, subpath, ref).
-    let body = spec
-        .strip_prefix("git+")
-        .unwrap_or(spec)
-        .trim_end_matches(".git");
-    if let Some((repo, sub)) = crate::plugins::parse_github_id(body) {
-        return Some((repo, sub, None));
-    }
-    let path = body
-        .strip_prefix("https://github.com/")
-        .or_else(|| body.strip_prefix("http://github.com/"))
-        .or_else(|| body.strip_prefix("ssh://git@github.com/"))?;
-    let (base, frag) = path.split_once('#').unwrap_or((path, ""));
-    let mut seg = base.trim_matches('/').split('/');
-    let repo = format!("{}/{}", seg.next()?, seg.next()?);
-    // pnpm's `#<committish>&path:<sub>` fragment form.
-    let mut git_ref = None;
-    let mut sub = None;
-    for part in frag.split('&') {
-        if part.is_empty() {
-            continue;
-        }
-        if let Some(p) = part.strip_prefix("path:") {
-            sub = Some(p.trim_matches('/').to_string());
-        } else {
-            git_ref = Some(part.to_string());
-        }
-    }
-    Some((repo, sub.filter(|s| !s.is_empty()), git_ref))
-}
-
-/// The commit a git dependency resolved to, read from the profile's
-/// pnpm-lock.yaml (`importers..dependencies.<pkg>.version` looks like
-/// `name@https://codeload.github.com/owner/repo/tar.gz/<sha>` or
-/// `github.com/owner/repo/<sha>`).
-fn locked_git_commit(lock_text: &str, pkg: &str) -> Option<String> {
-    let doc: serde_yaml::Value = serde_yaml::from_str(lock_text).ok()?;
-    let importers = doc.get("importers")?;
-    for (_path, importer) in importers.as_mapping()? {
-        for section in ["dependencies", "devDependencies"] {
-            let entry = importer.get(section)?.get(pkg)?;
-            let version = entry.get("version")?.as_str()?;
-            // version: "<pkg>(<peer>)?@<resolved>" — take the part after '@'.
-            let resolved = version.rsplit('@').next()?;
-            let sha = resolved.trim_end_matches(')').rsplit('/').next()?;
-            if sha.len() >= 7 && sha.chars().all(|c| c.is_ascii_hexdigit()) {
-                return Some(sha.to_string());
-            }
-        }
-    }
-    None
-}
-
-/// The installed version of an npm dependency, from its package.json.
-fn installed_npm_version(profile: &Path, pkg: &str) -> Option<String> {
-    let raw = std::fs::read_to_string(profile.join("node_modules").join(pkg).join("package.json"))
-        .ok()?;
-    let doc: serde_json::Value = serde_json::from_str(&raw).ok()?;
-    doc.get("version")?.as_str().map(|s| s.to_string())
-}
-
+#[cfg(test)]
 /// Writes the modpack `.dspack` (pack-structure v2: plain ZIP) at `out` and
 /// returns the path. `files` are `(archive path, bytes)` pairs.
 fn write_modpack_dspack(out: &Path, files: &[(String, Vec<u8>)]) -> Result<PathBuf, String> {
@@ -349,105 +175,32 @@ fn write_modpack_dspack(out: &Path, files: &[(String, Vec<u8>)]) -> Result<PathB
     Ok(out.to_path_buf())
 }
 
-/// Machine files that are rebuilt from the manifest (or handled separately)
-/// and therefore never copied into `overrides/`.
-const PROFILE_MACHINE_FILES: [&str; 4] = [
-    "package.json",
-    "cordis.patch.yml",
-    "pnpm-lock.yaml",
-    "pnpm-workspace.yaml",
-];
-
-/// Safety filter for exported overrides (pack-structure v1's rules): skips
-/// VCS / dependency dirs, env & credential files, and nested archives.
-fn overrides_excluded(lower_name: &str) -> bool {
-    lower_name == "node_modules"
-        || lower_name == ".git"
-        || lower_name.starts_with(".env")
-        || lower_name.ends_with(".pem")
-        || lower_name.ends_with(".key")
-        || lower_name.starts_with("id_rsa")
-        || lower_name.starts_with("id_ed25519")
-        || [".zip", ".tar", ".tgz", ".gz", ".7z", ".rar", ".dspack"]
-            .iter()
-            .any(|ext| lower_name.ends_with(ext))
-}
-
-/// Collects a profile's remaining user files as `overrides/` entries
-/// (relative ZIP paths), skipping machine files and unsafe content.
-fn collect_extra_files(profile: &Path) -> Result<Vec<(String, Vec<u8>)>, String> {
-    let mut out = Vec::new();
-    let mut stack = vec![profile.to_path_buf()];
-    while let Some(dir) = stack.pop() {
-        for entry in std::fs::read_dir(&dir).map_err(|e| format!("读取 profile 目录失败: {e}"))?
-        {
-            let entry = entry.map_err(|e| format!("读取 profile 条目失败: {e}"))?;
-            let path = entry.path();
-            let lower = entry.file_name().to_string_lossy().to_lowercase();
-            if overrides_excluded(&lower) {
-                continue;
-            }
-            if path.is_dir() {
-                stack.push(path);
-                continue;
-            }
-            let rel = path
-                .strip_prefix(profile)
-                .map_err(|e| format!("解析 profile 相对路径失败: {e}"))?
-                .to_string_lossy()
-                .replace('\\', "/");
-            if !rel.contains('/') && PROFILE_MACHINE_FILES.contains(&lower.as_str()) {
-                continue;
-            }
-            let bytes =
-                std::fs::read(&path).map_err(|e| format!("读取 profile 文件 {rel} 失败: {e}"))?;
-            out.push((format!("overrides/{rel}"), bytes));
-        }
-    }
-    Ok(out)
-}
-
-/// Collects one skill directory as `<prefix>/…` archive entries (issue #58),
-/// skipping VCS metadata (`.git`).
-fn collect_skill_tree(
-    out: &mut Vec<(String, Vec<u8>)>,
-    dir: &Path,
-    prefix: &str,
-) -> Result<(), String> {
-    for entry in std::fs::read_dir(dir).map_err(|e| format!("读取 SKILL 目录失败: {e}"))? {
-        let entry = entry.map_err(|e| format!("读取 SKILL 条目失败: {e}"))?;
-        if entry.file_name() == ".git" {
-            continue;
-        }
-        let rel = format!("{}/{}", prefix, entry.file_name().to_string_lossy());
-        let path = entry.path();
-        if path.is_dir() {
-            collect_skill_tree(out, &path, &rel)?;
-        } else {
-            let bytes =
-                std::fs::read(&path).map_err(|e| format!("读取 SKILL 文件 {rel} 失败: {e}"))?;
-            out.push((rel, bytes));
-        }
-    }
-    Ok(())
-}
-
 /// Extracts a modpack tgz into `dest`, refusing path-traversal entries.
 fn extract_modpack_tgz(tgz: &Path, dest: &Path) -> Result<(), String> {
     let file = std::fs::File::open(tgz).map_err(|e| format!("打开整合包失败: {e}"))?;
     let gz = flate2::read::GzDecoder::new(file);
-    let mut archive = tar::Archive::new(gz);
+    let mut archive = tar::Archive::new(std::io::Read::take(gz, 513 * 1024 * 1024));
     std::fs::create_dir_all(dest).map_err(|e| format!("创建解压目录失败: {e}"))?;
-    for entry in archive
+    for (index, entry) in archive
         .entries()
         .map_err(|e| format!("读取整合包失败: {e}"))?
+        .enumerate()
     {
+        if index >= 16_384 {
+            return Err("整合包条目过多".into());
+        }
         let mut entry = entry.map_err(|e| format!("读取整合包条目失败: {e}"))?;
         let path = entry
             .path()
             .map_err(|e| format!("读取整合包条目名失败: {e}"))?
             .into_owned();
-        // Normalize: strip leading "./" and reject anything escaping dest.
+        if path.components().any(|component| match component {
+            std::path::Component::Normal(name) => !name.to_str().is_some_and(v6::portable_segment),
+            std::path::Component::CurDir => false,
+            _ => true,
+        }) {
+            return Err("历史整合包含有无效路径".into());
+        }
         let clean: PathBuf = path
             .components()
             .filter(|c| matches!(c, std::path::Component::Normal(_)))
@@ -511,6 +264,9 @@ fn validate_dspack_marker<R: std::io::Read + std::io::Seek>(
     let mut entry = archive
         .by_name("dspack.json")
         .map_err(|_| "不是 .dspack 整合包（ZIP 根缺少 dspack.json 标记文件）".to_string())?;
+    if entry.size() > 4096 {
+        return Err("dspack.json 标记文件过大".into());
+    }
     let mut text = String::new();
     std::io::Read::read_to_string(&mut entry, &mut text)
         .map_err(|e| format!("读取 dspack.json 失败: {e}"))?;
@@ -518,10 +274,10 @@ fn validate_dspack_marker<R: std::io::Read + std::io::Seek>(
         serde_json::from_str(&text).map_err(|e| format!("解析 dspack.json 失败: {e}"))?;
     let version = marker.get("version").and_then(|v| v.as_u64());
     if marker.get("format").and_then(|v| v.as_str()) != Some("dspack")
-        || !matches!(version, Some(2) | Some(3))
+        || !matches!(version, Some(2..=4))
     {
         return Err(format!(
-            "不支持该 .dspack 版本（需要 format=dspack, version 2-3；实际 version={}）",
+            "不支持该 .dspack 版本（需要 format=dspack, version 2-4；实际 version={}）",
             version.map(|v| v.to_string()).unwrap_or_default()
         ));
     }
@@ -531,6 +287,9 @@ fn validate_dspack_marker<R: std::io::Read + std::io::Seek>(
 /// Container/manifest pairing (pack-structure v3 §2.2): a `.dspack` carries
 /// manifest v4+, and manifest v5 requires the v3 container.
 fn check_container_manifest(marker: u64, manifest: &ModpackManifest) -> Result<(), String> {
+    if (manifest.manifest_version == 6) != (marker == 4) {
+        return Err("manifest v6 必须与 dspack 容器 v4 配套".into());
+    }
     if manifest.manifest_version < 4 {
         return Err(format!(
             ".dspack 容器要求 manifestVersion ≥ 4（实际为 {}）",
@@ -549,7 +308,9 @@ fn extract_modpack_dspack(dspack: &Path, dest: &Path) -> Result<(), String> {
     let file = std::fs::File::open(dspack).map_err(|e| format!("打开整合包失败: {e}"))?;
     let mut archive =
         zip::ZipArchive::new(file).map_err(|e| format!("解析 .dspack ZIP 失败: {e}"))?;
-    validate_dspack_marker(&mut archive)?;
+    if validate_dspack_marker(&mut archive)? == 4 {
+        return Err("请用 v6 导入预览安装该整合包".into());
+    }
     std::fs::create_dir_all(dest).map_err(|e| format!("创建解压目录失败: {e}"))?;
     for i in 0..archive.len() {
         let mut entry = archive
@@ -588,6 +349,9 @@ fn read_manifest_from_dspack(dspack: &Path) -> Result<ModpackManifest, String> {
     let mut entry = archive
         .by_name("manifest.json")
         .map_err(|_| ".dspack 缺少 manifest.json".to_string())?;
+    if entry.size() > 8 * 1024 * 1024 {
+        return Err("manifest.json 文件过大".into());
+    }
     let mut text = String::new();
     std::io::Read::read_to_string(&mut entry, &mut text)
         .map_err(|e| format!("读取 manifest.json 失败: {e}"))?;
@@ -768,7 +532,7 @@ async fn download_modpack_files(
 fn read_manifest_from_tgz(tgz: &Path) -> Result<ModpackManifest, String> {
     let file = std::fs::File::open(tgz).map_err(|e| format!("打开整合包失败: {e}"))?;
     let gz = flate2::read::GzDecoder::new(file);
-    let mut archive = tar::Archive::new(gz);
+    let mut archive = tar::Archive::new(std::io::Read::take(gz, 513 * 1024 * 1024));
     for entry in archive
         .entries()
         .map_err(|e| format!("读取整合包失败: {e}"))?
@@ -783,12 +547,18 @@ fn read_manifest_from_tgz(tgz: &Path) -> Result<ModpackManifest, String> {
             .filter(|c| matches!(c, std::path::Component::Normal(_)))
             .collect();
         if clean == Path::new("manifest.json") {
+            if entry.size() > 8 * 1024 * 1024 {
+                return Err("manifest.json 文件过大".into());
+            }
             let mut text = String::new();
             std::io::Read::read_to_string(&mut entry, &mut text)
                 .map_err(|e| format!("读取 manifest.json 失败: {e}"))?;
             let manifest: ModpackManifest =
                 serde_json::from_str(&text).map_err(|e| format!("解析 manifest.json 失败: {e}"))?;
             validate_manifest(&manifest)?;
+            if manifest.manifest_version >= 6 {
+                return Err("manifest v6 必须与 dspack 容器 v4 配套".into());
+            }
             return Ok(manifest);
         }
     }
@@ -809,6 +579,9 @@ fn validate_manifest(manifest: &ModpackManifest) -> Result<(), String> {
 /// "dshhome" (whole-DSH_HOME snapshot); "collection" is reserved and
 /// rejected for now.
 fn validate_pack_type(manifest: &ModpackManifest) -> Result<(), String> {
+    if manifest.manifest_version == 6 && manifest.pack_type.is_none() {
+        return Err("manifest v6 须声明整合包类型".into());
+    }
     match manifest.pack_type.as_deref() {
         None | Some("profile") => Ok(()),
         Some("dshhome") if manifest.manifest_version >= 5 => Ok(()),
@@ -831,15 +604,18 @@ fn validate_dshhome(manifest: &ModpackManifest) -> Result<(), String> {
         .filter(|p| !p.is_empty())
         .ok_or_else(|| "dshhome 形态的整合包必须包含至少一个 profile".to_string())?;
     for (name, unit) in profiles {
-        if name == "web" || name == "headless" {
+        if name.eq_ignore_ascii_case("web") || name.eq_ignore_ascii_case("headless") {
             return Err(format!(
                 "dshhome 形态的 profiles 不得包含基线模板 profile「{name}」"
             ));
         }
-        if crate::config::sanitize_name(name) != name.trim() || name.trim().is_empty() {
+        if (manifest.manifest_version < 6
+            && (crate::config::sanitize_name(name) != name.trim() || name.trim().is_empty()))
+            || (manifest.manifest_version == 6 && !v6::portable_segment(name))
+        {
             return Err(format!("dshhome 形态的 profile 名「{name}」无效"));
         }
-        if unit.bundles.is_empty() {
+        if manifest.manifest_version < 6 && unit.bundles.is_empty() {
             return Err(format!("dshhome 形态的 profile「{name}」缺少 bundles"));
         }
     }
@@ -860,7 +636,14 @@ fn validate_dshhome(manifest: &ModpackManifest) -> Result<(), String> {
 /// paths are used as-is. Returns (path, temp dir guard).
 async fn fetch_modpack_source(source: &str) -> Result<(PathBuf, TmpDir), String> {
     let tmp = std::env::temp_dir().join(format!("dsh-modpack-{}", uuid::Uuid::new_v4()));
-    std::fs::create_dir_all(&tmp).map_err(|e| format!("创建临时目录失败: {e}"))?;
+    #[cfg(unix)]
+    let created = {
+        use std::os::unix::fs::DirBuilderExt;
+        std::fs::DirBuilder::new().mode(0o700).create(&tmp)
+    };
+    #[cfg(not(unix))]
+    let created = std::fs::create_dir(&tmp);
+    created.map_err(|e| format!("创建临时目录失败: {e}"))?;
     let guard = TmpDir(tmp.clone());
     if source.starts_with("https://") || source.starts_with("http://") {
         let target = tmp.join("modpack.pack");
@@ -942,6 +725,7 @@ pub struct MarketModpack {
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct MarketModpackIndex {
+    schema_version: u32,
     #[serde(default)]
     modpacks: Vec<MarketModpack>,
 }
@@ -954,613 +738,13 @@ pub async fn fetch_modpack_market() -> Result<Vec<MarketModpack>, String> {
     let value = crate::plugins::fetch_json_pub(MODPACK_MARKET_URL, 4 * 1024 * 1024).await?;
     let index: MarketModpackIndex =
         serde_json::from_value(value).map_err(|e| format!("解析整合包市场数据失败: {e}"))?;
+    if index.schema_version != 2 {
+        return Err(format!(
+            "不支持的整合包市场索引版本 {}",
+            index.schema_version
+        ));
+    }
     Ok(index.modpacks)
-}
-
-// ---------------------------------------------------------------------------
-// Export
-// ---------------------------------------------------------------------------
-
-/// Exports a profile as a manifest-v4 `.dspack` (pack-structure v2: plain
-/// ZIP + root `dspack.json` marker + `overrides/`). Dependencies are pinned:
-/// npm specs become the installed version, git specs become
-/// `github:owner/repo[#path:/sub]` → resolved commit sha. A custom instance
-/// icon (issue #8) is bundled as `icon.png`; the default launcher icon is
-/// never exported.
-#[tauri::command]
-pub async fn export_modpack(
-    state: State<'_, AppState>,
-    input: ExportModpackInput,
-) -> Result<String, String> {
-    let contents = input.contents.clone().unwrap_or_default();
-    let home_id = input.home_id.clone();
-    let home = home_path_of(&state, &input.home_id)?;
-    let profile_dir = crate::plugins::profile_dir_pub(&home, &input.profile);
-
-    // Config snapshots: cheap in-memory locks, taken on the async side so the
-    // blocking stage below never touches State.
-    let instance_info = {
-        let cfg = state.config.lock().unwrap();
-        cfg.instances
-            .iter()
-            .find(|i| i.home_id == home_id)
-            .map(|i| (i.id.clone(), i.name.clone(), i.icon.clone()))
-    };
-    let dsh_version = {
-        let cfg = state.config.lock().unwrap();
-        cfg.instances
-            .iter()
-            .find(|i| i.home_id == home_id)
-            .and_then(|i| cfg.versions.iter().find(|v| v.id == i.version_id))
-            .map(|v| v.version.clone())
-            .unwrap_or_else(|| "0.1.0".to_string())
-    };
-
-    // Remote icon fetch is network I/O: run it on the async side before the
-    // blocking stage. A local icon file is read inside the blocking stage.
-    let mut icon_field: Option<String> = None;
-    let mut icon_png: Option<Vec<u8>> = None;
-    let mut icon_local_instance: Option<String> = None;
-    if contents.icon {
-        if let Some((inst_id, _, Some(icon))) = &instance_info {
-            if icon == "local" {
-                icon_local_instance = Some(inst_id.clone());
-            } else if icon.starts_with("http") {
-                match fetch_remote_icon(icon).await {
-                    Some(png) => {
-                        icon_png = Some(png);
-                        icon_field = Some("icon.png".to_string());
-                    }
-                    None => icon_field = Some(icon.clone()),
-                }
-            }
-        }
-    }
-
-    // Everything below reads the profile/HOME filesystem — UNC round trips
-    // for WSL homes — and writes the zip: blocking pool (issue #49 G3, #71).
-    crate::wsl::run_blocking(move || {
-        let pkg_path = profile_dir.join("package.json");
-        let raw = std::fs::read_to_string(&pkg_path)
-            .map_err(|e| format!("读取 profile manifest 失败: {e}"))?;
-        let pkg: serde_json::Value =
-            serde_json::from_str(&raw).map_err(|e| format!("解析 profile manifest 失败: {e}"))?;
-
-        let bundles: Vec<String> = pkg
-            .pointer("/dsh/profile/bundles")
-            .and_then(|b| b.as_array())
-            .map(|arr| {
-                arr.iter()
-                    .filter_map(|b| b.as_str().map(|s| s.to_string()))
-                    .collect()
-            })
-            .unwrap_or_default();
-
-        let lock_text = std::fs::read_to_string(profile_dir.join("pnpm-lock.yaml")).ok();
-        let mut pinned = BTreeMap::new();
-        if let Some(deps) = pkg.get("dependencies").and_then(|d| d.as_object()) {
-            for (name, spec) in deps {
-                let spec = spec.as_str().unwrap_or_default();
-                if is_git_spec(spec) {
-                    let Some((repo, sub, spec_ref)) = github_repo_from_spec(spec) else {
-                        crate::log_warn!(
-                            "整合包导出：无法解析 git 依赖 {name}: {spec}，按原样保留"
-                        );
-                        pinned.insert(name.clone(), spec.to_string());
-                        continue;
-                    };
-                    let sha = lock_text
-                        .as_deref()
-                        .and_then(|l| locked_git_commit(l, name))
-                        .or(spec_ref)
-                        .unwrap_or_else(|| "HEAD".to_string());
-                    let coord = match &sub {
-                        Some(p) => format!("github:{repo}#path:/{p}"),
-                        None => format!("github:{repo}"),
-                    };
-                    pinned.insert(coord, sha);
-                } else {
-                    let version = installed_npm_version(&profile_dir, name)
-                        .unwrap_or_else(|| spec.trim_start_matches(['^', '~']).to_string());
-                    pinned.insert(name.clone(), version);
-                }
-            }
-        }
-
-        let name = input
-            .name
-            .filter(|n| !n.trim().is_empty())
-            .unwrap_or_else(|| input.profile.clone());
-        let version = input
-            .version
-            .filter(|v| !v.trim().is_empty())
-            .unwrap_or_else(|| "1.0.0".to_string());
-
-        let patch = if contents.patch {
-            std::fs::read_to_string(profile_dir.join("cordis.patch.yml")).ok()
-        } else {
-            None
-        };
-
-        // Local instance icon (issue #8): read from <home>/icons here; the
-        // remote case was fetched on the async side already.
-        let mut icon_field = icon_field;
-        let mut icon_png = icon_png;
-        if let Some(inst_id) = &icon_local_instance {
-            if let Ok(bytes) = std::fs::read(crate::icons::local_icon_path(&home, inst_id)) {
-                icon_png = Some(bytes);
-                icon_field = Some("icon.png".to_string());
-            }
-        }
-
-        let manifest = ModpackManifest {
-            manifest_version: EXPORT_MANIFEST_VERSION,
-            pack_type: Some("profile".to_string()),
-            name: name.clone(),
-            display_name: input
-                .display_name
-                .filter(|d| d.as_str().map(|s| !s.trim().is_empty()).unwrap_or(true))
-                .or_else(|| {
-                    instance_info
-                        .as_ref()
-                        .map(|(_, name, _)| serde_json::Value::String(name.clone()))
-                }),
-            version: version.clone(),
-            description: Some(
-                input
-                    .description
-                    .unwrap_or_else(|| serde_json::Value::String(String::new())),
-            ),
-            author: input
-                .author
-                .filter(|a| !a.trim().is_empty())
-                .or_else(os_username),
-            icon: icon_field,
-            dsh_version: Some(dsh_version),
-            profile_name: Some(input.profile.clone()),
-            bundles: bundles.clone(),
-            dependencies: pinned,
-            patch,
-            files: Vec::new(),
-            // dshhome-only fields stay empty: exports are single-profile packs.
-            default_profile: None,
-            profiles: None,
-            presets: None,
-            skills: None,
-            instructions: None,
-        };
-
-        let profile_pkg = serde_json::json!({
-            "name": format!("dsh-profile-{}", input.profile),
-            "private": true,
-            "dependencies": manifest_pkg_deps(&manifest),
-            "dsh": { "profile": { "bundles": bundles } },
-        });
-
-        let mut files: Vec<(String, Vec<u8>)> = vec![
-            ("dspack.json".to_string(), DSPACK_MARKER.as_bytes().to_vec()),
-            (
-                "manifest.json".to_string(),
-                serde_json::to_vec_pretty(&manifest)
-                    .map_err(|e| format!("序列化 manifest 失败: {e}"))?,
-            ),
-            (
-                "package.json".to_string(),
-                serde_json::to_vec_pretty(&profile_pkg)
-                    .map_err(|e| format!("序列化 package.json 失败: {e}"))?,
-            ),
-        ];
-        // pack-structure v2: user files live under overrides/ (file takes
-        // precedence over the manifest's inline patch on import).
-        if let Some(p) = &manifest.patch {
-            files.push((
-                "overrides/cordis.patch.yml".to_string(),
-                p.clone().into_bytes(),
-            ));
-        }
-        if contents.lockfile {
-            if let Ok(lock) = std::fs::read(profile_dir.join("pnpm-lock.yaml")) {
-                files.push(("pnpm-lock.yaml".to_string(), lock));
-            }
-        }
-        if contents.workspace {
-            if let Ok(ws) = std::fs::read(profile_dir.join("pnpm-workspace.yaml")) {
-                files.push(("pnpm-workspace.yaml".to_string(), ws));
-            }
-        }
-        if let Some(png) = icon_png {
-            files.push(("icon.png".to_string(), png));
-        }
-        if contents.extra_files {
-            files.extend(collect_extra_files(&profile_dir)?);
-        }
-        // issue #58: HOME-level payload — selected skills + AGENTS.md ship under
-        // `home/`, which import applies onto the DSH_HOME root (pack-structure
-        // v3). Skill entry names come from list_instance_skills' `entry` field;
-        // anything that could escape the skills directory is rejected.
-        if contents.agents_md {
-            if let Ok(md) = std::fs::read(home.join("AGENTS.md")) {
-                files.push(("home/AGENTS.md".to_string(), md));
-            }
-        }
-        for entry in &contents.skills {
-            if entry.is_empty()
-                || entry.contains('/')
-                || entry.contains('\\')
-                || entry == "."
-                || entry == ".."
-            {
-                return Err(format!("非法的 SKILL 条目名: {entry}"));
-            }
-            let path = home.join("skills").join(entry);
-            if path.is_dir() {
-                collect_skill_tree(&mut files, &path, &format!("home/skills/{entry}"))?;
-            } else if path.is_file() {
-                let bytes =
-                    std::fs::read(&path).map_err(|e| format!("读取 SKILL 失败 {entry}: {e}"))?;
-                files.push((format!("home/skills/{entry}"), bytes));
-            } else {
-                return Err(format!("SKILL 不存在: {entry}"));
-            }
-        }
-
-        // The save dialog may return a path without the extension (or with a
-        // different one); append `.dspack` instead of rejecting.
-        let raw_path = input.out_file.trim();
-        let out_path = if raw_path.to_lowercase().ends_with(".dspack") {
-            PathBuf::from(raw_path)
-        } else {
-            PathBuf::from(format!("{raw_path}.dspack"))
-        };
-        let out = write_modpack_dspack(&out_path, &files)?;
-        crate::log_info!("已导出整合包 {}", out.display());
-        Ok(out.to_string_lossy().to_string())
-    })
-    .await?
-}
-
-// ---------------------------------------------------------------------------
-// Export: multi-profile (manifest v5 dshhome form, issue #24 follow-up)
-// ---------------------------------------------------------------------------
-
-/// One profile selected for export, with its own content selection.
-#[derive(Clone, Debug, Deserialize)]
-pub struct ExportProfileSpec {
-    pub profile: String,
-    /// Content selection; absent exports the default set.
-    #[serde(default)]
-    pub contents: Option<ExportContents>,
-}
-
-/// Export input for the multi-profile (dshhome) pack: several profiles of
-/// one HOME in a single `.dspack` v3 container.
-#[derive(Clone, Debug, Deserialize)]
-pub struct ExportDshhomeInput {
-    pub home_id: String,
-    /// Selected profiles (non-empty; `__temp__` / `web` / `headless` are
-    /// rejected — templates never ship in a dshhome pack).
-    pub profiles: Vec<ExportProfileSpec>,
-    /// Instance id, for dshVersion pinning and the icon.
-    #[serde(default)]
-    pub instance_id: Option<String>,
-    /// Full output file path; a missing extension gets `.dspack` appended.
-    pub out_file: String,
-    #[serde(default)]
-    pub name: Option<String>,
-    #[serde(default)]
-    pub version: Option<String>,
-    #[serde(default, rename = "displayName")]
-    pub display_name: Option<serde_json::Value>,
-    #[serde(default)]
-    pub description: Option<serde_json::Value>,
-    #[serde(default)]
-    pub author: Option<String>,
-    /// Default launch profile; falls back to the instance default (when
-    /// selected), then the first selected profile.
-    #[serde(default, rename = "defaultProfile")]
-    pub default_profile: Option<String>,
-    /// Bundle the instance icon as icon.png.
-    #[serde(default = "default_include")]
-    pub icon: bool,
-}
-
-/// Everything collected from one profile for an export.
-struct ProfileExport {
-    bundles: Vec<String>,
-    pinned: BTreeMap<String, String>,
-    patch: Option<String>,
-    lockfile: Option<Vec<u8>>,
-    workspace: Option<Vec<u8>>,
-    extra: Vec<(String, Vec<u8>)>,
-}
-
-/// Reads a profile dir and collects its export payload: the bundle stack,
-/// dependencies pinned to installed versions / commit shas, and the files
-/// chosen by the content selection.
-fn collect_profile_export(
-    profile_dir: &Path,
-    contents: &ExportContents,
-) -> Result<ProfileExport, String> {
-    let pkg_path = profile_dir.join("package.json");
-    let raw = std::fs::read_to_string(&pkg_path)
-        .map_err(|e| format!("读取 profile manifest 失败: {e}"))?;
-    let pkg: serde_json::Value =
-        serde_json::from_str(&raw).map_err(|e| format!("解析 profile manifest 失败: {e}"))?;
-
-    let bundles: Vec<String> = pkg
-        .pointer("/dsh/profile/bundles")
-        .and_then(|b| b.as_array())
-        .map(|arr| {
-            arr.iter()
-                .filter_map(|b| b.as_str().map(|s| s.to_string()))
-                .collect()
-        })
-        .unwrap_or_default();
-
-    let lock_text = std::fs::read_to_string(profile_dir.join("pnpm-lock.yaml")).ok();
-    let mut pinned = BTreeMap::new();
-    if let Some(deps) = pkg.get("dependencies").and_then(|d| d.as_object()) {
-        for (name, spec) in deps {
-            let spec = spec.as_str().unwrap_or_default();
-            if is_git_spec(spec) {
-                let Some((repo, sub, spec_ref)) = github_repo_from_spec(spec) else {
-                    crate::log_warn!("整合包导出：无法解析 git 依赖 {name}: {spec}，按原样保留");
-                    pinned.insert(name.clone(), spec.to_string());
-                    continue;
-                };
-                let sha = lock_text
-                    .as_deref()
-                    .and_then(|l| locked_git_commit(l, name))
-                    .or(spec_ref)
-                    .unwrap_or_else(|| "HEAD".to_string());
-                let coord = match &sub {
-                    Some(p) => format!("github:{repo}#path:/{p}"),
-                    None => format!("github:{repo}"),
-                };
-                pinned.insert(coord, sha);
-            } else {
-                let version = installed_npm_version(profile_dir, name)
-                    .unwrap_or_else(|| spec.trim_start_matches(['^', '~']).to_string());
-                pinned.insert(name.clone(), version);
-            }
-        }
-    }
-
-    let patch = if contents.patch {
-        std::fs::read_to_string(profile_dir.join("cordis.patch.yml")).ok()
-    } else {
-        None
-    };
-    let lockfile = if contents.lockfile {
-        std::fs::read(profile_dir.join("pnpm-lock.yaml")).ok()
-    } else {
-        None
-    };
-    let workspace = if contents.workspace {
-        std::fs::read(profile_dir.join("pnpm-workspace.yaml")).ok()
-    } else {
-        None
-    };
-    let extra = if contents.extra_files {
-        collect_extra_files(profile_dir)?
-    } else {
-        Vec::new()
-    };
-    Ok(ProfileExport {
-        bundles,
-        pinned,
-        patch,
-        lockfile,
-        workspace,
-        extra,
-    })
-}
-
-/// `dspack.json` marker for pack-structure v3 (multi-profile exports).
-const DSPACK_MARKER_V3: &str = r#"{"format":"dspack","version":3}"#;
-
-/// Exports several profiles of one HOME as a manifest-v5 `type:"dshhome"`
-/// pack in a `.dspack` v3 container: per-profile dependency layers under
-/// `overrides/profiles/<name>/`, plus the instance icon.
-#[tauri::command]
-pub async fn export_dshhome_modpack(
-    state: State<'_, AppState>,
-    input: ExportDshhomeInput,
-) -> Result<String, String> {
-    if input.profiles.is_empty() {
-        return Err("请至少勾选一个 profile".to_string());
-    }
-    let home = home_path_of(&state, &input.home_id)?;
-    let mut seen = std::collections::BTreeSet::new();
-    for spec in &input.profiles {
-        let name = spec.profile.trim();
-        if name.is_empty()
-            || matches!(name, "__temp__" | "node_modules" | "web" | "headless")
-            || !seen.insert(name.to_string())
-        {
-            return Err(format!("profile「{}」不可导出（模板或重复）", spec.profile));
-        }
-    }
-
-    // dshVersion + instance icon come from the given instance (fall back to
-    // the first instance bound to this HOME for the version).
-    let instance = {
-        let cfg = state.config.lock().unwrap();
-        input
-            .instance_id
-            .as_deref()
-            .and_then(|id| cfg.instances.iter().find(|i| i.id == id).cloned())
-    };
-    let dsh_version = {
-        let cfg = state.config.lock().unwrap();
-        let inst_ref = instance
-            .as_ref()
-            .or_else(|| cfg.instances.iter().find(|i| i.home_id == input.home_id));
-        inst_ref
-            .and_then(|i| cfg.versions.iter().find(|v| v.id == i.version_id))
-            .map(|v| v.version.clone())
-            .unwrap_or_else(|| "0.1.0".to_string())
-    };
-
-    let selected: Vec<String> = input
-        .profiles
-        .iter()
-        .map(|s| s.profile.trim().to_string())
-        .collect();
-    let default_profile = input
-        .default_profile
-        .filter(|d| selected.iter().any(|p| p == d))
-        .or_else(|| {
-            instance
-                .as_ref()
-                .and_then(|i| i.default_profile.clone())
-                .filter(|d| selected.iter().any(|p| p == d))
-        })
-        .unwrap_or_else(|| selected[0].clone());
-
-    let name = input
-        .name
-        .filter(|n| !n.trim().is_empty())
-        .unwrap_or_else(|| "dsh-home-pack".to_string());
-    let version = input
-        .version
-        .filter(|v| !v.trim().is_empty())
-        .unwrap_or_else(|| "1.0.0".to_string());
-
-    // Icon (same rules as the single-profile export): the remote fetch is
-    // network I/O and stays on the async side; the local file read happens in
-    // the blocking stage below.
-    let mut icon_field: Option<String> = None;
-    let mut icon_png: Option<Vec<u8>> = None;
-    let mut icon_local_instance: Option<String> = None;
-    if input.icon {
-        if let Some(inst) = &instance {
-            if let Some(icon) = &inst.icon {
-                if icon == "local" {
-                    icon_local_instance = Some(inst.id.clone());
-                } else if icon.starts_with("http") {
-                    match fetch_remote_icon(icon).await {
-                        Some(png) => {
-                            icon_png = Some(png);
-                            icon_field = Some("icon.png".to_string());
-                        }
-                        None => icon_field = Some(icon.clone()),
-                    }
-                }
-            }
-        }
-    }
-
-    // Per-profile collection walks the HOME filesystem (UNC for WSL homes)
-    // and the zip encode is CPU-heavy: run the whole sync stage on the
-    // blocking pool (issue #49 G3, #71).
-    crate::wsl::run_blocking(move || {
-        // Per-profile payloads.
-        let mut units: BTreeMap<String, ProfileUnit> = BTreeMap::new();
-        let mut collected: Vec<(String, ProfileExport)> = Vec::new();
-        for spec in &input.profiles {
-            let pname = spec.profile.trim().to_string();
-            let contents = spec.contents.clone().unwrap_or_default();
-            let dir = crate::plugins::profile_dir_pub(&home, &pname);
-            let payload = collect_profile_export(&dir, &contents)
-                .map_err(|e| format!("profile「{pname}」: {e}"))?;
-            units.insert(
-                pname.clone(),
-                ProfileUnit {
-                    bundles: payload.bundles.clone(),
-                    dependencies: payload.pinned.clone(),
-                    patch: None, // the patch ships as a file under overrides/
-                },
-            );
-            collected.push((pname, payload));
-        }
-
-        // Local icon file read (UNC-capable path).
-        let mut icon_field = icon_field;
-        let mut icon_png = icon_png;
-        if let Some(inst_id) = &icon_local_instance {
-            if let Ok(bytes) = std::fs::read(crate::icons::local_icon_path(&home, inst_id)) {
-                icon_png = Some(bytes);
-                icon_field = Some("icon.png".to_string());
-            }
-        }
-
-        let manifest = ModpackManifest {
-            manifest_version: MANIFEST_VERSION,
-            pack_type: Some("dshhome".to_string()),
-            name: name.clone(),
-            display_name: input
-                .display_name
-                .filter(|d| d.as_str().map(|s| !s.trim().is_empty()).unwrap_or(true)),
-            version: version.clone(),
-            description: Some(
-                input
-                    .description
-                    .unwrap_or_else(|| serde_json::Value::String(String::new())),
-            ),
-            author: input
-                .author
-                .filter(|a| !a.trim().is_empty())
-                .or_else(os_username),
-            icon: icon_field,
-            dsh_version: Some(dsh_version),
-            profile_name: None,
-            bundles: vec![],
-            dependencies: BTreeMap::new(),
-            patch: None,
-            files: Vec::new(),
-            default_profile: Some(default_profile),
-            profiles: Some(units),
-            presets: None,
-            skills: None,
-            instructions: None,
-        };
-
-        let mut files: Vec<(String, Vec<u8>)> = vec![
-            (
-                "dspack.json".to_string(),
-                DSPACK_MARKER_V3.as_bytes().to_vec(),
-            ),
-            (
-                "manifest.json".to_string(),
-                serde_json::to_vec_pretty(&manifest)
-                    .map_err(|e| format!("序列化 manifest 失败: {e}"))?,
-            ),
-        ];
-        for (pname, payload) in &collected {
-            let base = format!("overrides/profiles/{pname}");
-            if let Some(p) = &payload.patch {
-                files.push((format!("{base}/cordis.patch.yml"), p.clone().into_bytes()));
-            }
-            if let Some(lock) = &payload.lockfile {
-                files.push((format!("{base}/pnpm-lock.yaml"), lock.clone()));
-            }
-            if let Some(ws) = &payload.workspace {
-                files.push((format!("{base}/pnpm-workspace.yaml"), ws.clone()));
-            }
-            for (rel, bytes) in &payload.extra {
-                files.push((format!("{base}/{rel}"), bytes.clone()));
-            }
-        }
-        if let Some(png) = icon_png {
-            files.push(("icon.png".to_string(), png));
-        }
-
-        let raw_path = input.out_file.trim();
-        let out_path = if raw_path.to_lowercase().ends_with(".dspack") {
-            PathBuf::from(raw_path)
-        } else {
-            PathBuf::from(format!("{raw_path}.dspack"))
-        };
-        let out = write_modpack_dspack(&out_path, &files)?;
-        crate::log_info!(
-            "已导出 dshhome 整合包 {}（{} 个 profile）",
-            out.display(),
-            collected.len()
-        );
-        Ok(out.to_string_lossy().to_string())
-    })
-    .await?
 }
 
 /// Converts manifest dependencies into pnpm-installable package.json specs.
@@ -1779,6 +963,11 @@ pub async fn start_import_modpack_task(
     if input.source.trim().is_empty() {
         return Err("整合包来源不能为空".to_string());
     }
+    let pinned = input
+        .archive_id
+        .as_deref()
+        .map(|id| v6::pinned_legacy(&state, id))
+        .transpose()?;
 
     let task = crate::tasks::TaskInfo {
         id: new_id("t"),
@@ -1815,7 +1004,9 @@ pub async fn start_import_modpack_task(
     let worker_task_id = task_id.clone();
     tauri::async_runtime::spawn(async move {
         let state = worker_app.state::<AppState>();
-        let result = do_import_modpack(&worker_app, &state, &worker_task_id, &input).await;
+        let pinned_path = pinned.as_ref().map(|(path, _)| path.as_path());
+        let result =
+            do_import_modpack(&worker_app, &state, &worker_task_id, &input, pinned_path).await;
         let mut tasks = state.tasks.lock().await;
         if let Some(task) = tasks.get_mut(&worker_task_id) {
             if task.state == crate::tasks::TaskState::Cancelled {
@@ -1878,9 +1069,16 @@ async fn do_import_modpack(
     state: &State<'_, AppState>,
     task_id: &str,
     input: &ImportModpackInput,
+    pinned: Option<&Path>,
 ) -> Result<ImportOutcome, String> {
+    let _packforge = input
+        .existing_instance_id
+        .as_deref()
+        .map(|id| v6::launch_guard(state, id))
+        .transpose()?;
     // 1. Obtain the pack locally, detect the container, and extract it.
-    let (pack, guard) = fetch_modpack_source(&input.source).await?;
+    let (pack, guard) =
+        fetch_modpack_source(pinned.and_then(Path::to_str).unwrap_or(&input.source)).await?;
     let tmp = guard.0.clone();
     let unpacked = tmp.join("pack");
     let container = detect_container(&pack)?;
@@ -1903,6 +1101,9 @@ async fn do_import_modpack(
     let manifest: ModpackManifest =
         serde_json::from_str(&manifest_raw).map_err(|e| format!("解析 manifest.json 失败: {e}"))?;
     validate_manifest(&manifest)?;
+    if manifest.manifest_version >= 6 {
+        return Err("请用 v6 导入预览安装该整合包".into());
+    }
     validate_pack_type(&manifest)?;
     validate_dshhome(&manifest)?;
     if let Some(marker) = marker {
@@ -2683,18 +1884,6 @@ async fn resolve_version_fallback(requested: &str) -> String {
     }
 }
 
-/// Downloads and square-crops a remote icon for bundling; `None` on failure
-/// (the exporter then falls back to referencing the URL).
-async fn fetch_remote_icon(url: &str) -> Option<Vec<u8>> {
-    match crate::icons::fetch_square_icon_png(url).await {
-        Ok(png) => Some(png),
-        Err(e) => {
-            crate::log_warn!("导出整合包：下载实例图标失败 {url}: {e}");
-            None
-        }
-    }
-}
-
 /// HOME id for a path (the dedicated HOME was just created or reused).
 fn home_id_of_path(cfg: &crate::config::Config, path: &Path) -> Option<String> {
     cfg.homes
@@ -2705,27 +1894,63 @@ fn home_id_of_path(cfg: &crate::config::Config, path: &Path) -> Option<String> {
 
 /// Downloads a modpack URL to `target` with a size cap.
 async fn download_modpack(url: &str, target: &Path) -> Result<(), String> {
+    use tokio::io::AsyncWriteExt;
+
+    let url = reqwest::Url::parse(url).map_err(|_| "整合包下载地址无效")?;
+    let safe = |url: &reqwest::Url| {
+        matches!(url.scheme(), "https" | "http")
+            && url.username().is_empty()
+            && url.password().is_none()
+    };
+    if !safe(&url) {
+        return Err("整合包下载地址须为无内嵌凭据的 HTTP(S) 地址".into());
+    }
     let client = crate::proxy::apply(reqwest::Client::builder())?
         .timeout(std::time::Duration::from_secs(300))
+        .redirect(reqwest::redirect::Policy::custom(move |attempt| {
+            if attempt.previous().len() < 8 && safe(attempt.url()) {
+                attempt.follow()
+            } else {
+                attempt.error("整合包下载重定向无效")
+            }
+        }))
         .user_agent("dsh-launcher")
         .build()
         .map_err(|e| format!("创建 HTTP 客户端失败: {e}"))?;
-    let resp = client
+    let mut resp = client
         .get(url)
         .send()
         .await
-        .map_err(|e| format!("下载整合包失败 {url}: {e}"))?;
+        .map_err(|e| format!("下载整合包失败：{}", e.without_url()))?;
     if !resp.status().is_success() {
-        return Err(format!("下载整合包失败 {url}: HTTP {}", resp.status()));
+        return Err(format!("下载整合包失败：HTTP {}", resp.status()));
     }
-    let bytes = resp
-        .bytes()
-        .await
-        .map_err(|e| format!("读取整合包失败: {e}"))?;
-    if bytes.len() > MODPACK_MAX_BYTES {
+    if resp
+        .content_length()
+        .is_some_and(|size| size > MODPACK_MAX_BYTES as u64)
+    {
         return Err("整合包过大（超过 64 MiB）".to_string());
     }
-    std::fs::write(target, &bytes).map_err(|e| format!("保存整合包失败: {e}"))?;
+    let mut file = tokio::fs::File::create(target)
+        .await
+        .map_err(|e| format!("保存整合包失败：{e}"))?;
+    let mut written = 0;
+    while let Some(bytes) = resp
+        .chunk()
+        .await
+        .map_err(|e| format!("读取整合包失败：{}", e.without_url()))?
+    {
+        written += bytes.len();
+        if written > MODPACK_MAX_BYTES {
+            return Err("整合包过大（超过 64 MiB）".into());
+        }
+        file.write_all(&bytes)
+            .await
+            .map_err(|e| format!("保存整合包失败：{e}"))?;
+    }
+    file.flush()
+        .await
+        .map_err(|e| format!("保存整合包失败：{e}"))?;
     Ok(())
 }
 
@@ -2811,49 +2036,6 @@ mod tests {
             !body.contains("input.wsl_distro"),
             "the single-profile form must not read wsl_distro"
         );
-    }
-
-    #[test]
-    fn github_repo_from_spec_parses_common_forms() {
-        assert_eq!(
-            github_repo_from_spec("git+https://github.com/DViridescent/dafy-whale-theme.git"),
-            Some(("DViridescent/dafy-whale-theme".to_string(), None, None))
-        );
-        assert_eq!(
-            github_repo_from_spec("github:owner/repo#path:/packages/x"),
-            Some((
-                "owner/repo".to_string(),
-                Some("packages/x".to_string()),
-                None
-            ))
-        );
-        assert_eq!(
-            github_repo_from_spec("https://github.com/owner/repo#abc1234&path:sub/dir"),
-            Some((
-                "owner/repo".to_string(),
-                Some("sub/dir".to_string()),
-                Some("abc1234".to_string())
-            ))
-        );
-        assert_eq!(github_repo_from_spec("^1.2.3"), None);
-    }
-
-    #[test]
-    fn locked_git_commit_reads_importers() {
-        let lock = r#"
-lockfileVersion: '9.0'
-importers:
-  .:
-    dependencies:
-      dafy-whale-theme:
-        specifier: github:DViridescent/dafy-whale-theme
-        version: github.com/DViridescent/dafy-whale-theme/99e8c57654f2c6394d515589a16b2a2a15c0a5f1
-"#;
-        assert_eq!(
-            locked_git_commit(lock, "dafy-whale-theme"),
-            Some("99e8c57654f2c6394d515589a16b2a2a15c0a5f1".to_string())
-        );
-        assert_eq!(locked_git_commit(lock, "missing"), None);
     }
 
     #[test]
@@ -3181,50 +2363,5 @@ importers:
         assert!(second.updated_at.is_none());
         assert!(second.profile_count.is_none());
         assert!(second.author.is_none());
-    }
-
-    /// issue #58: skills selected for export ship under `home/skills/<entry>/`
-    /// with `.git` stripped; the names are archive-relative (`/` separated).
-    #[test]
-    fn collect_skill_tree_uses_prefix_and_skips_git() {
-        let root = std::env::temp_dir().join(format!(
-            "dshl-modpack-skill-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_nanos())
-                .unwrap_or(0)
-        ));
-        let skill = root.join("review");
-        std::fs::create_dir_all(skill.join("sub")).unwrap();
-        std::fs::create_dir_all(skill.join(".git")).unwrap();
-        std::fs::write(skill.join("SKILL.md"), "s").unwrap();
-        std::fs::write(skill.join("sub").join("note.md"), "n").unwrap();
-        std::fs::write(skill.join(".git").join("HEAD"), "x").unwrap();
-
-        let mut out = Vec::new();
-        collect_skill_tree(&mut out, &skill, "home/skills/review").unwrap();
-        let names: Vec<&str> = out.iter().map(|(n, _)| n.as_str()).collect();
-        assert!(names.contains(&"home/skills/review/SKILL.md"), "{names:?}");
-        assert!(
-            names.contains(&"home/skills/review/sub/note.md"),
-            "{names:?}"
-        );
-        assert!(!names.iter().any(|n| n.contains(".git")), "{names:?}");
-        std::fs::remove_dir_all(&root).ok();
-    }
-
-    /// issue #58: the new content flags default to "not carried" so existing
-    /// callers (and older frontends) keep the pre-#58 export shape.
-    #[test]
-    fn export_contents_defaults_carry_no_home_payload() {
-        let c = ExportContents::default();
-        assert!(!c.agents_md);
-        assert!(c.skills.is_empty());
-        assert!(c.patch && c.lockfile && c.workspace && c.icon);
-        // Older packs omit the new keys entirely — they must still parse.
-        let parsed: ExportContents = serde_json::from_str(r#"{"patch":true}"#).unwrap();
-        assert!(!parsed.agents_md);
-        assert!(parsed.skills.is_empty());
     }
 }

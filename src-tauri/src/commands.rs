@@ -110,6 +110,7 @@ pub fn default_dedicated_home_path(
 
 #[tauri::command]
 pub fn remove_home(state: State<'_, AppState>, id: String) -> Result<(), String> {
+    let _packforge = crate::modpack::v6::guard_home_id(&state, &id)?;
     let mut cfg = state.config.lock().unwrap();
     if cfg.instances.iter().any(|i| i.home_id == id) {
         return Err("该 DSH_HOME 仍被实例引用，无法删除".to_string());
@@ -320,6 +321,7 @@ pub fn create_instance(
     state: State<'_, AppState>,
     input: NewInstanceInput,
 ) -> Result<DshInstance, String> {
+    let _packforge = crate::modpack::v6::guard_home_id(&state, &input.home_id)?;
     let name = input.name.trim().to_string();
     if name.is_empty() {
         return Err("实例名称不能为空".to_string());
@@ -360,6 +362,8 @@ pub fn update_instance(
     state: State<'_, AppState>,
     input: DshInstance,
 ) -> Result<DshInstance, String> {
+    let _packforge = crate::modpack::v6::launch_guard(&state, &input.id)?;
+    let _destination_packforge = crate::modpack::v6::guard_home_id(&state, &input.home_id)?;
     let name = input.name.trim().to_string();
     if name.is_empty() {
         return Err("实例名称不能为空".to_string());
@@ -642,6 +646,7 @@ pub async fn delete_instance(
     state: State<'_, AppState>,
     id: String,
 ) -> Result<(), String> {
+    let _packforge = crate::modpack::v6::launch_guard(&state, &id)?;
     if state.running.lock().await.contains_key(&id) {
         process::stop_instance_process(&app, &state, &id).await?;
     }
@@ -697,6 +702,7 @@ pub fn copy_instance(
     state: State<'_, AppState>,
     input: CopyInstanceInput,
 ) -> Result<DshInstance, String> {
+    let _packforge = crate::modpack::v6::launch_guard(&state, &input.source_id)?;
     let name = input.name.trim().to_string();
     if name.is_empty() {
         return Err("实例名称不能为空".to_string());
@@ -930,6 +936,7 @@ pub async fn create_profile(
     validate_profile_name(&name)?;
     // WSL (issue #49 S3): the template copy below walks \\wsl$\.
     crate::wsl::ensure_home_running(&state, &home_id).await?;
+    let _packforge = crate::modpack::v6::guard_home_id(&state, &home_id)?;
 
     let profiles_dir = {
         let cfg = state.config.lock().unwrap();
@@ -968,6 +975,7 @@ pub async fn copy_profile(
     validate_profile_name(&name)?;
     // WSL (issue #49 S3): the recursive copy below walks \\wsl$\.
     crate::wsl::ensure_home_running(&state, &home_id).await?;
+    let _packforge = crate::modpack::v6::guard_home_id(&state, &home_id)?;
 
     let profiles_dir = {
         let cfg = state.config.lock().unwrap();
@@ -1023,6 +1031,7 @@ pub async fn rename_profile(
     let new_name = new_name.trim().to_string();
     // WSL (issue #49 S3): the rename below touches \\wsl$\.
     crate::wsl::ensure_home_running(&state, &home_id).await?;
+    let _packforge = crate::modpack::v6::guard_home_id(&state, &home_id)?;
 
     let profiles_dir = {
         let cfg = state.config.lock().unwrap();
@@ -1084,6 +1093,7 @@ pub async fn delete_profile(
 ) -> Result<(), String> {
     // WSL (issue #49 S3): the recursive delete below walks \\wsl$\.
     crate::wsl::ensure_home_running(&state, &home_id).await?;
+    let _packforge = crate::modpack::v6::guard_home_id(&state, &home_id)?;
     let profiles_dir = {
         let cfg = state.config.lock().unwrap();
         let home = cfg
@@ -2346,6 +2356,7 @@ pub async fn write_agents_md(
     home_id: String,
     content: String,
 ) -> Result<(), String> {
+    let _packforge = crate::modpack::v6::guard_home_id(&state, &home_id)?;
     let fs = home_fs_of(&state, &home_id)?;
     crate::wsl::run_blocking(move || {
         if !fs.is_dir() {

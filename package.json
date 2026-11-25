@@ -6,7 +6,8 @@
   "type": "module",
   "packageManager": "pnpm@11.17.0",
   "scripts": {
-    "build:bridge": "tsc -p tsconfig.bridge.json && tsdown --config tsdown.bridge.config.mjs",
+    "build:bridge": "tsc -p tsconfig.bridge.json && tsdown --config tsdown.bridge.config.mjs && pnpm build:packforge",
+    "build:packforge": "tsdown --config tsdown.packforge.config.mjs",
     "dev": "vite",
     "build": "pnpm build:bridge && vue-tsc --noEmit && vite build",
     "tauri": "tauri",
@@ -14,7 +15,8 @@
     "test:network": "node --experimental-strip-types --test ci/network-access.test.mjs",
     "test:release-notes": "node --test ci/release-notes.test.mjs",
     "test:market": "node --experimental-strip-types --test ci/version-range.test.mjs ci/market.test.mjs ci/market-fetch.test.mjs ci/paginated-list.test.mjs",
-    "test:compatibility-ui": "node --experimental-strip-types --test ci/latest-request.test.mjs"
+    "test:compatibility-ui": "node --experimental-strip-types --test ci/latest-request.test.mjs",
+    "test:packforge": "node --test src-tauri/packforge/worker.test.mjs ci/packforge-export.test.mjs"
   },
   "dependencies": {
     "@arco-design/web-vue": "^2.59.0",
@@ -38,15 +40,20 @@
     "vue-router": "^4.5.0"
   },
   "devDependencies": {
+    "@deepseek-ai/cordis": "4.0.2",
+    "@deepseek-ai/cordis-plugin-include": "1.0.7",
+    "@deepseek-ai/cordis-plugin-loader": "1.0.3",
     "@intlify/unplugin-vue-i18n": "^6.0.3",
     "@tauri-apps/cli": "^2.9.4",
     "@types/react": "^19.3.0",
     "@types/semver": "7.7.1",
     "@vitejs/plugin-vue": "^5.2.1",
+    "fflate": "0.8.2",
     "sass": "^1.85.0",
     "tsdown": "^0.15.12",
     "typescript": "^5.7.3",
     "vite": "^6.3.5",
-    "vue-tsc": "^2.2.8"
+    "vue-tsc": "^2.2.8",
+    "yaml": "2.9.0"
   }
 }

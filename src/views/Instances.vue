@@ -17,6 +17,17 @@ const { t } = useI18n()
 const store = useLauncherStore()
 
 const modpackImportVisible = ref(false)
+const modpackUpdateInstance = ref<DshInstance>()
+
+function openPackforgeUpdate(instance: DshInstance) {
+  modpackUpdateInstance.value = instance
+  modpackImportVisible.value = true
+}
+
+function openPackforgeImport() {
+  modpackUpdateInstance.value = undefined
+  modpackImportVisible.value = true
+}
 
 /**
  * Homes that exist in the config but have no instances at all (issue #39,
@@ -156,7 +167,7 @@ async function confirmCopy() {
       <div class="dl-card-title">
         <h3>{{ t('instances.title') }}</h3>
         <div class="dl-toolbar">
-          <dsh-button variant="secondary" @click="modpackImportVisible = true">
+          <dsh-button variant="secondary" @click="openPackforgeImport">
             {{ t('modpack.importButton') }}
           </dsh-button>
           <dsh-button variant="primary" @click="router.push({ name: 'download' })">
@@ -211,6 +222,9 @@ async function confirmCopy() {
             </dsh-button>
             <dsh-button variant="secondary" size="sm" @click="openCopy(record)">
               {{ t('instances.table.copy') }}
+            </dsh-button>
+            <dsh-button variant="secondary" size="sm" @click="openPackforgeUpdate(record)">
+              {{ t('modpack.updateTitle') }}
             </dsh-button>
             <dsh-popconfirm
               :content="t('instances.confirmDelete', { name: record.name })"
@@ -273,7 +287,7 @@ async function confirmCopy() {
       </dsh-form>
     </dsh-modal>
 
-    <ModpackImportDialog v-model:visible="modpackImportVisible" />
+    <ModpackImportDialog v-model:visible="modpackImportVisible" :update-instance="modpackUpdateInstance" />
   </div>
 </template>
 

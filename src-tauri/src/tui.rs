@@ -132,6 +132,7 @@ async fn start_tui_session_inner(
     input: TuiSessionInput,
 ) -> Result<(), String> {
     let instance_id = input.instance_id.as_str();
+    let _packforge = crate::modpack::v6::guard_instance_start(state, instance_id).await?;
     if state.tui_sessions.lock().await.contains_key(instance_id) {
         return Err("TUI 会话已存在".to_string());
     }

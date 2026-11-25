@@ -1407,6 +1407,7 @@ pub async fn save_provider_route(
     api_key: String,
 ) -> Result<Vec<ProviderRoute>, String> {
     crate::wsl::ensure_home_running(&state, &home_id).await?;
+    let _packforge = crate::modpack::v6::guard_home_id(&state, &home_id)?;
     let home = home_fs_of(&state, &home_id)?;
     let path = patch_path_of(&home, profile.as_deref())?;
 
@@ -1498,6 +1499,7 @@ pub async fn delete_provider_route(
     id: String,
 ) -> Result<Vec<ProviderRoute>, String> {
     crate::wsl::ensure_home_running(&state, &home_id).await?;
+    let _packforge = crate::modpack::v6::guard_home_id(&state, &home_id)?;
     let home = home_fs_of(&state, &home_id)?;
     let path = patch_path_of(&home, profile.as_deref())?;
 

@@ -1,0 +1,36 @@
+{
+  "name": "@dsh-packforge/core",
+  "version": "0.1.1",
+  "type": "module",
+  "description": "DSH-PackForge 核心引擎：manifest v6 + .dspack 容器（主机无关，I/O 经 Host 注入）",
+  "license": "MIT",
+  "exports": {
+    ".": "./src/index.js"
+  },
+  "files": [
+    "src"
+  ],
+  "keywords": [
+    "dsh",
+    "deepseek",
+    "dspack",
+    "整合包"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "test": "node --test --experimental-test-isolation=none \"test/*.test.js\""
+  },
+  "dependencies": {
+    "fflate": "^0.8.2",
+    "semver": "^7.8.5",
+    "yaml": "^2.8.1"
+  },
+  "devDependencies": {
+    "@dsh-packforge/host-node": "workspace:*"
+  }
+}

@@ -16,6 +16,7 @@ mod mcp;
 mod migrate;
 mod modpack;
 mod notifications;
+mod packforge;
 mod plugins;
 mod process;
 mod providers;
@@ -60,6 +61,7 @@ pub struct AppState {
     pub config_path: std::path::PathBuf,
     pub data_dir: std::path::PathBuf,
     pub(crate) cua_operation: tokio::sync::Mutex<()>,
+    pub(crate) packforge: modpack::v6::PackforgeState,
     pub config: StdMutex<config::Config>,
     /// Startup notice from the data-dir bootstrap (fallback / failed
     /// migration); the frontend surfaces it as a toast once.
@@ -283,6 +285,7 @@ pub fn run() {
                 config_path,
                 data_dir: data_dir.clone(),
                 cua_operation: tokio::sync::Mutex::new(()),
+                packforge: modpack::v6::PackforgeState::default(),
                 data_dir_notice: StdMutex::new(data_dir_notice),
                 data_dir_source,
                 config: StdMutex::new(cfg),
@@ -302,6 +305,8 @@ pub fn run() {
                 instance_icon_cache: StdMutex::new(HashMap::new()),
                 tray_sync_lock: std::sync::Arc::new(tokio::sync::Mutex::new(())),
             });
+
+            tauri::async_runtime::spawn(modpack::v6::recover_pending(app.handle().clone()));
 
             // System tray with dynamic menu.
             notifications::start(app.handle());
@@ -475,11 +480,19 @@ pub fn run() {
             plugins::uninstall_plugin,
             plugins::start_install_plugin_task,
             plugins::start_install_plugin_file_task,
-            modpack::export_modpack,
-            modpack::export_dshhome_modpack,
+            modpack::export_v6::export_modpack,
+            modpack::export_v6::export_dshhome_modpack,
+            modpack::export_v6::inspect_packforge_export,
             modpack::read_modpack_manifest,
             modpack::start_import_modpack_task,
             modpack::fetch_modpack_market,
+            modpack::v6::inspect_packforge_archive,
+            modpack::v6::discard_packforge_archive,
+            modpack::v6::list_packforge_resources,
+            modpack::v6::preview_packforge_install,
+            modpack::v6::start_packforge_install,
+            modpack::v6::list_packforge_installations,
+            modpack::v6::get_packforge_market_detail,
             terminal::start_terminal_session,
             terminal::write_terminal_input,
             terminal::resize_terminal_session,

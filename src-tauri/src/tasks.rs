@@ -437,6 +437,9 @@ pub async fn cancel_task(
 ) -> Result<(), String> {
     let child = {
         let mut tasks = state.tasks.lock().await;
+        if state.packforge.committing.lock().unwrap().contains(&id) {
+            return Err("整合包正在提交，无法取消".into());
+        }
         let Some(task) = tasks.get_mut(&id) else {
             return Err("任务不存在".to_string());
         };
@@ -1895,6 +1898,15 @@ async fn ensure_pnpm(
         }
     }
 
+    ensure_managed_pnpm(app, state, task_id, binding).await
+}
+
+async fn ensure_managed_pnpm(
+    app: &AppHandle,
+    state: &State<'_, AppState>,
+    task_id: &str,
+    binding: TaskBinding,
+) -> Result<std::path::PathBuf, String> {
     // 2. Local pnpm already bootstrapped on the required major?
     let tools_dir = state.data_dir.join("tools");
     let local = local_pnpm_path(&tools_dir);
@@ -1920,6 +1932,9 @@ async fn ensure_pnpm(
 
     let mut cmd = tokio::process::Command::new(crate::process::npm());
     crate::process::hide_console(&mut cmd);
+    let mut proxy = Vec::new();
+    crate::proxy::override_env(&mut proxy, &state.config.lock().unwrap().settings)?;
+    cmd.envs(proxy);
     cmd.args(["install", "--global", "--prefix"])
         .arg(&tools_dir)
         .arg(&spec)
@@ -1955,7 +1970,7 @@ fn local_pnpm_path(tools_dir: &std::path::Path) -> std::path::PathBuf {
     if cfg!(windows) {
         tools_dir.join("pnpm.cmd")
     } else {
-        tools_dir.join("pnpm")
+        tools_dir.join("bin/pnpm")
     }
 }
 
@@ -2095,6 +2110,72 @@ pub(crate) async fn ensure_pnpm_pub(
     task_id: &str,
 ) -> Result<std::path::PathBuf, String> {
     ensure_pnpm(app, state, task_id, TaskBinding::Optional).await
+}
+
+pub(crate) async fn ensure_packforge_pnpm(
+    app: &AppHandle,
+    state: &State<'_, AppState>,
+    task_id: &str,
+) -> Result<std::path::PathBuf, String> {
+    let tools = state.data_dir.join("tools");
+    let system_dirs = std::env::var_os("PATH")
+        .map(|path| std::env::split_paths(&path).collect::<Vec<_>>())
+        .unwrap_or_default();
+    let file = |directory: &std::path::Path| {
+        if cfg!(windows) {
+            [
+                directory.join("node_modules/pnpm/bin/pnpm.cjs"),
+                directory.join("node_modules/corepack/dist/pnpm.js"),
+                directory.join("pnpm.exe"),
+            ]
+            .into_iter()
+            .find(|path| path.is_file())
+        } else {
+            let path = directory.join("pnpm");
+            path.is_file().then_some(path)
+        }
+    };
+    let managed = if cfg!(windows) {
+        tools.clone()
+    } else {
+        tools.join("bin")
+    };
+    for directory in std::iter::once(&managed).chain(&system_dirs) {
+        let Some(path) = file(directory).filter(|path| path.is_absolute()) else {
+            continue;
+        };
+        let is_script = path
+            .extension()
+            .and_then(|extension| extension.to_str())
+            .is_some_and(|extension| ["js", "cjs", "mjs"].contains(&extension));
+        let mut command = if is_script {
+            let mut command = tokio::process::Command::new(crate::process::node());
+            command.arg(&path);
+            command
+        } else {
+            tokio::process::Command::new(&path)
+        };
+        crate::process::hide_console(&mut command);
+        command
+            .env_remove("NODE_OPTIONS")
+            .env_remove("NODE_PATH")
+            .arg("--version")
+            .kill_on_drop(true);
+        if tokio::time::timeout(std::time::Duration::from_secs(10), command.output())
+            .await
+            .is_ok_and(|result| {
+                result.is_ok_and(|output| {
+                    output.status.success()
+                        && pnpm_major(&String::from_utf8_lossy(&output.stdout))
+                            == Some(REQUIRED_PNPM_MAJOR)
+                })
+            })
+        {
+            return Ok(path);
+        }
+    }
+    ensure_managed_pnpm(app, state, task_id, TaskBinding::Required).await?;
+    file(&managed).ok_or_else(|| "启动器未找到可直接运行的 pnpm".into())
 }
 
 enum TaskBinding {

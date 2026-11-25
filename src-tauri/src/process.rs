@@ -255,6 +255,7 @@ pub async fn start_instance_process(
     instance_id: &str,
     profile: &str,
 ) -> Result<(), String> {
+    let _packforge = crate::modpack::v6::guard_instance_start(state, instance_id).await?;
     let cfg = state.config.lock().unwrap().clone();
     let inst = cfg
         .instances

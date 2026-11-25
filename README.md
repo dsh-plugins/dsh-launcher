@@ -50,6 +50,14 @@ Tauri 2 + Vue 3 + TypeScript + Sass + vue-router + vue-i18n + Arco Design Vue.
 - **i18n**: Simplified Chinese / English; JSON locale files are discovered, hot-reloaded, and precompiled by `@intlify/unplugin-vue-i18n` through Vite.
 - **WSL2 instances (experimental)**: create DSH instances inside a WSL2 distro — Node.js / pnpm / the pinned version are installed inside the distro automatically and the instance's DSH_HOME lives under the distro's `~/.dsh-launcher/homes`. Once created, HOME works like a local instance (profiles CRUD, plugin install/enable/disable/uninstall, skills, MCP, icons, logs, modpack export/import, embedded terminal); files are accessed through the `\\wsl$\` UNC share and a stopped distro is booted automatically.
 
+## Modpacks
+
+Import a local `.dspack`, download URL, or marketplace pack. The preview shows each profile's plugins and registries, plus optional plugin data, model providers, MCP servers, and skills. You can select individual resources and choose how to resolve conflicts. Supply credentials locally or confirm reuse of credentials on the target machine.
+
+Export one profile or a selection of profiles from instance settings. Both exporters use PackForge manifest v6 and container v4 and let you select resources and declare tested DSH versions. Credential values stay on the target machine. Legacy `.tgz` packs with manifest v2/v3 and `.dspack` packs with manifest v4/v5 can still be imported.
+
+To update an installed pack, stop the running instances that share its `DSH_HOME`, then choose **Update modpack** on the target instance. The preview lists changes and conflicts and keeps local changes by default. If the update requires a different DSH version, you can confirm a switch for a dedicated instance. For shared homes, adjust the affected instances to a compatible version first.
+
 ## Interface
 
 - **Home**: left panel (instance status → linked instance/profile dropdowns → large launch button → instance list / instance settings); right side reserved for a news area.

@@ -4,11 +4,13 @@ import { computed, onMounted, ref, toRef, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { api } from '@/api'
-import type { MarketModpack } from '@/api/types'
+import type { MarketModpack, ModpackManifest } from '@/api/types'
 import { useLauncherStore } from '@/stores/launcher'
 import { usePaginatedList } from '@/composables/paginated-list'
 import { injectDownloadScroll } from '@/composables/download-scroll'
 import ModpackImportDialog from '@/components/ModpackImportDialog.vue'
+import PackforgePluginList from '@/components/PackforgePluginList.vue'
+import { packforgeText } from '@/utils/packforge'
 
 // keep-alive name: the download page caches this view (search state).
 defineOptions({ name: 'ModpackMarketPage' })
@@ -32,23 +34,23 @@ const typeOptions = computed(() => [
   { value: 'dshhome', label: t('modpack.marketTypeDshhome') },
 ])
 
-// Import dialog state: installing a pack just prefills the existing import
-// dialog with the pack's download URL (auto-loads the manifest).
 const importVisible = ref(false)
-const importSource = ref('')
+const importPack = ref<MarketModpack>()
+const detailPack = ref<MarketModpack>()
+const detail = ref<ModpackManifest>()
+const detailError = ref('')
+const detailLoading = ref(false)
+const detailsCache = new Map<string, { version: string; manifest: ModpackManifest }>()
+const summaryKinds = [
+  ['path.json', 'path'], ['provider.json', 'provider'], ['mcp.json', 'mcp'], ['skill.json', 'skill'],
+] as const
+let detailRequest = 0
 
 // Persist the search box in the store so it survives navigation (same
 // pattern as the plugin market, issue #29).
 watch(search, (q) => {
   store.modpackMarketSearch = q
 })
-
-/** Localized text: string passthrough, or locale map with fallback. */
-function localized(value: string | Record<string, string> | null | undefined): string {
-  if (!value) return ''
-  if (typeof value === 'string') return value
-  return value[locale.value] ?? value['en-US'] ?? Object.values(value)[0] ?? ''
-}
 
 function fmtSize(bytes: number | null | undefined): string {
   if (!bytes || bytes <= 0) return ''
@@ -65,7 +67,7 @@ const filtered = computed(() => {
   const q = search.value.trim().toLowerCase()
   if (!q) return list
   return list.filter((p) => {
-    const hay = [p.id, p.name, p.author ?? '', localized(p.displayName), localized(p.description)]
+    const hay = [p.id, p.name, p.author ?? '', packforgeText(p.displayName, locale.value), packforgeText(p.description, locale.value)]
       .join(' ')
       .toLowerCase()
     return hay.includes(q)
@@ -80,8 +82,43 @@ watch([page, filtered], () => {
 }, { flush: 'post' })
 
 function install(pack: MarketModpack) {
-  importSource.value = pack.downloadUrl
+  detailPack.value = undefined
+  importPack.value = pack
   importVisible.value = true
+}
+
+async function showDetail(pack: MarketModpack) {
+  detailPack.value = pack
+  detailError.value = ''
+  detail.value = undefined
+  const request = ++detailRequest
+  const stored = detailsCache.get(pack.id)
+  if (stored?.version === pack.version) {
+    detail.value = stored.manifest
+    detailLoading.value = false
+    return
+  }
+  detailLoading.value = true
+  try {
+    const manifest = await api.getPackforgeMarketDetail(pack.id)
+    if (request === detailRequest) {
+      detailsCache.set(pack.id, { version: pack.version, manifest })
+      detail.value = manifest
+    }
+  } catch (reason) {
+    if (request === detailRequest) {
+      detailError.value = String(reason)
+    }
+  } finally {
+    if (request === detailRequest) {
+      detailLoading.value = false
+    }
+  }
+}
+
+function closeDetail() {
+  detailRequest += 1
+  detailPack.value = undefined
 }
 
 async function load() {
@@ -149,14 +186,14 @@ onMounted(() => {
           <span class="modpack-icon">📦</span>
           <div class="modpack-meta">
             <div class="modpack-name">
-              {{ localized(p.displayName) || p.name }}
+              {{ packforgeText(p.displayName, locale) || p.name }}
               <span class="modpack-id">{{ p.id }}</span>
               <dsh-tag size="small" :color="p.type === 'dshhome' ? 'orangered' : 'arcoblue'">
                 {{ p.type === 'dshhome' ? t('modpack.marketTypeDshhome') : t('modpack.marketTypeProfile') }}
               </dsh-tag>
               <dsh-tag size="small">{{ p.version }}</dsh-tag>
             </div>
-            <div class="modpack-desc">{{ localized(p.description) }}</div>
+            <div class="modpack-desc">{{ packforgeText(p.description, locale) }}</div>
             <div class="modpack-tags">
               <dsh-tag v-if="p.author" size="small" color="gray">{{ p.author }}</dsh-tag>
               <dsh-tag v-if="p.dshVersion" size="small" color="gray">
@@ -178,6 +215,9 @@ onMounted(() => {
             </div>
           </div>
           <div class="modpack-side">
+            <dsh-button variant="secondary" size="sm" @click="showDetail(p)">
+              {{ t('modpack.details') }}
+            </dsh-button>
             <dsh-button variant="primary" size="sm" @click="install(p)">
               {{ t('modpack.marketInstall') }}
             </dsh-button>
@@ -193,7 +233,36 @@ onMounted(() => {
       </template>
     </div>
 
-    <ModpackImportDialog v-model:visible="importVisible" :initial-source="importSource" />
+    <dsh-modal :visible="!!detailPack" :title="t('modpack.details')" :footer="false" @cancel="closeDetail">
+      <dsh-scrollbar class="market-details">
+        <template v-if="detailPack">
+          <h3>{{ packforgeText(detailPack.displayName, locale) || detailPack.name }}</h3>
+          <dsh-spin v-if="detailLoading" />
+          <dsh-alert v-else-if="detailError" type="error">
+            {{ detailError }}
+            <dsh-button size="sm" variant="ghost" @click="showDetail(detailPack)">{{ t('modpack.marketRetry') }}</dsh-button>
+          </dsh-alert>
+          <template v-else-if="detail">
+            <p v-if="detail.description">{{ packforgeText(detail.description, locale) }}</p>
+            <PackforgePluginList :manifest="detail" />
+            <div v-for="[file, kind] in summaryKinds" :key="file">
+              <template v-if="detail.resources?.[file]?.length">
+                <h4>{{ t('modpack.kinds.' + kind) }}</h4>
+                <ul>
+                  <li v-for="(item, index) in detail.resources[file]" :key="index">
+                    {{ packforgeText(item.name, locale) || item.id }}
+                    <template v-if="item.scope"> · {{ item.scope }}</template>
+                    <template v-if="item.desc"> · {{ packforgeText(item.desc, locale) }}</template>
+                  </li>
+                </ul>
+              </template>
+            </div>
+          </template>
+          <dsh-button variant="primary" @click="install(detailPack)">{{ t('modpack.marketInstall') }}</dsh-button>
+        </template>
+      </dsh-scrollbar>
+    </dsh-modal>
+    <ModpackImportDialog v-model:visible="importVisible" :market-pack="importPack" />
   </div>
 </template>
 
@@ -298,5 +367,9 @@ onMounted(() => {
   /* Vertically center the install button within the top-aligned row (issue #13). */
   align-self: center;
   flex-shrink: 0;
+  display: flex;
+  gap: 6px;
 }
+
+.market-details { max-height: min(60vh, 560px); overflow-y: auto; }
 </style>

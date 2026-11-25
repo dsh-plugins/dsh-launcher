@@ -4,9 +4,9 @@ import { useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { useFeedback } from '@dsh-plugin/dsh-ui-components-vue'
 import { api } from '@/api'
-import type { SkillInfo } from '@/api/types'
 import { useLauncherStore } from '@/stores/launcher'
 import HintIcon from '@/components/HintIcon.vue'
+import PackforgeExportOptions from '@/components/PackforgeExportOptions.vue'
 
 const { message: Message } = useFeedback()
 
@@ -33,35 +33,19 @@ const contents = ref({
   icon: true,
   extra_files: false,
   agents_md: false,
+  presets: false,
+  home_extra_files: false,
 })
 
-/** Skills of the export HOME + the selected on-disk entries (issue #58). */
-const skillList = ref<SkillInfo[]>([])
-const skillSelected = ref<string[]>([])
-
-/** Select-all checkbox state for the SKILL list. */
-const skillAllChecked = computed(
-  () => skillList.value.length > 0 && skillSelected.value.length === skillList.value.length,
-)
-const skillIndeterminate = computed(
-  () => skillSelected.value.length > 0 && skillSelected.value.length < skillList.value.length,
-)
-
-function onToggleAllSkills(value: boolean | (string | number | boolean)[]) {
-  skillSelected.value = value === true ? skillList.value.map((s) => s.entry) : []
-}
-
+const exportOptions = ref<InstanceType<typeof PackforgeExportOptions>>()
+const inspectInput = computed(() => ctx ? {
+  home_id: ctx.homeId, instance_id: ctx.instanceId, profiles: [ctx.profile], whole: false,
+} : undefined)
 const busy = ref(false)
 
-onMounted(async () => {
+onMounted(() => {
   if (!ctx) {
     router.replace({ name: 'instances' })
-    return
-  }
-  try {
-    skillList.value = await api.listInstanceSkills(ctx.homeId)
-  } catch (e) {
-    Message.error(String(e))
   }
 })
 
@@ -78,18 +62,23 @@ function defaultFileName() {
 }
 
 async function startExport() {
-  if (!ctx) return
-  // The save location is picked at export time, not in the form above.
-  const { save } = await import('@tauri-apps/plugin-dialog')
-  const outFile = await save({
-    defaultPath: defaultFileName(),
-    filters: [{ name: 'DSH Modpack', extensions: ['dspack'] }],
-  })
-  if (!outFile) return
+  if (!ctx || !exportOptions.value || busy.value) {
+    return
+  }
   busy.value = true
   try {
+    const { dshVersion, dshVersions, plugins, selection } = exportOptions.value.getOptions()
+    const { save } = await import('@tauri-apps/plugin-dialog')
+    const outFile = await save({
+      defaultPath: defaultFileName(),
+      filters: [{ name: 'DSH Modpack', extensions: ['dspack'] }],
+    })
+    if (!outFile) {
+      return
+    }
     const path = await api.exportModpack({
       home_id: ctx.homeId,
+      instance_id: ctx.instanceId,
       profile: ctx.profile,
       out_file: outFile,
       name: form.value.name.trim() || undefined,
@@ -97,7 +86,8 @@ async function startExport() {
       displayName: form.value.displayName.trim() || undefined,
       description: form.value.description.trim() || undefined,
       author: form.value.author.trim() || undefined,
-      contents: { ...contents.value, skills: [...skillSelected.value] },
+      contents: { ...contents.value },
+      dshVersion, dshVersions, plugins, selection,
     })
     Message.success(t('exportPack.exported', { path }))
     goBack()
@@ -188,25 +178,15 @@ async function startExport() {
             <HintIcon :content="t('exportPack.contentAgentsHint')" />
           </dsh-checkbox>
         </div>
-        <div v-if="skillList.length > 0" class="content-row content-skills">
-          <div class="content-skills-title">
-            <dsh-checkbox
-              :model-value="skillAllChecked"
-              :indeterminate="skillIndeterminate"
-              @change="onToggleAllSkills"
-            >
-              {{ t('exportPack.contentSkills') }}
-            </dsh-checkbox>
-            <HintIcon :content="t('exportPack.contentSkillsHint')" />
-          </div>
-          <dsh-checkbox-group v-model="skillSelected" class="content-skills-list">
-            <dsh-checkbox v-for="s in skillList" :key="s.entry" :value="s.entry">
-              {{ s.name }}
-              <span v-if="s.name !== s.entry" class="content-skill-entry">({{ s.entry }})</span>
-            </dsh-checkbox>
-          </dsh-checkbox-group>
+        <div class="content-row">
+          <dsh-checkbox v-model="contents.presets">{{ t('modpack.homePresets') }}</dsh-checkbox>
+        </div>
+        <div class="content-row">
+          <dsh-checkbox v-model="contents.home_extra_files">{{ t('modpack.homeData') }}</dsh-checkbox>
         </div>
       </div>
+
+      <PackforgeExportOptions v-if="inspectInput" ref="exportOptions" :input="inspectInput" />
 
       <div class="export-actions">
         <dsh-button variant="primary"
@@ -250,23 +230,6 @@ async function startExport() {
 
 .content-row:last-child {
   border-bottom: none;
-}
-
-.content-skills-title {
-  color: var(--color-text-1);
-  margin-bottom: 6px;
-}
-
-.content-skills-list {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  padding-left: 22px;
-}
-
-.content-skill-entry {
-  color: var(--color-text-3);
-  font-size: 12px;
 }
 
 .export-actions {

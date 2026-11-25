@@ -1,0 +1,30 @@
+{
+  "name": "@dsh-packforge/host-node",
+  "version": "0.1.1",
+  "type": "module",
+  "description": "DSH-PackForge Host 的 Node 实现（node:fs / child_process / node:crypto）",
+  "license": "MIT",
+  "exports": {
+    ".": "./src/index.js"
+  },
+  "files": [
+    "src"
+  ],
+  "keywords": [
+    "dsh",
+    "deepseek",
+    "dspack",
+    "整合包"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "@deepseek-ai/cordis": "4.0.2",
+    "@deepseek-ai/cordis-plugin-include": "1.0.7",
+    "@deepseek-ai/cordis-plugin-loader": "1.0.3"
+  }
+}

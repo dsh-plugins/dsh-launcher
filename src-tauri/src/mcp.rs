@@ -683,6 +683,7 @@ pub fn save_mcp_server(
     server: McpServer,
     original_id: Option<String>,
 ) -> Result<Vec<McpServer>, String> {
+    let _packforge = crate::modpack::v6::guard_home_id(&state, &home_id)?;
     let home = home_path_of(&state, &home_id)?;
     let path = patch_path(&home, profile.as_deref())?;
     let raw = read_patch(&path)?;
@@ -740,6 +741,7 @@ pub fn delete_mcp_server(
     profile: Option<String>,
     id: String,
 ) -> Result<Vec<McpServer>, String> {
+    let _packforge = crate::modpack::v6::guard_home_id(&state, &home_id)?;
     let home = home_path_of(&state, &home_id)?;
     let path = patch_path(&home, profile.as_deref())?;
     let raw = read_patch(&path)?;

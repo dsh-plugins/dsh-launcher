@@ -7,6 +7,7 @@ import { api } from '@/api'
 import type { ExportContents, ExportProfileSpec } from '@/api/types'
 import { useLauncherStore } from '@/stores/launcher'
 import HintIcon from '@/components/HintIcon.vue'
+import PackforgeExportOptions from '@/components/PackforgeExportOptions.vue'
 
 const { message: Message } = useFeedback()
 
@@ -89,6 +90,11 @@ const form = ref({
 
 const defaultProfile = ref('')
 const includeIcon = ref(true)
+const homeContents = reactive({ agents_md: false, presets: false, extra_files: false })
+const exportOptions = ref<InstanceType<typeof PackforgeExportOptions>>()
+const inspectInput = computed(() => ctx ? {
+  home_id: ctx.homeId, instance_id: ctx.instanceId, profiles: [...selected.value], whole: true,
+} : undefined)
 
 function goNext() {
   if (!canNext.value) return
@@ -107,20 +113,24 @@ function defaultFileName() {
 }
 
 async function startExport() {
-  if (!ctx) return
-  // The save location is picked at export time, not in the form above.
-  const { save } = await import('@tauri-apps/plugin-dialog')
-  const outFile = await save({
-    defaultPath: defaultFileName(),
-    filters: [{ name: 'DSH Modpack', extensions: ['dspack'] }],
-  })
-  if (!outFile) return
-  const specs: ExportProfileSpec[] = selected.value.map((p) => ({
-    profile: p,
-    contents: { ...contentsFor(p) },
-  }))
+  if (!ctx || !exportOptions.value || busy.value) {
+    return
+  }
   busy.value = true
   try {
+    const { dshVersion, dshVersions, profilePlugins, selection } = exportOptions.value.getOptions()
+    const { save } = await import('@tauri-apps/plugin-dialog')
+    const outFile = await save({
+      defaultPath: defaultFileName(),
+      filters: [{ name: 'DSH Modpack', extensions: ['dspack'] }],
+    })
+    if (!outFile) {
+      return
+    }
+    const specs: ExportProfileSpec[] = selected.value.map(profile => ({
+      profile,
+      contents: { ...contentsFor(profile) },
+    }))
     const path = await api.exportDshhomeModpack({
       home_id: ctx.homeId,
       instance_id: ctx.instanceId,
@@ -133,6 +143,8 @@ async function startExport() {
       author: form.value.author.trim() || undefined,
       defaultProfile: defaultProfile.value || undefined,
       icon: includeIcon.value,
+      dshVersion, dshVersions, profilePlugins, selection,
+      home_contents: { ...homeContents },
     })
     Message.success(t('exportPack.exported', { path }))
     goBack()
@@ -258,8 +270,17 @@ async function startExport() {
             <dsh-form-item>
               <dsh-checkbox v-model="includeIcon">{{ t('exportPack.contentIcon') }}</dsh-checkbox>
             </dsh-form-item>
+            <dsh-form-item :label="t('modpack.homeContents')">
+              <div class="home-contents">
+                <dsh-checkbox v-model="homeContents.agents_md">{{ t('exportPack.contentAgents') }}</dsh-checkbox>
+                <dsh-checkbox v-model="homeContents.presets">{{ t('modpack.homePresets') }}</dsh-checkbox>
+                <dsh-checkbox v-model="homeContents.extra_files">{{ t('modpack.homeData') }}</dsh-checkbox>
+              </div>
+            </dsh-form-item>
           </dsh-form>
         </div>
+
+        <PackforgeExportOptions v-if="inspectInput" ref="exportOptions" :input="inspectInput" />
 
         <div class="export-actions">
           <dsh-space size="large">
@@ -359,4 +380,6 @@ async function startExport() {
   justify-content: center;
   margin-top: 24px;
 }
+
+.home-contents { display: flex; flex-wrap: wrap; gap: 8px 16px; }
 </style>

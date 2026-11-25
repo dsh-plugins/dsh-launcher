@@ -366,12 +366,15 @@ export interface ExportContents {
   agents_md?: boolean
   /** Selected on-disk skill entries under <home>/skills, shipped under home/skills/ (issue #58). */
   skills?: string[]
+  presets?: boolean
+  home_extra_files?: boolean
 }
 
 /** Modpack export overrides; unset fields fall back to profile-derived defaults. */
 export interface ExportModpackInput {
   home_id: string
   profile: string
+  instance_id?: string
   /** Full output file path chosen via a save dialog; `.dspack` is appended when missing. */
   out_file: string
   name?: string
@@ -381,6 +384,10 @@ export interface ExportModpackInput {
   author?: string
   /** Content selection; unset exports the default set. */
   contents?: ExportContents
+  dshVersion?: string
+  dshVersions?: string[]
+  selection?: PackforgeSelection
+  plugins?: Record<string, PackforgePluginOverride>
 }
 
 /** A manifest-v4 files[] entry: heavy content downloaded on demand. */
@@ -396,6 +403,84 @@ export interface ModpackFileEntry {
 }
 
 /** Modpack manifest (v2/v3 legacy tgz, v4 inside .dspack); displayName/description may be a string or a locale map. */
+export type PackforgeText = string | Record<string, string>
+
+export interface PackforgePluginInfo {
+  name?: PackforgeText
+  desc?: PackforgeText
+  icon?: string
+  source?: { type: 'npm'; registry: string }
+}
+
+export type PackforgePluginOverride = Omit<PackforgePluginInfo, 'source'> & {
+  version?: string
+  source?: { type: 'npm'; registry: string } | null
+}
+
+export interface PackforgeProfileUnit {
+  bundles: string[]
+  dependencies: Record<string, string>
+  patch?: string | null
+  plugins?: Record<string, PackforgePluginInfo>
+}
+
+export type PackforgeResourceKind = 'path' | 'provider' | 'mcp' | 'skill'
+export type PackforgeResourceGroup = 'paths' | 'providers' | 'mcp' | 'skills'
+export type PackforgeSkillMode = 'embedded' | 'fixed' | 'track'
+
+export interface PackforgeResourceSummary {
+  id: string
+  scope?: string
+  name?: PackforgeText
+  desc?: PackforgeText
+  ref?: string
+  commit?: string
+  plugin?: string
+}
+
+export interface PackforgeResourceSelection {
+  key: string
+  id?: string
+  scope?: string
+  mode?: PackforgeSkillMode
+  repository?: string
+  subdir?: string
+  ref?: string
+  name?: PackforgeText
+  desc?: PackforgeText
+}
+
+export type PackforgeSelection = Record<PackforgeResourceGroup, Array<string | PackforgeResourceSelection>>
+
+export interface InspectPackforgeExportInput {
+  home_id: string
+  instance_id?: string
+  profiles: string[]
+  whole: boolean
+  contents?: ExportContents
+  profile_contents?: Record<string, ExportContents>
+}
+
+export interface PackforgeExportCandidate extends PackforgeResourceSummary {
+  key: string
+  notice?: string
+  unsupported?: boolean
+  source?: {
+    repository?: string
+    repo?: string
+    subdir?: string
+    ref?: string
+    commit?: string
+  }
+}
+
+export interface PackforgeExportChoices {
+  candidates: Partial<Record<PackforgeResourceGroup, PackforgeExportCandidate[]>>
+  units: Record<string, PackforgeProfileUnit>
+  dsh_version?: string
+  dsh_versions?: string[]
+}
+
 export interface ModpackManifest {
   manifestVersion: number
   /** v4: "profile"; v5 adds "dshhome" ("collection" reserved). */
@@ -407,6 +492,7 @@ export interface ModpackManifest {
   author?: string | null
   icon?: string | null
   dshVersion?: string | null
+  dshVersions?: string[]
   profileName?: string | null
   bundles: string[]
   dependencies: Record<string, string>
@@ -416,10 +502,9 @@ export interface ModpackManifest {
   /** v5 dshhome form: default launch profile key. */
   defaultProfile?: string | null
   /** v5 dshhome form: profile name → unit (v4 contract minus profileName). */
-  profiles?: Record<
-    string,
-    { bundles: string[]; dependencies: Record<string, string>; patch?: string | null }
-  > | null
+  profiles?: Record<string, PackforgeProfileUnit> | null
+  plugins?: Record<string, PackforgePluginInfo>
+  resources?: Partial<Record<'path.json' | 'provider.json' | 'mcp.json' | 'skill.json', PackforgeResourceSummary[]>>
   /** v5 dshhome form: preset index entries (content ships under overrides/). */
   presets?: Record<string, { path?: string | null; description?: string | null }> | null
   /** v5 dshhome form: skill index entries. */
@@ -440,6 +525,7 @@ export interface MarketModpack {
   author?: string | null
   category?: string | null
   dshVersion?: string | null
+  dshVersions?: string[]
   profileName?: string | null
   downloadUrl: string
   sha256?: string | null
@@ -477,10 +563,16 @@ export interface ExportDshhomeInput {
   defaultProfile?: string
   /** Bundle the instance icon (default true). */
   icon?: boolean
+  dshVersion?: string
+  dshVersions?: string[]
+  selection?: PackforgeSelection
+  profilePlugins?: Record<string, Record<string, PackforgePluginOverride>>
+  home_contents?: { agents_md: boolean; presets: boolean; extra_files: boolean }
 }
 
 export interface ImportModpackInput {
   source: string
+  archive_id?: string
   force?: boolean
   instance_name?: string
   profile_name?: string
@@ -490,6 +582,84 @@ export interface ImportModpackInput {
    * profile is materialized inside the distro and its dependencies are
    * installed there. Omit for a local Windows HOME. */
   wsl_distro?: string
+}
+
+export interface InspectPackforgeArchiveInput {
+  source: string
+  market_id?: string
+  sha256?: string
+  size?: number
+}
+
+export interface PackforgeArchive {
+  archive_id: string
+  manifest: ModpackManifest
+  sha256: string
+  size: number
+  warnings: string[]
+  icons?: Record<string, string>
+}
+
+export interface PackforgeInstallTarget {
+  instance_id?: string
+  instance_name?: string
+  profile_name?: string
+  wsl_distro?: string
+  update?: boolean
+  switch_version?: boolean
+  previous_source?: string
+  previous_sha256?: string
+}
+
+export interface PackforgeInstallTargetInput {
+  archive_id: string
+  target: PackforgeInstallTarget
+}
+
+export interface PackforgeInstallResource extends PackforgeResourceSummary {
+  key: string
+  kind: PackforgeResourceKind
+  destination?: string
+  endpoint?: string
+  conflict?: boolean
+  canReplace?: boolean
+  notice?: string
+  credentialRefs?: string[]
+  missingCredentials?: string[]
+  availableCredentials?: string[]
+}
+
+export interface PackforgeResourceList {
+  items: PackforgeInstallResource[]
+  version: string
+  current_version?: string | null
+  switch_required: boolean
+  shared_home: boolean
+  warnings: string[]
+}
+
+export type PackforgeInstallDecision = 'keep' | 'replace' | 'skip'
+
+export interface PreviewPackforgeInstallInput extends PackforgeInstallTargetInput {
+  decisions?: Record<string, PackforgeInstallDecision>
+  credentials?: Record<string, Record<string, string>>
+  confirmed_credentials?: Record<string, boolean>
+}
+
+export interface PackforgeInstallPlan {
+  plan_id: string
+  changes: { path: string; action: string; conflict?: boolean }[]
+  conflicts: { path: string; shared?: boolean; fields?: { key: string; label: string }[] }[]
+  unknown_base: boolean
+}
+
+export interface PackforgeInstallation {
+  name: string
+  version: string
+  pack_type: 'profile' | 'dshhome'
+  profile_name?: string | null
+  market_id?: string | null
+  sha256: string
 }
 
 /** Repo origin recorded for an installed skill. */
