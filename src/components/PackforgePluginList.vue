@@ -2,6 +2,7 @@
 import { computed } from 'vue'
 import { useI18n } from 'vue-i18n'
 import type { ModpackManifest } from '@/api/types'
+import MarketIcon from '@/components/MarketIcon.vue'
 import { packforgeIcon, packforgeText } from '@/utils/packforge'
 
 const props = withDefaults(defineProps<{ manifest: ModpackManifest; icons?: Record<string, string> }>(), {
@@ -37,7 +38,7 @@ const profiles = computed(() => {
       <summary>{{ profile.name }} ({{ profile.plugins.length }})</summary>
       <ul>
         <li v-for="plugin in profile.plugins" :key="plugin.id">
-          <img v-if="plugin.icon" :src="plugin.icon" alt="" loading="lazy" referrerpolicy="no-referrer" />
+          <MarketIcon v-if="plugin.icon" :src="plugin.icon" class="plugin-icon">🧩</MarketIcon>
           <div>
             <strong>{{ plugin.name }}</strong>
             <span v-if="plugin.version"> · {{ plugin.version }}</span>
@@ -57,7 +58,9 @@ details { margin: 6px 0; }
 summary { cursor: pointer; }
 ul { list-style: none; padding: 0; margin: 4px 0; }
 li { display: flex; gap: 10px; padding: 8px 0; border-bottom: 1px solid var(--color-border-1); overflow-wrap: anywhere; }
-li img { flex: 0 0 32px; width: 32px; height: 32px; object-fit: contain; }
+.plugin-icon { width: 32px; height: 32px; }
+.plugin-icon.has-image { background: transparent; }
+.plugin-icon :deep(img) { inset: 0; }
 li p { margin: 2px 0 0; }
 .plugin-id { color: var(--color-text-3); }
 </style>

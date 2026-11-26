@@ -27,6 +27,9 @@ export function packforgeIcon(icon: string | undefined, icons: Record<string, st
   try {
     const url = new URL(icon)
     if (url.protocol === 'https:' && !url.username && !url.password) {
+      if (url.origin === 'https://cdn.jsdelivr.com' && url.pathname.startsWith('/npm/') && !url.search && !url.hash) {
+        url.hostname = 'cdn.jsdelivr.net'
+      }
       return url.href
     }
   } catch {

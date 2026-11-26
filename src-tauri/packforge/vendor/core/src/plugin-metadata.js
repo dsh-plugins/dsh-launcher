@@ -316,7 +316,7 @@ async function iconFor(host, pkgDir, pkg, id, release, source, context, entries)
     return undefined;
   }
   if (await publicArtifact(host, pkg, id, release, source, context)) {
-    return 'https://cdn.jsdelivr.com/npm/' + id + '@' + release + '/' + rel.split('/').map(encodeURIComponent).join('/');
+    return 'https://cdn.jsdelivr.net/npm/' + id + '@' + release + '/' + rel.split('/').map(encodeURIComponent).join('/');
   }
   const asset = assetPrefix + await host.sha256(bytes) + '.' + ext.toLowerCase();
   entries[asset] = bytes;
