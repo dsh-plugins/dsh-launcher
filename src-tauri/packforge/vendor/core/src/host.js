@@ -113,7 +113,10 @@ export class Host {
     throw new Error('Host.sha256File 未实现');
   }
 
-  /** 执行外部命令，返回 { status, error? }（Node: spawnSync 继承 stdio；插件/浏览器宿主另议）。 */
+  /**
+   * 执行外部命令，返回退出状态、可选的执行错误和可记录到任务日志的诊断行。
+   * @returns {Promise<{ status: number | null, error?: string, diagnostics?: string[] }>}
+   */
   async exec(_cmd, _args, _opts) {
     throw new Error('Host.exec 未实现');
   }

@@ -390,16 +390,24 @@ async function materializeHomeOverrides(host, homeRoot, entries) {
 async function pnpmInstall(host, target, opts, frozen) {
   // 依赖重建可能较慢（尤其 git 依赖走 git clone），给足超时但绝不无限卡死。
   const timeoutMs = opts.timeoutMs > 0 ? opts.timeoutMs : 10 * 60 * 1000;
-  const args = ['install'];
-  if (frozen) args.push('--frozen-lockfile');
-  if (opts.registry) args.push('--registry', opts.registry);
+  const registry = opts.registry ? ['--registry', opts.registry] : [];
+  const args = ['install', ...(frozen ? ['--frozen-lockfile'] : []), ...registry];
   let r = await host.exec('pnpm', args, { cwd: target, timeoutMs });
-  // frozen-lockfile 失配时回退普通安装（v4/v5 导入语义）
-  if (frozen && r.status !== 0) {
-    r = await host.exec('pnpm', ['install', ...(opts.registry ? ['--registry', opts.registry] : [])], { cwd: target, timeoutMs });
+  // pnpm 在 CI 下默认冻结已有锁文件，重试时需要显式允许更新锁文件。
+  if (frozen && !r.error && r.status !== 0) {
+    r = await host.exec('pnpm', ['install', '--no-frozen-lockfile', ...registry], { cwd: target, timeoutMs });
   }
-  if (r.error) throw new Error(`pnpm install 执行失败：${r.error}`);
-  if (r.status !== 0) throw new Error(`pnpm install 失败（退出码 ${r.status ?? '未知'}）`);
+  if (r.error || r.status !== 0) {
+    if (typeof opts.onProgress === 'function') {
+      for (const diagnostic of r.diagnostics ?? []) {
+        opts.onProgress('install', diagnostic);
+      }
+    }
+    if (r.error) {
+      throw new Error(`pnpm install 执行失败：${r.error}`);
+    }
+    throw new Error(`pnpm install 失败（退出码 ${r.status ?? '未知'}）`);
+  }
 }
 
 /** files[] 重内容：每个 url 依次尝试下载 → sha256+size 校验 → 落到 path。 */

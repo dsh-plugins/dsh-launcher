@@ -43,7 +43,7 @@ function secretsIn(value) {
 function safeText(value, secrets, max = 900) {
   let text = String(value).split(/\r?\n/)[0];
   for (const secret of secrets) text = text.split(secret).join('[凭据]');
-  return text.replace(/(https?:\/\/)[^\s@/]+@/gi, '$1[凭据]@')
+  return text.replace(/((?:https?|socks5h?):\/\/)[^\s@/]+@/gi, '$1[凭据]@')
     .replace(/(https?:\/\/[^\s?#]+)[?#][^\s]*/gi, '$1')
     .replace(/\b(?:Bearer|Basic)\s+[A-Za-z0-9+\/=_-]+/gi, '[凭据]')
     .slice(0, max);
