@@ -107,6 +107,12 @@ export async function planExtensionInstall(host, opts) {
         if (manager) item.notice = '此服务将由独立 MCP 客户端运行，可在该客户端的配置行管理；MCP 管理器不再列出此条目';
       }
       const config = record.kind === 'mcp' ? record.value.config : record.value;
+      if (record.kind === 'provider') {
+        const providerType = record.binding === 'deepseek' ? 'DeepSeek' : config.api;
+        if (typeof providerType === 'string' && /^[a-z][a-z\d._-]{0,63}$/i.test(providerType)) {
+          item.providerType = providerType;
+        }
+      }
       item.destination = [config.url,config.baseURL,config.baseUrl,config.command].find(v=>typeof v === 'string') || record.id;
       const ids = [actualPatch+'/'+record.kind+'/'+record.id];
       if (record.kind === 'mcp') ids.push(actualPatch+'/server/'+record.value.config.serverName);

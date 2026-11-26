@@ -5,7 +5,7 @@ import { useI18n } from 'vue-i18n'
 import { HintIcon, useFeedback } from '@dsh-plugin/dsh-ui-components-vue'
 import { api } from '@/api'
 import type {
-  DshInstance, MarketModpack, PackforgeArchive, PackforgeInstallation, PackforgeInstallDecision,
+  DshInstance, MarketModpack, PackforgeArchive, PackforgeInstallation,
   PackforgeInstallPlan, PackforgeInstallResource, PackforgeInstallTarget, PackforgeResourceList,
 } from '@/api/types'
 import PackforgePluginList from '@/components/PackforgePluginList.vue'
@@ -47,7 +47,7 @@ const binding = ref<number>()
 const legacyProfile = ref('')
 const resources = ref<PackforgeResourceList>()
 const plan = ref<PackforgeInstallPlan>()
-const decisions = ref<Record<string, PackforgeInstallDecision | 'auto'>>(Object.create(null))
+const selectedResources = ref<Record<string, boolean>>(Object.create(null))
 const credentials = ref<Record<string, Record<string, string>>>(Object.create(null))
 const reuse = ref<Record<string, boolean>>(Object.create(null))
 const resolutions = ref<Record<string, boolean>>(Object.create(null))
@@ -129,7 +129,7 @@ function clearPlan() {
 
 function clearChoices() {
   resources.value = undefined
-  decisions.value = Object.create(null)
+  selectedResources.value = Object.create(null)
   credentials.value = Object.create(null)
   reuse.value = Object.create(null)
   switchVersion.value = false
@@ -318,9 +318,8 @@ function credentialSet(item: PackforgeInstallResource) {
   return credentials.value[item.key] ?? (credentials.value[item.key] = Object.create(null))
 }
 
-function skipped(item: PackforgeInstallResource) {
-  const decision = decisions.value[item.key]
-  return decision === 'keep' || decision === 'skip' || item.canReplace === false
+function acceptsCredentials(item: PackforgeInstallResource) {
+  return selectedResources.value[item.key] && item.canReplace !== false
 }
 
 function missing(item: PackforgeInstallResource, reference: string) {
@@ -331,7 +330,7 @@ function sanitizedCredentials() {
   const values: Record<string, Record<string, string>> = Object.create(null)
   const confirmed: Record<string, boolean> = Object.create(null)
   for (const item of resources.value?.items ?? []) {
-    if (skipped(item)) {
+    if (!acceptsCredentials(item)) {
       continue
     }
     const assigned = Object.entries(credentialSet(item)).filter(([, value]) => value !== '')
@@ -380,16 +379,17 @@ async function confirm() {
       if (current === request) {
         resources.value = result
         for (const item of result.items) {
-          decisions.value[item.key] = 'auto'
+          selectedResources.value[item.key] = true
           credentialSet(item)
         }
         step.value = 'resources'
       }
     } else if (step.value === 'resources') {
-      const chosen = Object.fromEntries(Object.entries(decisions.value)
-        .filter((entry): entry is [string, PackforgeInstallDecision] => entry[1] !== 'auto'))
+      const decisions = Object.fromEntries(Object.entries(selectedResources.value)
+        .filter(([, selected]) => !selected)
+        .map(([key]) => [key, 'skip' as const]))
       const result = await api.previewPackforgeInstall({
-        archive_id, target: target(), decisions: chosen, ...sanitizedCredentials(),
+        archive_id, target: target(), decisions, ...sanitizedCredentials(),
       })
       if (current === request) {
         clearPlan()
@@ -582,30 +582,34 @@ function close() {
             <h3>{{ t('modpack.resources') }}</h3>
             <section v-for="item in resources.items" :key="item.key" class="resource-card">
               <div class="resource-title">
-                <strong>{{ packforgeText(item.name, locale) || item.id }}</strong>
+                <dsh-checkbox v-model="selectedResources[item.key]">
+                  <strong>{{ packforgeText(item.name, locale) || item.id }}</strong>
+                </dsh-checkbox>
                 <dsh-tag v-if="item.conflict" color="orange" size="small">{{ t('modpack.conflict') }}</dsh-tag>
-                <dsh-select v-model="decisions[item.key]" :aria-label="t('modpack.resourceAction')">
-                  <dsh-option value="auto">{{ t(item.canReplace === false ? 'modpack.actions.keep' : 'modpack.autoResource') }}</dsh-option>
-                  <dsh-option v-if="item.conflict && item.canReplace !== false" value="keep">{{ t('modpack.actions.keep') }}</dsh-option>
-                  <dsh-option v-if="item.conflict && item.canReplace !== false" value="replace">{{ t('modpack.useIncoming') }}</dsh-option>
-                  <dsh-option value="skip">{{ t('modpack.skip') }}</dsh-option>
-                </dsh-select>
               </div>
-              <p>{{ t('modpack.kinds.' + item.kind) }} · {{ item.scope }}<template v-if="item.destination"> · {{ item.destination }}</template></p>
+              <p>
+                {{ t('modpack.kinds.' + item.kind) }}
+                <template v-if="item.kind === 'provider'"> · {{ t('modpack.providerType', { type: item.providerType || t('modpack.providerTypeUnknown') }) }}</template>
+                · {{ item.scope }}<template v-if="item.destination"> · {{ item.destination }}</template>
+              </p>
               <p v-if="item.endpoint && item.endpoint !== item.destination">{{ item.endpoint }}</p>
               <p v-if="item.desc">{{ packforgeText(item.desc, locale) }}</p>
               <p v-if="item.notice">{{ item.notice }}</p>
-              <template v-if="item.credentialRefs?.length && !skipped(item)">
+              <template v-if="item.credentialRefs?.length && acceptsCredentials(item)">
                 <dsh-checkbox v-if="item.availableCredentials?.length" v-model="reuse[item.key]">
                   {{ t('modpack.reuseCredentials') }}
                 </dsh-checkbox>
-                <dsh-form-item v-for="reference in item.credentialRefs" :key="reference">
+                <dsh-form-item v-for="reference in item.credentialRefs" :key="reference"
+                  :validate-status="missing(item, reference) ? 'error' : undefined">
                   <template #label>
                     {{ reference }}
-                    <HintIcon v-if="missing(item, reference)" :content="t('modpack.missingSkip')" />
+                    <template v-if="missing(item, reference)">
+                      <dsh-tag color="red" size="small">{{ t('modpack.missingCredential') }}</dsh-tag>
+                      <HintIcon :content="t('modpack.missingSkip')" />
+                    </template>
                   </template>
                   <dsh-input-password v-model="credentials[item.key][reference]"
-                    autocomplete="new-password" :placeholder="t(missing(item, reference) ? 'modpack.missingCredential' : 'modpack.credentialInput')" />
+                    autocomplete="new-password" :placeholder="t('modpack.credentialInput')" />
                 </dsh-form-item>
               </template>
             </section>
@@ -673,7 +677,6 @@ function close() {
 .resource-card p { margin: 6px 0; }
 .resource-card :deep(.arco-checkbox) { display: flex; }
 .resource-title { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
-.resource-title :deep(.arco-select) { width: min(210px, 100%); margin-inline-start: auto; }
 .change-list { list-style: none; padding: 0; overflow-wrap: anywhere; }
 .change-list li { padding: 5px 0; }
 details { margin-bottom: 12px; }

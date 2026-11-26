@@ -1409,7 +1409,7 @@ async function mockCall<T>(cmd: string, args?: Record<string, unknown>): Promise
         version: '0.2.3-alpha.2', current_version: current,
         switch_required: !!target.update && !!current && current !== '0.2.3-alpha.2', shared_home: shared, warnings: [],
         items: [
-          { key: 'provider:home:example', id: 'example', kind: 'provider', scope: 'home', destination: 'cordis.patch.yml', name: 'Example Models', credentialRefs: ['EXAMPLE_KEY'], missingCredentials: ['EXAMPLE_KEY'] },
+          { key: 'provider:home:example', id: 'example', kind: 'provider', providerType: 'openai-completions', scope: 'home', destination: 'cordis.patch.yml', name: 'Example Models', credentialRefs: ['EXAMPLE_KEY'], missingCredentials: ['EXAMPLE_KEY'] },
           { key: 'skill:home:example', id: 'example', kind: 'skill', scope: 'home', destination: 'skills/example', name: 'Example Skill' },
         ],
       } satisfies PackforgeResourceList as T

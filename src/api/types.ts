@@ -619,6 +619,7 @@ export interface PackforgeInstallTargetInput {
 export interface PackforgeInstallResource extends PackforgeResourceSummary {
   key: string
   kind: PackforgeResourceKind
+  providerType?: string
   destination?: string
   endpoint?: string
   conflict?: boolean
