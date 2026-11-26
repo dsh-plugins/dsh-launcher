@@ -144,7 +144,7 @@ export class LauncherHost extends NodeHost {
         url = next;
         continue;
       }
-      throw new Error(`整合包下载失败（HTTP ${reply.status || '请求失败'}）`);
+      throw Object.assign(new Error(`整合包下载失败（HTTP ${reply.status || '请求失败'}）`), { status: reply.status });
     }
     throw new Error('整合包下载重定向次数超限');
   }

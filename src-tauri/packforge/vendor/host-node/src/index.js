@@ -247,7 +247,7 @@ export class NodeHost {
         }
         if (res.statusCode !== 200) {
           res.resume();
-          return reject(new Error(`下载失败：HTTP ${res.statusCode}`));
+          return reject(Object.assign(new Error(`下载失败：HTTP ${res.statusCode}`), { status: res.statusCode }));
         }
         const out = fs.createWriteStream(destAbs);
         res.pipe(out);

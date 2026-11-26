@@ -128,18 +128,35 @@ export async function fetchPluginTarball(host, id, release, source, { authDir } 
   const headersFor = (url) => url.startsWith(base) ? registryHeaders(host, url, authDir) : {};
   const temp = await host.mkdtemp('dspack-registry-');
   try {
-    const metaUrl = base + id.replace('/', '%2F') + '/' + encodeURIComponent(release);
+    const packageUrl = base + id.replace('/', '%2F');
     const file = host.joinPath(temp, 'metadata.json');
+    const downloadMetadata = async (url) => host.download(url, file, {
+      headers: await headersFor(url), redirectHeaders: headersFor, maxBytes: 4 * 1024 * 1024,
+    });
+    let packageMetadata = false;
     try {
-      await host.download(metaUrl, file, { headers: await headersFor(metaUrl), redirectHeaders: headersFor, maxBytes: 4 * 1024 * 1024 });
-    } catch {
-      throw new Error('无法从声明的 registry 获取版本元数据，请检查地址和本机 npm 凭据');
+      try {
+        await downloadMetadata(packageUrl + '/' + encodeURIComponent(release));
+      } catch (error) {
+        if (error.status !== 404) {
+          throw error;
+        }
+        await downloadMetadata(packageUrl);
+        packageMetadata = true;
+      }
+    } catch (error) {
+      const status = Number.isInteger(error.status) ? '（HTTP ' + error.status + '）' : '';
+      throw new Error('无法从声明的 registry 获取版本元数据' + status);
     }
     let meta;
     try {
-      meta = JSON.parse(await host.readTextFile(file));
+      const data = JSON.parse(await host.readTextFile(file));
+      meta = packageMetadata ? data?.versions?.[release] : data;
     } catch {
       throw new Error('registry 返回了无效的版本元数据');
+    }
+    if (packageMetadata && !meta) {
+      throw new Error('声明的 registry 未提供所选版本');
     }
     if (meta?.name !== id || meta.version !== release) {
       throw new Error('registry 返回的包名或版本不符');
