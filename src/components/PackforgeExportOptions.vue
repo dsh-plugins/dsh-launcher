@@ -69,10 +69,11 @@ function exactVersion(value: string) {
 }
 
 function newSkill(candidate?: PackforgeExportCandidate): SkillChoice {
+  const repository = candidate?.source?.repository || candidate?.source?.repo || ''
   return {
-    id: candidate?.id || '', scope: candidate?.scope || 'home', mode: candidate ? 'embedded' : 'fixed',
-    repository: candidate?.source?.repository || candidate?.source?.repo || '',
-    subdir: candidate?.source?.subdir || '', ref: candidate?.source?.commit || candidate?.source?.ref || '',
+    id: candidate?.id || '', scope: candidate?.scope || 'home',
+    mode: candidate ? (repository ? 'track' : 'embedded') : 'fixed',
+    repository, subdir: candidate?.source?.subdir || '', ref: repository ? 'HEAD' : '',
     name: asText(candidate?.name), desc: asText(candidate?.desc),
   }
 }
@@ -155,8 +156,8 @@ function parseLabel(raw: string): PackforgeText | undefined {
 function setSkillMode(skill: SkillChoice, mode: unknown, candidate?: PackforgeExportCandidate) {
   if (mode === 'fixed' || mode === 'track' || mode === 'embedded') {
     skill.mode = mode
-    if (candidate?.source) {
-      skill.ref = mode === 'fixed' ? candidate.source.commit || '' : candidate.source.ref || ''
+    if (candidate?.source && mode !== 'embedded') {
+      skill.ref = mode === 'fixed' ? candidate.source.commit || '' : 'HEAD'
     }
   }
 }

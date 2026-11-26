@@ -139,26 +139,24 @@ export async function discoverSkills(host,root,scope) {
 
 export async function exportSkill(host, root, candidate, choice) {
   const id = segment(candidate.id);
-  const dir = root ? host.joinPath(root,id) : null;
-  const exists = dir ? await host.stat(dir) : null;
-  let local = null;
-  if (exists?.isDirectory) local = await readTree(host,dir);
-  if (exists?.isFile) local = new Map([[id,await host.readFile(dir)]]);
-  const mode = choice.mode || 'embedded';
+  const mode = choice.mode || (candidate.source ? 'track' : 'embedded');
   if (mode === 'embedded') {
-    if (!local?.size) throw new Error('内嵌技能没有本地文件：' + id);
-    return { mode, files:local, digest:await digestFiles(host,local) };
+    const dir = root ? host.joinPath(root,id) : null;
+    const exists = dir ? await host.stat(dir) : null;
+    let files;
+    if (exists?.isDirectory) {
+      files = await readTree(host,dir);
+    }
+    if (exists?.isFile) {
+      files = new Map([[id,await host.readFile(dir)]]);
+    }
+    if (!files?.size) {
+      throw new Error('内嵌技能没有本地文件：' + id);
+    }
+    return { mode, files, digest:await digestFiles(host,files) };
   }
   const source = { ...candidate.source, ...Object.fromEntries(Object.entries(choice).filter(([,v])=>v !== '' && v != null)), mode };
-  if (mode === 'fixed') source.ref = choice.ref || source.commit;
-  const fetched = await checkoutSkill(host,source,id);
-  if (local) {
-    let baseline = fetched.digest;
-    if (candidate.source?.commit && candidate.source.commit !== fetched.commit) {
-      baseline = (await checkoutSkill(host,{...candidate.source,mode:'fixed',ref:candidate.source.commit},id)).digest;
-    }
-    if (await digestFiles(host,local) !== baseline) throw new Error('本地技能内容与来源不同，请选择内嵌：' + id);
-  }
-  const {executables, ...metadata} = fetched;
+  source.ref = mode === 'fixed' ? choice.ref || source.commit : choice.ref;
+  const {executables, files, ...metadata} = await checkoutSkill(host,source,id);
   return { ...metadata, files:null };
 }
