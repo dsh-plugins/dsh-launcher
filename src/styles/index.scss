@@ -196,6 +196,15 @@ body:has(.app-shell) .dsh-ui-portal .dsh-toast-region[data-position$='Right'] {
   align-items: center;
 }
 
+.dsh-ui .arco-select-view-single > .arco-select-view-suffix {
+  top: 50%;
+  transform: translateY(-50%);
+
+  > .arco-select-view-icon {
+    align-items: center;
+  }
+}
+
 // Keep nested table scrollbars slim and transparent; empty tables need no track.
 .arco-table {
   // Three classes to out-specify / tie-and-override Arco's

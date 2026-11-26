@@ -272,11 +272,6 @@ onBeforeUnmount(() => {
   :deep(.arco-select-view-single) {
     width: 100%;
   }
-
-  :deep(.arco-select-view-single > .arco-select-view-suffix) {
-    top: 50%;
-    transform: translateY(-50%);
-  }
 }
 
 .market-error,
