@@ -7,7 +7,6 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use tauri::State;
-use tokio::io::AsyncReadExt;
 
 #[derive(Clone, Deserialize)]
 #[serde(default)]
@@ -660,6 +659,9 @@ async fn export(
     request["output"] = json!(scratch.worker_file("archive.dspack", distro)?);
     if include_icon {
         match instance_icon(&context).await {
+            Some(ExportIcon::HomePath(path)) => {
+                request["iconPath"] = json!(path);
+            }
             Some(ExportIcon::Bytes(bytes)) => {
                 let icon = scratch.local.0.join("icon.png");
                 tokio::fs::write(&icon, bytes)
@@ -696,6 +698,7 @@ async fn export(
 }
 
 enum ExportIcon {
+    HomePath(String),
     Bytes(Vec<u8>),
     Url(reqwest::Url),
 }
@@ -704,14 +707,10 @@ async fn instance_icon(context: &ExportContext) -> Option<ExportIcon> {
     let instance = context.instance.as_ref()?;
     let icon = instance.icon.as_deref()?;
     if icon == "local" {
-        let home = crate::wsl::home_fs_path(&context.home);
-        let path = crate::icons::local_icon_path(&home, &instance.id);
-        let file = tokio::fs::File::open(path).await.ok()?;
-        let mut bytes = Vec::new();
-        let limit = 16 * 1024 * 1024;
-        file.take(limit + 1).read_to_end(&mut bytes).await.ok()?;
-        return (!bytes.is_empty() && bytes.len() as u64 <= limit)
-            .then_some(ExportIcon::Bytes(bytes));
+        // 由 worker 在实例的文件系统内检查排除规则后读取图标。
+        let path = crate::icons::local_icon_path(Path::new(""), &instance.id);
+        let relative = path.to_str()?.replace(std::path::MAIN_SEPARATOR, "/");
+        return Some(ExportIcon::HomePath(relative));
     }
     let url = reqwest::Url::parse(icon).ok()?;
     if !matches!(url.scheme(), "https" | "http")

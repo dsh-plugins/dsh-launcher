@@ -61,7 +61,9 @@ export async function readTree(host, root, options = {}) {
     if (!list.length && options.emptyDirs) options.emptyDirs.push(prefix.replace(/\/$/, ''));
     for (const entry of list) {
       const path = prefix + entry.name;
-      if (entry.name === '.git' || entry.name === '.dsh-skill.json' || isExcluded(path.toLowerCase())) continue;
+      if (options.exclude?.(path) || entry.name === '.git' || entry.name === '.dsh-skill.json' || isExcluded(path.toLowerCase())) {
+        continue;
+      }
       relativePath(path);
       if (entry.type === 'symlink') {
         if (options.rejectLinks) throw new Error('远程技能含符号链接：' + path);

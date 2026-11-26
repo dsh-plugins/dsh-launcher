@@ -1,5 +1,5 @@
 import { collectPluginMetadata } from './plugin-metadata.js';
-import { collectExtensions, discoverExtensions } from './extensions.js';
+import { collectExtensions, discoverExtensions, discoverPluginExclusions, matchesPluginExclusion } from './extensions.js';
 import { scanProfile, selectFiles } from './scan.js';
 import { buildManifest, buildHomeManifest } from './manifest.js';
 import { validateManifest } from './manifest.js';
@@ -10,14 +10,15 @@ import { summarizeHome, profileHome } from './pack.js';
 /** 干跑检查：返回扫描结果 + manifest v5 预览 + 特殊目录摘要，不写任何文件。
  *  opts.include（rel 白名单）给定则 files/special 只取选中项，allFiles 保留全量。 */
 export async function inspectProfile(host, profile, opts = {}) {
-  const scan = await scanProfile(host, profile.dir);
+  const homeDir = profileHome(host, profile, opts.home);
+  const exclusions = await discoverPluginExclusions(host, {home: homeDir, profiles: [profile]});
+  const scan = await scanProfile(host, profile.dir, rel => matchesPluginExclusion(exclusions, 'profiles/' + profile.name + '/' + rel));
   const files = selectFiles(scan.files, opts.include);
   const manifest = await buildManifest(host, profile, opts, scan);
   // home 级候选（上一级目录）：供 GUI 勾选，勾选项打包进 home/ 目录。
-  const homeDir = profileHome(host, profile, opts.home);
   await collectPluginMetadata(host, profile.dir, manifest, { plugins: opts.plugins, entries: {} });
-  await collectExtensions(host, { home: homeDir, profiles: [profile], manifest, entries: {}, selection: {} });
-  const homeFiles = homeDir ? (await scanProfile(host, homeDir)).files.filter((f) => !f.rel.startsWith('profiles/')) : [];
+  await collectExtensions(host, { home: homeDir, profiles: [profile], manifest, entries: {}, selection: {}, exclusions });
+  const homeFiles = homeDir ? (await scanProfile(host, homeDir, rel => matchesPluginExclusion(exclusions, rel))).files.filter((f) => !f.rel.startsWith('profiles/')) : [];
   return {
     profile,
     files,
@@ -32,7 +33,8 @@ export async function inspectProfile(host, profile, opts = {}) {
 
 /** 干跑检查（dshhome）：扫描整个 home → 识别四类单元 → 预览 manifest v5，不写任何文件。 */
 export async function inspectHome(host, home, opts = {}) {
-  const scan = await scanProfile(host, home.dir);
+  const exclusions = await discoverPluginExclusions(host, {home: home.dir});
+  const scan = await scanProfile(host, home.dir, rel => matchesPluginExclusion(exclusions, rel));
   const files = selectFiles(scan.files, opts.include);
   const summary = summarizeHome(files);
   const profiles = [...summary.profiles.keys()]
@@ -58,7 +60,7 @@ export async function inspectHome(host, home, opts = {}) {
   for (const profile of profiles) {
     await collectPluginMetadata(host, profile.dir, manifest.profiles[profile.name], { plugins: opts.profilePlugins?.[profile.name], entries: {} });
   }
-  await collectExtensions(host, { home: home.dir, profiles, manifest, entries: {}, selection: {} });
+  await collectExtensions(host, { home: home.dir, profiles, manifest, entries: {}, selection: {}, exclusions });
   return { home, files, allFiles: scan.files, excluded: scan.excluded, manifest, summary };
 }
 

@@ -1,8 +1,10 @@
+import { createReadStream } from 'node:fs';
 import path from 'node:path';
 import { exportChoices } from './vendor/core/src/inspect.js';
 import { packProfile, packHome } from './vendor/core/src/pack.js';
 import { scanProfile } from './vendor/core/src/scan.js';
-import { segment } from './vendor/core/src/extension-files.js';
+import { discoverPluginExclusions, matchesPluginExclusion } from './vendor/core/src/extensions.js';
+import { safePath, segment } from './vendor/core/src/extension-files.js';
 import { installedPluginSource, verifyVendored } from './vendor/core/src/registry.js';
 import { publicManifest, safeImage, validateArchive } from './worker-archive.mjs';
 
@@ -36,6 +38,23 @@ function limitSnapshot(files) {
     throw new Error('选择的导出文件数量或大小超过限制');
   }
   return files.map(file => file.rel);
+}
+
+async function readLocalIcon(host, home, relative) {
+  const icon = await safePath(host, home, relative);
+  const maximumIconBytes = 16 * 1024 * 1024;
+  const stat = await host.stat(icon);
+  if (!stat?.isFile || stat.size === 0 || stat.size > maximumIconBytes) return null;
+  try {
+    const chunks = [];
+    for await (const chunk of createReadStream(icon, { end: maximumIconBytes })) {
+      chunks.push(chunk);
+    }
+    const bytes = Buffer.concat(chunks);
+    return bytes.length > 0 && bytes.length <= maximumIconBytes ? bytes : null;
+  } catch {
+    return null;
+  }
 }
 
 function ensurePortableSnapshot(entries) {
@@ -76,6 +95,9 @@ export async function runExport(host, options, inspect) {
   const { profile, home, contents } = options;
   if (!['profile', 'dshhome'].includes(options.kind) || !home || !path.isAbsolute(home.dir) ||
       await host.packEntryType(home.dir) !== 'dir') throw new Error('整合包导出目录无效');
+  if (await host.packEntryType(path.join(home.dir, 'profiles')) === 'symlink') {
+    throw new Error('整合包导出的配置档目录不能是符号链接');
+  }
   if (single && !profile) throw new Error('请选择要导出的配置档');
   const selected = new Map(Object.entries(options.profiles ?? {}));
   if (!single && !selected.size) throw new Error('请至少选择一个配置档');
@@ -86,16 +108,21 @@ export async function runExport(host, options, inspect) {
     plugins: overrides.plugins, profilePlugins: overrides.profilePlugins, profileNames: new Set(selected.keys()) });
   if (!options.output || !path.isAbsolute(options.output)) throw new Error('整合包导出需要绝对文件路径');
 
+  const exclusions = await discoverPluginExclusions(host, { home: home.dir, profiles: sources });
+  const excludesHomePath = relative => matchesPluginExclusion(exclusions, relative);
   const opts = {
-    ...overrides, output: options.output, out: path.dirname(options.output), home: home.dir,
+    ...overrides, output: options.output, out: path.dirname(options.output), home: home.dir, exclusions,
     omitPatches: new Set(sources.filter(source => (single ? contents : selected.get(source.name))?.patch === false).map(source => source.name)),
     async prepareEntries(manifest, entries) {
       for (const source of sources) await restoreVendored(host, source.dir, single ? manifest : manifest.profiles[source.name], manifest, entries);
-      if (options.iconFile) {
-        const bytes = await host.readFile(options.iconFile);
-        if (!safeImage('icon.png', bytes)) throw new Error('整合包头像不是有效的 PNG');
+      let icon = options.iconFile ? await host.readFile(options.iconFile) : null;
+      if (options.iconPath && !excludesHomePath(options.iconPath)) {
+        icon = await readLocalIcon(host, home.dir, options.iconPath) ?? icon;
+      }
+      if (icon || options.iconFile) {
+        if (!safeImage('icon.png', icon)) throw new Error('整合包头像不是有效的 PNG');
         manifest.icon = 'icon.png';
-        entries['icon.png'] = bytes;
+        entries['icon.png'] = icon;
       }
       for (const [name, bytes] of Object.entries(entries)) {
         if (name === 'package.json' || /^overrides\/profiles\/[^/]+\/package\.json$/.test(name)) {
@@ -130,9 +157,10 @@ export async function runExport(host, options, inspect) {
     },
     validateArchive: (manifest, entries) => validateArchive(host, manifest, entries),
   };
-  const scannedHome = (await scanProfile(host, home.dir)).files;
+  const scannedHome = (await scanProfile(host, home.dir, excludesHomePath)).files;
   if (single) {
-    const scannedProfile = (await scanProfile(host, profile.dir)).files;
+    const scannedProfile = (await scanProfile(host, profile.dir, relative =>
+      excludesHomePath('profiles/' + profile.name + '/' + relative))).files;
     opts.include = limitSnapshot(scannedProfile.filter(file => inProfile(file.rel, contents)));
     opts.homeInclude = limitSnapshot(scannedHome.filter(file => !file.rel.startsWith('profiles/') && inHome(file.rel, contents, true)));
   } else {

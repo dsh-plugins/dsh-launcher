@@ -1,5 +1,5 @@
 import { collectPluginMetadata, validatePluginAssets } from './plugin-metadata.js';
-import { collectExtensions, validateExtensions } from './extensions.js';
+import { collectExtensions, discoverPluginExclusions, matchesPluginExclusion, validateExtensions } from './extensions.js';
 import { scanProfile, selectFiles } from './scan.js';
 import { buildManifest, buildHomeManifest, validateManifest } from './manifest.js';
 import { buildDspack, encodeText, dspackMarker, DSPACK_CONTAINER_VERSION } from './dspack.js';
@@ -48,7 +48,9 @@ export function dspackEntryPath(rel) {
  * @returns {Promise<{manifest, output, sha256, size, included, excluded}>}
  */
 export async function prepareProfileArchive(host, profile, opts = {}) {
-  const scan = await scanProfile(host, profile.dir);
+  const homeDir = profileHome(host, profile, opts.home);
+  const exclusions = opts.exclusions ?? await discoverPluginExclusions(host, {home: homeDir, profiles: [profile]});
+  const scan = await scanProfile(host, profile.dir, rel => matchesPluginExclusion(exclusions, 'profiles/' + profile.name + '/' + rel));
   if (scan.files.length === 0) {
     throw new Error(`Profile「${profile.name}」没有可打包的文件（全部被过滤或目录为空）`);
   }
@@ -61,9 +63,8 @@ export async function prepareProfileArchive(host, profile, opts = {}) {
   const manifest = await buildManifest(host, profile, opts, scan);
 
   // home 级内容（上一级目录）：用户勾选的全局 skill / 预设等，进 home/ 目录（安装落到 $DSH_HOME 根）。
-  const homeDir = profileHome(host, profile, opts.home);
   const homeFiles = homeDir && opts.homeInclude?.length !== 0 && opts.homeInclude
-    ? (await scanProfile(host, homeDir)).files.filter((f) => !f.rel.startsWith('profiles/')) : [];
+    ? (await scanProfile(host, homeDir, rel => matchesPluginExclusion(exclusions, rel))).files.filter((f) => !f.rel.startsWith('profiles/')) : [];
   const homeSet = opts.homeInclude instanceof Set ? opts.homeInclude : (opts.homeInclude ? new Set(opts.homeInclude) : null);
   const selectedHome = homeSet ? homeFiles.filter((f) => homeSet.has(f.rel)) : [];
 
@@ -79,7 +80,7 @@ export async function prepareProfileArchive(host, profile, opts = {}) {
     entries[`home/${f.rel}`] = data;
   }
   await collectPluginMetadata(host, profile.dir, manifest, { plugins: opts.plugins, entries });
-  const extensions = await collectExtensions(host, { home: homeDir, profiles: [profile], manifest, entries, selection: opts.selection, omitPatches: opts.omitPatches });
+  const extensions = await collectExtensions(host, { home: homeDir, profiles: [profile], manifest, entries, selection: opts.selection, omitPatches: opts.omitPatches, exclusions });
   summarizeResources(manifest, extensions);
   if (opts.prepareEntries) await opts.prepareEntries(manifest, entries);
   // manifest.json 始终在归档根（契约头，覆盖任何扫描残留）；dspack.json 为容器标记。
@@ -132,7 +133,8 @@ export async function writeProfileArchive(host, { manifest, entries, excluded },
  * @returns {Promise<{manifest, output, sha256, size, included, excluded, summary}>}
  */
 export async function packHome(host, home, opts = {}) {
-  const scan = await scanProfile(host, home.dir);
+  const exclusions = opts.exclusions ?? await discoverPluginExclusions(host, {home: home.dir});
+  const scan = await scanProfile(host, home.dir, rel => matchesPluginExclusion(exclusions, rel));
   if (scan.files.length === 0) {
     throw new Error(`DSH_HOME「${home.name}」没有可打包的文件（全部被过滤或目录为空）`);
   }
@@ -183,7 +185,7 @@ export async function packHome(host, home, opts = {}) {
       plugins: opts.profilePlugins?.[profile.name], entries,
     });
   }
-  const extensions = await collectExtensions(host, { home: home.dir, profiles, manifest, entries, selection: opts.selection, omitPatches: opts.omitPatches });
+  const extensions = await collectExtensions(host, { home: home.dir, profiles, manifest, entries, selection: opts.selection, omitPatches: opts.omitPatches, exclusions });
   summarizeResources(manifest, extensions);
   if (opts.prepareEntries) await opts.prepareEntries(manifest, entries);
   const errors = validateManifest(manifest);
