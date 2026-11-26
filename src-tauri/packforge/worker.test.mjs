@@ -10,7 +10,7 @@ import { once } from 'node:events';
 import { fileURLToPath } from 'node:url';
 import { gzipSync } from 'node:zlib';
 import { zipSync } from 'fflate';
-import { parseDocument } from 'yaml';
+import { parseDocument, stringify } from 'yaml';
 import { NodeHost } from './vendor/host-node/src/index.js';
 import { checkMcpInstall } from './vendor/core/src/mcp-install.js';
 
@@ -169,6 +169,116 @@ test('专用包源使用目标凭据，重定向后仅对授权地址发送认�
     ['https://registry.example/private/package.tgz', 'Bearer fixture'],
     ['https://cdn.example/package.tgz', null],
   ]);
+});
+
+test('导出按配置档、作用域和精确版本预填专用源，允许修改或清空', async t => {
+  const root = await workspace(t);
+  const home = { name: 'example', dir: path.join(root, 'home') };
+  const dependencies = { '@org/plugin': '1.2.3', plain: '2.0.0', '@else/plugin': '3.0.0',
+    '@env/plugin': '1.0.0', '@auth/plugin': '1.0.0', '@query/plugin': '1.0.0',
+    range: '^1.0.0', local: 'file:../local' };
+  async function profile(name, registries) {
+    const dir = path.join(home.dir, 'profiles', name);
+    await fs.mkdir(dir, { recursive: true });
+    await fs.writeFile(path.join(dir, 'package.json'), json({ name, dependencies }));
+    if (registries) await fs.writeFile(path.join(dir, 'pnpm-workspace.yaml'), stringify({ registries }));
+    return { name, dir };
+  }
+  const first = await profile('alpha', { default: 'https://default.example/npm', '@org': 'https://alpha.example',
+    '@env': 'https://env.example/${TOKEN}/', '@auth': 'https://user:pass@auth.example/',
+    '@query': 'https://query.example/?token=fixture' });
+  await profile('beta', { 'https://beta.example/npm': { scopes: ['@org'] },
+    'https://fallback.example': { scopes: ['@'] } });
+  await profile('gamma');
+  const multiple = { workspace: root, home, kind: 'dshhome',
+    profiles: { alpha: { workspace: false }, beta: {}, gamma: {} } };
+  const { units } = await run('inspectExport', multiple);
+  const registry = (unit, id) => unit.plugins?.[id]?.source?.registry;
+  assert.equal(registry(units.alpha, '@org/plugin'), 'https://alpha.example/');
+  assert.equal(registry(units.beta, '@org/plugin'), 'https://beta.example/npm/');
+  assert.equal(registry(units.alpha, 'plain'), 'https://default.example/npm/');
+  assert.equal(registry(units.alpha, '@else/plugin'), 'https://default.example/npm/');
+  assert.equal(registry(units.beta, 'plain'), 'https://fallback.example/');
+  assert.equal(registry(units.gamma, '@org/plugin'), undefined);
+  for (const id of ['@env/plugin', '@auth/plugin', '@query/plugin', 'range', 'local']) {
+    assert.equal(registry(units.alpha, id), undefined);
+  }
+  const single = { workspace: root, kind: 'profile', home, profile: first, contents: { workspace: false } };
+  const inspected = await run('inspectExport', single);
+  assert.deepEqual(inspected.units.alpha, units.alpha);
+  const profilePlugins = { alpha: {
+    '@org/plugin': { version: '1.2.3', source: { type: 'npm', registry: 'https://manual.example/' } },
+    plain: { version: '2.0.0', source: null },
+  } };
+  const output = path.join(root, 'with-registries.dspack');
+  await run('export', { ...multiple, output, exportOptions: { profilePlugins } });
+  const { manifest } = await run('inspect', { workspace: root, source: output });
+  assert.equal(registry(manifest.profiles.alpha, '@org/plugin'), 'https://manual.example/');
+  assert.equal(registry(manifest.profiles.alpha, 'plain'), undefined);
+  assert.equal(registry(manifest.profiles.alpha, '@else/plugin'), 'https://default.example/npm/');
+  assert.equal(registry(manifest.profiles.beta, '@org/plugin'), 'https://beta.example/npm/');
+  await fs.writeFile(path.join(first.dir, 'pnpm-workspace.yaml'), 'registries: { default: *missing }');
+  const malformed = await run('inspectExport', single);
+  assert.equal(registry(malformed.units.alpha, 'plain'), undefined);
+});
+
+test('整机导出保留共享内嵌副本，已验证的安装来源优先于工作区配置', async t => {
+  const root = await workspace(t);
+  const home = { name: 'example', dir: path.join(root, 'home') };
+  const version = '1.2.3', embedded = 'embedded-lib', pinned = 'pinned-lib';
+  const savedDir = path.join(home.dir, 'profiles', 'saved');
+  const derivedDir = path.join(home.dir, 'profiles', 'derived');
+  const dependencies = {}, pluginSources = {};
+  await fs.mkdir(path.join(savedDir, '.dspack-sources'), { recursive: true });
+  await fs.mkdir(derivedDir, { recursive: true });
+  for (const [name, registry] of [[embedded, null], [pinned, 'https://saved.example/']]) {
+    const bytes = npmTarball(name, version), sha256 = digest(bytes);
+    dependencies[name] = 'file:.dspack-sources/' + sha256 + '.tgz';
+    pluginSources[name] = { version, registry, sha256 };
+    await fs.writeFile(path.join(savedDir, '.dspack-sources', sha256 + '.tgz'), bytes);
+  }
+  await fs.writeFile(path.join(savedDir, 'package.json'), json({ dependencies, dsh: { packforge: { pluginSources } } }));
+  await fs.writeFile(path.join(derivedDir, 'package.json'), json({ dependencies: { [embedded]: version } }));
+  for (const dir of [savedDir, derivedDir]) {
+    await fs.writeFile(path.join(dir, 'pnpm-workspace.yaml'), 'registries: { default: https://workspace.example/ }');
+  }
+  const single = await run('inspectExport', { kind: 'profile', workspace: root, home, profile: { name: 'derived', dir: derivedDir } });
+  assert.equal(single.units.derived.plugins[embedded].source.registry, 'https://workspace.example/');
+  const options = { kind: 'dshhome', workspace: root, home, profiles: { derived: {}, saved: {} } };
+  const shown = await run('inspectExport', options);
+  const output = path.join(root, 'shared.dspack');
+  await run('export', { ...options, output });
+  const { manifest } = await run('inspect', { workspace: root, source: output });
+  assert.equal(manifest.vendored[embedded].sha256, pluginSources[embedded].sha256);
+  for (const units of [shown.units, manifest.profiles]) {
+    assert.equal(units.saved.plugins[pinned].source.registry, 'https://saved.example/');
+    assert.equal(units.saved.plugins[embedded].source, undefined);
+    assert.equal(units.derived.plugins?.[embedded]?.source, undefined);
+  }
+});
+
+test('配置档切换到公共源后，预填地址仍保留私有安装包的本地图标', async t => {
+  const root = await workspace(t);
+  const home = { name: 'example', dir: path.join(root, 'home') };
+  const profile = { name: 'example', dir: path.join(home.dir, 'profiles', 'example') };
+  const id = '@org/plugin', version = '1.0.0';
+  const installed = path.join(profile.dir, 'node_modules', id);
+  await fs.mkdir(installed, { recursive: true });
+  await fs.writeFile(path.join(profile.dir, 'package.json'), json({ dependencies: { [id]: version } }));
+  await fs.writeFile(path.join(profile.dir, 'pnpm-workspace.yaml'), 'registries: { default: https://registry.npmjs.org/ }');
+  await fs.writeFile(path.join(installed, 'package.json'), json({
+    name: id, version, icon: 'icon.svg', _resolved: 'https://private.example/plugin.tgz',
+  }));
+  await fs.writeFile(path.join(installed, 'icon.svg'), '<svg xmlns="http://www.w3.org/2000/svg"></svg>');
+  const requests = [];
+  const shown = await run('inspectExport', { workspace: root, kind: 'profile', home, profile }, message => {
+    requests.push(message.url);
+    return { error: '没有公共包源记录' };
+  });
+  const plugin = shown.units.example.plugins[id];
+  assert.equal(plugin.source.registry, 'https://registry.npmjs.org/');
+  assert.match(plugin.icon, /^assets\/plugins\/[a-f0-9]{64}\.svg$/);
+  assert.deepEqual(requests, []);
 });
 
 test('配置档级技能添加独立提供方，保留原技能目录且导出时移除本机注册', async t => {

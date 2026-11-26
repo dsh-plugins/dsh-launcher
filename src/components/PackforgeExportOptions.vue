@@ -39,6 +39,7 @@ interface PluginChoice {
   desc: string
   icon: string
   registry: string
+  registryDefault: string
 }
 
 const groups: { key: PackforgeResourceGroup; label: string }[] = [
@@ -91,10 +92,15 @@ async function inspect() {
         const original = unit.plugins?.[id]
         const version = unit.dependencies[id]
         const prior = plugins.value.find(row => row.profile === profile && row.id === id && row.version === version)
-        return prior ?? {
+        const registryDefault = original?.source?.registry ?? ''
+        if (prior) {
+          return prior.registry.trim() !== prior.registryDefault
+            ? prior : { ...prior, registry: registryDefault, registryDefault }
+        }
+        return {
           profile, id, version, original,
           name: asText(original?.name), desc: asText(original?.desc), icon: original?.icon ?? '',
-          registry: original?.source?.registry ?? '',
+          registry: registryDefault, registryDefault,
         }
       }),
     )
@@ -219,7 +225,7 @@ function getOptions() {
       entry.icon = icon.href
     }
     const registry = row.registry.trim()
-    if (registry !== (original?.source?.registry || '')) {
+    if (registry !== row.registryDefault) {
       if (!row.version || !exactVersion(row.version)) {
         throw new Error(t('modpack.registryVersionRequired', { name: row.id }))
       }

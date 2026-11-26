@@ -1,5 +1,5 @@
 import { isLocaleString, parsePkgGitSpec } from './manifest.js';
-import { exactNpm, verifyInstalledPluginSource, registryUrl } from './registry.js';
+import { exactNpm, installedPluginSource, verifyInstalledPluginSource, registryUrl } from './registry.js';
 import { parseDocument } from 'yaml';
 
 const object = (value) => value !== null && typeof value === 'object' && !Array.isArray(value);
@@ -178,13 +178,58 @@ async function collectLocales(host, pkgDir, pkg) {
   };
 }
 
-async function registryContext(host, dir) {
-  const paths = ['pnpm-lock.yaml', 'node_modules/.modules.yaml', 'pnpm-workspace.yaml'];
-  const [lock, modules, workspace] = await Promise.all(paths.map(async (path) => {
-    const raw = await host.readTextFile(host.joinPath(dir, ...path.split('/')));
-    const doc = raw ? parseDocument(raw) : null;
-    return doc?.errors.length ? null : doc;
-  }));
+async function readYaml(host, ...parts) {
+  const raw = await host.readTextFile(host.joinPath(...parts));
+  const doc = raw ? parseDocument(raw) : null;
+  return doc?.errors.length ? null : doc;
+}
+
+function workspaceRoutes(workspace) {
+  const routes = Object.create(null);
+  const invalid = { default: '' };
+  let map;
+  try {
+    map = workspace?.get('registries', true)?.toJS(workspace);
+  } catch {
+    return invalid;
+  }
+  if (map == null) return routes;
+  if (!object(map)) return invalid;
+  const entries = Object.entries(map);
+  if (entries.every(([key, value]) => (key === 'default' || key.startsWith('@')) && typeof value === 'string')) {
+    return Object.assign(routes, map);
+  }
+  for (const [url, entry] of entries) {
+    if (!/^https?:\/\//i.test(url) || !object(entry)) return invalid;
+    if (entry.ecosystem && entry.ecosystem !== 'npm') continue;
+    if (entry.scopes === undefined) continue;
+    if (!Array.isArray(entry.scopes)) return invalid;
+    for (const scope of entry.scopes) {
+      if (typeof scope !== 'string' || !scope.startsWith('@')) return invalid;
+      const key = scope === '@' ? 'default' : scope;
+      if (Object.hasOwn(routes, key)) return invalid;
+      routes[key] = url;
+    }
+  }
+  return routes;
+}
+
+const packageScope = id => id.startsWith('@') ? id.split('/')[0] : 'default';
+
+function workspaceRegistry(routes, id) {
+  const raw = routes[packageScope(id)] ?? routes.default;
+  if (!raw || !/^https?:\/\//i.test(raw) || raw.includes('${')) return undefined;
+  try {
+    return registryUrl(raw);
+  } catch {
+    return undefined;
+  }
+}
+
+async function registryContext(host, dir, routes, registry) {
+  const [lock, modules] = await Promise.all([
+    readYaml(host, dir, 'pnpm-lock.yaml'), readYaml(host, dir, 'node_modules', '.modules.yaml'),
+  ]);
   const settings = Object.create(null);
   const user = host.env?.('NPM_CONFIG_USERCONFIG') || host.env?.('npm_config_userconfig') || host.joinPath(host.homedir(), '.npmrc');
   for (const path of [user, host.joinPath(dir, '.npmrc')]) {
@@ -200,7 +245,7 @@ async function registryContext(host, dir) {
   if (envRegistry) {
     settings.default = envRegistry;
   }
-  return { lock, modules, workspace, settings };
+  return { lock, modules, routes, registry, settings };
 }
 
 const publicNpm = 'https://registry.npmjs.org/';
@@ -208,14 +253,10 @@ const isPublic = (url) => typeof url === 'string' && (url === publicNpm || url +
 
 function inferredPublic(scope, ctx) {
   const installed = ctx.modules?.getIn(['registries', scope]) ?? ctx.modules?.getIn(['registries', 'default']);
-  const map = ctx.workspace?.get('registries')?.toJSON();
-  const workspaceRoute = map?.[scope] ?? map?.default ?? ctx.workspace?.get('registry');
+  const workspaceRoute = ctx.routes[scope] ?? ctx.routes.default ?? ctx.registry;
   const settings = ctx.settings[scope] ?? ctx.settings.default;
   if ((installed != null && !isPublic(installed)) || (workspaceRoute != null && !isPublic(workspaceRoute)) ||
       (settings != null && !isPublic(settings))) {
-    return false;
-  }
-  if (map && Object.values(map).some((v) => v && typeof v === 'object' && v.scopes?.includes?.(scope) && !isPublic(v.url))) {
     return false;
   }
   return isPublic(installed) || isPublic(workspaceRoute) || isPublic(settings);
@@ -235,7 +276,7 @@ async function publicArtifact(host, pkg, id, release, source, loadContext) {
   const resolved = ctx.lock?.getIn([...key, 'tarball']);
   const integrity = ctx.lock?.getIn([...key, 'integrity']);
   const recorded = resolved || pkg._resolved;
-  const scope = id.startsWith('@') ? id.split('/')[0] : 'default';
+  const scope = packageScope(id);
   if (!source) {
     if (recorded && recorded !== publicUrl) {
       return false;
@@ -282,15 +323,41 @@ async function iconFor(host, pkgDir, pkg, id, release, source, context, entries)
   return asset;
 }
 
+async function readProfilePackage(host, dir) {
+  const raw = await host.readTextFile(host.joinPath(dir, 'package.json'));
+  return raw ? JSON.parse(raw) : {};
+}
+
+/** 内嵌副本由整个归档共享，各配置档仅为其余依赖推断专用源。 */
+export async function collectHomePluginMetadata(host, profiles, units, profilePlugins, entries) {
+  const packages = new Map();
+  const vendored = new Set();
+  for (const { name, dir } of profiles) {
+    const pkg = await readProfilePackage(host, dir);
+    packages.set(name, pkg);
+    for (const id of Object.keys(pkg.dsh?.packforge?.pluginSources || {})) {
+      const saved = installedPluginSource(pkg, id);
+      if (saved && saved.registry === null && saved.version === units[name].dependencies?.[id]) vendored.add(id);
+    }
+  }
+  for (const { name, dir } of profiles) {
+    await collectPluginMetadata(host, dir, units[name], {
+      plugins: profilePlugins?.[name], entries, profile: packages.get(name), vendored,
+    });
+  }
+}
+
 /** 导出已安装插件的静态展示资料，作者指定的字段优先。 */
-export async function collectPluginMetadata(host, profileDir, unit, { plugins, entries }) {
+export async function collectPluginMetadata(host, profileDir, unit, { plugins, entries, profile, vendored }) {
   if (plugins !== undefined && !object(plugins)) {
     throw new Error('plugins 必须是对象');
   }
-  const raw = await host.readTextFile(host.joinPath(profileDir, 'package.json'));
-  const profile = raw ? JSON.parse(raw) : {};
+  profile ??= await readProfilePackage(host, profileDir);
+  const workspacePath = await packagePath(host, profileDir, 'pnpm-workspace.yaml');
+  const workspace = workspacePath ? await readYaml(host, workspacePath) : null;
+  const routes = workspaceRoutes(workspace);
   let context;
-  const loadContext = () => context ??= registryContext(host, profileDir);
+  const loadContext = () => context ??= registryContext(host, profileDir, routes, workspace?.get('registry'));
   const ids = new Set([...(unit.bundles || []), ...Object.keys(plugins || {}), ...Object.keys(profile.dependencies || {})]);
   const result = Object.create(null);
   for (const id of ids) {
@@ -303,15 +370,18 @@ export async function collectPluginMetadata(host, profileDir, unit, { plugins, e
     const text = installed ? await host.readTextFile(installed) : null;
     const pkg = text ? JSON.parse(text) : null;
     const saved = await verifyInstalledPluginSource(host, profileDir, profile, id);
-    if (!override && !unit.bundles?.includes(id) && !pkg?.dsh?.bundle && !pkg?.dsh?.client && !saved) {
+    const release = unit.dependencies?.[key];
+    const inferred = !saved && !vendored?.has(key) && !Object.hasOwn(override || {}, 'source') && exactNpm(key, release)
+      ? workspaceRegistry(routes, key) : undefined;
+    if (!override && !unit.bundles?.includes(id) && !pkg?.dsh?.bundle && !pkg?.dsh?.client && !saved && !inferred) {
       continue;
     }
     if (override !== undefined && !object(override)) {
       throw new Error('plugins[' + key + '] 必须是对象');
     }
-    const release = unit.dependencies?.[key];
     const current = typeof release === 'string' && override?.version === release;
-    let source = saved?.registry && saved.version === release ? { type: 'npm', registry: saved.registry } : undefined;
+    const registry = saved && saved.version === release ? saved.registry : inferred;
+    let source = registry ? { type: 'npm', registry } : undefined;
     if (override && Object.hasOwn(override, 'source') && !current) {
       throw new Error('插件的精确版本已变化，请重新选择包源：' + key);
     }
@@ -336,7 +406,9 @@ export async function collectPluginMetadata(host, profileDir, unit, { plugins, e
         }
       }
     } else if (pkg) {
-      const icon = await iconFor(host, dir, pkg, key, release, entry.source, loadContext, entries);
+      // 配置档当前选择公共源，仍须核实本地安装包的实际来源。
+      const iconSource = isPublic(inferred) ? undefined : entry.source;
+      const icon = await iconFor(host, dir, pkg, key, release, iconSource, loadContext, entries);
       if (icon) {
         entry.icon = icon;
       }

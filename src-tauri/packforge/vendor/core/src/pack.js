@@ -1,4 +1,4 @@
-import { collectPluginMetadata, validatePluginAssets } from './plugin-metadata.js';
+import { collectHomePluginMetadata, collectPluginMetadata, validatePluginAssets } from './plugin-metadata.js';
 import { collectExtensions, discoverPluginExclusions, matchesPluginExclusion, validateExtensions } from './extensions.js';
 import { scanProfile, selectFiles } from './scan.js';
 import { buildManifest, buildHomeManifest, validateManifest } from './manifest.js';
@@ -180,11 +180,7 @@ export async function packHome(host, home, opts = {}) {
     if (!data) continue;
     entries[dspackEntryPath(f.rel)] = data;
   }
-  for (const profile of profiles) {
-    await collectPluginMetadata(host, profile.dir, manifest.profiles[profile.name], {
-      plugins: opts.profilePlugins?.[profile.name], entries,
-    });
-  }
+  await collectHomePluginMetadata(host, profiles, manifest.profiles, opts.profilePlugins, entries);
   const extensions = await collectExtensions(host, { home: home.dir, profiles, manifest, entries, selection: opts.selection, omitPatches: opts.omitPatches, exclusions });
   summarizeResources(manifest, extensions);
   if (opts.prepareEntries) await opts.prepareEntries(manifest, entries);

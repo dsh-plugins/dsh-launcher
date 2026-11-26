@@ -1,4 +1,4 @@
-import { collectPluginMetadata } from './plugin-metadata.js';
+import { collectHomePluginMetadata, collectPluginMetadata } from './plugin-metadata.js';
 import { collectExtensions, discoverExtensions, discoverPluginExclusions, matchesPluginExclusion } from './extensions.js';
 import { scanProfile, selectFiles } from './scan.js';
 import { buildManifest, buildHomeManifest } from './manifest.js';
@@ -57,9 +57,7 @@ export async function inspectHome(host, home, opts = {}) {
     instructions: summary.instructions || 'AGENTS.md',
     files: opts.files ?? [],
   });
-  for (const profile of profiles) {
-    await collectPluginMetadata(host, profile.dir, manifest.profiles[profile.name], { plugins: opts.profilePlugins?.[profile.name], entries: {} });
-  }
+  await collectHomePluginMetadata(host, profiles, manifest.profiles, opts.profilePlugins, {});
   await collectExtensions(host, { home: home.dir, profiles, manifest, entries: {}, selection: {}, exclusions });
   return { home, files, allFiles: scan.files, excluded: scan.excluded, manifest, summary };
 }
@@ -157,9 +155,9 @@ export async function exportChoices(host, { profile, home, plugins, profilePlugi
     .map((entry) => ({ name: entry.name, dir: entry.abs }));
   const units = Object.create(null);
   for (const item of profiles) {
-    const unit = await buildManifest(host, item);
-    await collectPluginMetadata(host, item.dir, unit, { plugins: profile ? plugins : profilePlugins?.[item.name], entries: {} });
-    units[item.name] = { plugins: unit.plugins, bundles: unit.bundles, dependencies: unit.dependencies };
+    const { bundles, dependencies } = await buildManifest(host, item);
+    units[item.name] = { bundles, dependencies };
   }
+  await collectHomePluginMetadata(host, profiles, units, profile ? { [profile.name]: plugins } : profilePlugins, {});
   return { candidates: await discoverExtensions(host, { home: dir, profiles, wholeHome: !profile }), units };
 }
