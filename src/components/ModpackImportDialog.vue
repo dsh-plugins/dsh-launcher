@@ -517,7 +517,6 @@ function close() {
           <dsh-alert v-for="warning in archive?.warnings ?? []" :key="warning" class="packforge-section" type="warning">
             {{ warning }}
           </dsh-alert>
-          <PackforgePluginList v-if="isV6" :manifest="manifest" :icons="archive?.icons" />
           <template v-if="updateInstance">
             <dsh-alert v-if="!isV6" type="warning" class="packforge-section">{{ t('modpack.updateNeedsV6') }}</dsh-alert>
             <dsh-form-item v-if="!isDshhome && !selectedInstallation?.profile_name" :label="t('modpack.profileName')" required>
@@ -563,6 +562,7 @@ function close() {
               <dsh-checkbox v-model="force">{{ t('modpack.force') }}</dsh-checkbox>
             </dsh-form-item>
           </template>
+          <PackforgePluginList v-if="isV6" :manifest="manifest" :icons="archive?.icons" />
         </template>
 
         <template v-if="step === 'resources' && resources">
